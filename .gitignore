@@ -1,0 +1,6 @@
+# 本机 agent 工具的本地设置，不随仓库共享
+.claude/settings.local.json
+
+# Windows 系统垃圾文件
+Thumbs.db
+desktop.ini
