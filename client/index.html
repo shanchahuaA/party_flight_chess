@@ -1,0 +1,160 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>部署链路探针 · party_flight_chess</title>
+<style>
+  :root { color-scheme: light dark; }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; padding: 12px;
+    font: 16px/1.5 system-ui, "PingFang SC", "Microsoft YaHei", sans-serif;
+  }
+  h1 { font-size: 18px; margin: 0 0 12px; }
+  label { display: block; font-size: 13px; color: #666; margin: 8px 0 2px; }
+  input {
+    width: 100%; padding: 10px; font-size: 16px;
+    border: 1px solid #bbb; border-radius: 8px;
+  }
+  .row { display: flex; gap: 8px; margin-top: 10px; }
+  button {
+    flex: 1; padding: 10px; font-size: 16px; border: 0; border-radius: 8px;
+    background: #2563eb; color: #fff;
+  }
+  button.ghost { background: #888; }
+  #status { margin: 10px 0 4px; font-size: 14px; }
+  #dot { display: inline-block; width: 10px; height: 10px; border-radius: 50%; background: #999; margin-right: 6px; }
+  #log {
+    margin-top: 6px; padding: 8px; height: 46vh; overflow-y: auto;
+    border: 1px solid #ccc; border-radius: 8px;
+    font: 13px/1.6 ui-monospace, Consolas, monospace;
+    white-space: pre-wrap; word-break: break-all;
+    background: rgba(127,127,127,.08);
+  }
+  .sys { color: #888; }
+  .self { color: #2563eb; }
+  .err { color: #c0392b; }
+</style>
+</head>
+<body>
+<h1>部署链路探针</h1>
+
+<label for="url">Worker WS 地址（例：wss://域名/ws/大厅）</label>
+<input id="url" autocomplete="off" spellcheck="false" placeholder="wss://…/ws/lobby">
+
+<label for="nick">昵称</label>
+<input id="nick" autocomplete="off" maxlength="20" placeholder="玩家">
+
+<div class="row">
+  <button id="connect">连接</button>
+  <button id="disconnect" class="ghost">断开</button>
+</div>
+
+<div class="row">
+  <input id="text" autocomplete="off" maxlength="200" placeholder="发条消息试试回声">
+  <button id="send" style="flex:none;padding:10px 18px;">发送</button>
+</div>
+
+<p id="status"><span id="dot"></span><span id="statusText">未连接</span></p>
+<div id="log"></div>
+
+<script>
+  // 消息类型真源在 shared/protocol.ts；本页是临时探针（不进 TS 体系），仅镜像 hello-world 阶段的消息。
+  const $ = (id) => document.getElementById(id);
+  const log = (line, cls) => {
+    const el = document.createElement("div");
+    if (cls) el.className = cls;
+    el.textContent = line;
+    $("log").appendChild(el);
+    $("log").scrollTop = $("log").scrollHeight;
+  };
+  const setStatus = (text, color) => {
+    $("statusText").textContent = text;
+    $("dot").style.background = color;
+  };
+
+  let ws = null, pingTimer = null, pongCount = 0;
+
+  function buildUrl() {
+    let base = $("url").value.trim();
+    if (!base) return null;
+    if (!base.includes("?")) {
+      const nick = $("nick").value.trim() || "玩家";
+      base += "?name=" + encodeURIComponent(nick);
+    }
+    return base;
+  }
+
+  function connect() {
+    if (ws) return;
+    const url = buildUrl();
+    if (!url) { log("!! 先填 Worker WS 地址", "err"); return; }
+    localStorage.setItem("probe.ws", $("url").value.trim());
+    log("→ 连接 " + url, "sys");
+    setStatus("连接中…", "#e67e22");
+    try {
+      ws = new WebSocket(url);
+    } catch (e) {
+      log("!! 打不开：" + e.message, "err");
+      ws = null;
+      setStatus("未连接", "#999");
+      return;
+    }
+    ws.addEventListener("open", () => {
+      setStatus("已连接，等服务端 hello…", "#27ae60");
+      pingTimer = setInterval(() => ws && ws.readyState === 1 && ws.send("ping"), 25000);
+    });
+    ws.addEventListener("message", (ev) => {
+      if (ev.data === "pong") { pongCount++; setStatus(`已连接（心跳 ${pongCount}）`, "#27ae60"); return; }
+      let msg;
+      try { msg = JSON.parse(ev.data); } catch { log("?? 非JSON：" + ev.data, "err"); return; }
+      const t = new Date(msg.now || Date.now()).toLocaleTimeString();
+      if (msg.type === "hello") {
+        log(`[${t}] 已进房间「${msg.room}」，当前 ${msg.clients} 人`, "sys");
+        setStatus("已连接", "#27ae60");
+      } else if (msg.type === "chat") {
+        log(`[${t}] ${msg.self ? "我" : msg.from}：${msg.text}`, msg.self ? "self" : "");
+      } else if (msg.type === "presence") {
+        log(`[${t}] —— ${msg.from} ${msg.kind === "join" ? "加入" : "离开"}（当前 ${msg.clients} 人）`, "sys");
+      }
+    });
+    ws.addEventListener("close", (ev) => {
+      log(`× 连接关闭 code=${ev.code}${ev.reason ? "：" + ev.reason : ""}`, "err");
+      cleanup();
+    });
+    ws.addEventListener("error", () => log("× 连接出错（地址写对了吗？大陆直连 workers.dev 会被污染）", "err"));
+  }
+
+  function cleanup() {
+    ws = null;
+    clearInterval(pingTimer);
+    pongCount = 0;
+    setStatus("未连接", "#999");
+  }
+
+  function disconnect() {
+    if (ws) ws.close();
+    cleanup();
+  }
+
+  function sendChat() {
+    const text = $("text").value.trim();
+    if (!ws || ws.readyState !== 1) { log("!! 还没连上", "err"); return; }
+    if (!text) return;
+    ws.send(JSON.stringify({ type: "chat", turn: 0, text }));
+    $("text").value = "";
+  }
+
+  $("connect").addEventListener("click", connect);
+  $("disconnect").addEventListener("click", disconnect);
+  $("send").addEventListener("click", sendChat);
+  $("text").addEventListener("keydown", (e) => e.key === "Enter" && sendChat());
+
+  const urlParam = new URLSearchParams(location.search).get("ws");
+  if (urlParam) $("url").value = urlParam;
+  else $("url").value = localStorage.getItem("probe.ws") || "";
+  if ($("url").value) connect();
+</script>
+</body>
+</html>

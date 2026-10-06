@@ -4,3 +4,11 @@
 # Windows 系统垃圾文件
 Thumbs.db
 desktop.ini
+
+# 依赖与构建产物
+node_modules/
+dist/
+
+# wrangler 本地状态与密钥
+.wrangler/
+.dev.vars
