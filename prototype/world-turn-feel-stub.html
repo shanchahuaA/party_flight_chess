@@ -1,0 +1,1120 @@
+<!doctype html>
+<!--
+  [PROTOTYPE] 回合结构手感对比 stub —— 一次性代码（GitHub issue #7 · 第 3 轮）
+  问题：4 种「谁来定节奏」的回合结构，哪种手感适合派对节奏？顶部一键切换、同一棋盘对比：
+    ① 世界·即时      共用倒计时窗 + 投完立刻走（文明 6 式即时反馈）
+    ② 轮班·限时      按座次轮流行动，每人独立倒计时，超时自动掷骰
+    ③ 轮班·不限时    按座次轮流行动，没有时限（上轮反馈偏弱，留作对照）
+    ④ 世界·结算（旧）第 1 版的「全员交卷后一起结算」，留作对照
+  前两轮体感结论（记录在 issue #7）：
+    R1 世界回合里「投完立刻走」优于「等全员结算」。
+    R2 ①② 手感最佳；全屏事件卡弹窗太打断 → 本轮改为棋盘上方固定「世界消息」框滚动更新，不挡操作。
+  第 3 轮新增：世界回合时长加 90s 档；每个回合结束插入「休息时间」（默认 10s，0–20s 可调、可跳过），
+    给玩家一点时间消化这个回合发生了什么——休息长短本身就是本轮要体感的参数。
+  这是手感原型，不是实现起点；<script> 里的 WorldTurnGame 纯模块可整体搬走，页面壳随手扔。
+
+  运行方式：
+  - 电脑：直接双击本文件。
+  - 手机（推荐，体验竖屏手感）：本机起服务 `python -m http.server 8137`，
+    手机连同一 Wi-Fi 访问 http://<电脑局域网IP>:8137/prototype/world-turn-feel-stub.html
+-->
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>[原型] 回合结构手感对比 stub</title>
+<style>
+:root{
+  --red:#e53935; --yellow:#f9a825; --green:#43a047; --blue:#1e88e5;
+  --ink:#263238; --sub:#607d8b; --bg:#eceff1; --card:#fff; --line:#cfd8dc;
+  --ev:#ff7043; --it:#42a5f5; --tr:#ab47bc;
+}
+*{box-sizing:border-box; -webkit-tap-highlight-color:transparent}
+html,body{margin:0}
+body{background:var(--bg); color:var(--ink); font:15px/1.55 system-ui,-apple-system,"PingFang SC","Microsoft YaHei",sans-serif}
+.wrap{max-width:520px; margin:0 auto; padding:10px 12px calc(28px + env(safe-area-inset-bottom))}
+header h1{font-size:18px; margin:4px 0 6px}
+.q{font-size:12.5px; color:#5d4037; background:#fff8e1; border:1px solid #ffe082; border-radius:10px; padding:8px 10px}
+.modes{display:flex; gap:6px; margin-top:10px}
+.modes button{flex:1; font-size:12px; padding:8px 2px; border-radius:10px; border:1.5px solid var(--line); background:#fff; color:var(--sub); font-weight:700}
+.modes button.on{border-color:var(--red); color:var(--red); background:#fff5f5}
+.modeDesc{font-size:12px; color:var(--sub); background:#fff; border:1px dashed var(--line); border-radius:10px; padding:7px 10px; margin-top:7px}
+.hud{margin-top:10px}
+.turnrow{display:flex; align-items:center; gap:8px; font-size:13px; font-weight:600}
+.turnrow .sp{flex:1}
+button{font-family:inherit; touch-action:manipulation}
+button.mini{font-size:12px; padding:4px 10px; border-radius:999px; border:1px solid var(--line); background:#fff; color:var(--sub)}
+.cbar{position:relative; height:16px; background:#dfe5e8; border-radius:999px; margin:8px 0 6px; overflow:hidden}
+.cbar .fill{position:absolute; inset:0; width:100%; background:var(--green); border-radius:999px; transition:width .1s linear}
+.cbar.warn .fill{background:var(--yellow)} .cbar.danger .fill{background:var(--red)}
+.cbar .txt{position:absolute; inset:0; display:flex; align-items:center; justify-content:center; font-size:11.5px; font-weight:700; color:#37474f; text-shadow:0 1px 0 rgba(255,255,255,.5)}
+.chips{display:flex; gap:6px; overflow-x:auto; padding-bottom:2px; scrollbar-width:none}
+.chip{flex:0 0 auto; display:flex; align-items:center; gap:5px; background:var(--card); border:1px solid var(--line); border-radius:999px; padding:4px 9px; font-size:12px; white-space:nowrap}
+.chip.cur{border-color:#263238; box-shadow:0 0 0 2px rgba(38,50,56,.15)}
+.chip .dot{width:10px; height:10px; border-radius:50%}
+.chip b{font-weight:700}
+.chip .st{color:var(--sub)}
+.chip.done .st{color:var(--green)}
+#boardBox{margin-top:10px; background:var(--card); border:1px solid var(--line); border-radius:14px; padding:6px}
+#board{display:block; width:100%; height:auto}
+.legend{font-size:11.5px; color:var(--sub); text-align:center; margin-top:2px}
+.actions{margin-top:12px}
+.handTitle{font-size:12px; color:var(--sub); margin-bottom:5px}
+.hand{display:flex; gap:8px; overflow-x:auto; padding:2px 2px 6px; min-height:64px}
+.card{flex:0 0 auto; width:96px; background:var(--card); border:2px solid var(--line); border-radius:12px; padding:7px 8px; font-size:12px; cursor:pointer}
+.card .t{font-weight:700; font-size:13px}
+.card .d{color:var(--sub); font-size:11px; line-height:1.35; margin-top:2px}
+.card.empty{border-style:dashed; color:var(--sub); cursor:default; width:auto; flex:1; text-align:center; padding:14px 8px}
+.roll{width:100%; margin-top:6px; padding:15px; font-size:19px; font-weight:800; border:0; border-radius:14px; background:var(--red); color:#fff; letter-spacing:2px}
+.roll:disabled{background:#b0bec5; letter-spacing:0}
+.roll.mine{animation:pulse 1.1s ease-in-out infinite}
+@keyframes pulse{0%,100%{transform:scale(1)} 50%{transform:scale(1.03)}}
+.diceNote{font-size:13px; color:var(--sub); margin-top:5px; min-height:20px; text-align:center}
+#log{margin-top:12px; background:var(--card); border:1px solid var(--line); border-radius:12px; padding:8px 10px; height:118px; overflow-y:auto; font-size:12px; color:#455a64}
+#log .ln{padding:1px 0}
+#log .sys{color:#90a4ae}
+details.set{margin-top:12px; background:var(--card); border:1px solid var(--line); border-radius:12px; padding:8px 12px; font-size:13px}
+details.set summary{cursor:pointer; font-weight:700; color:var(--sub)}
+details.set .row{display:flex; align-items:center; gap:8px; margin-top:9px}
+details.set .row label{flex:0 0 auto; color:var(--sub); font-size:12.5px}
+details.set select{flex:1; font-size:13px; padding:4px}
+details.set .btns{display:flex; flex-wrap:wrap; gap:7px; margin-top:10px}
+details.set .btns button{font-size:12.5px; padding:6px 11px; border-radius:9px; border:1px solid var(--line); background:#fafafa}
+details.set .btns button.primary{background:var(--red); color:#fff; border-color:var(--red)}
+.hint{font-size:11.5px; color:#90a4ae; margin-top:8px}
+/* 世界消息框：事件/陷阱/道具不再弹窗，在这里滚动更新（不挡操作） */
+#feedBox{margin-top:10px}
+.feedHead{font-size:12px; color:var(--sub); margin-bottom:5px}
+#feed{background:var(--card); border:1px solid var(--line); border-radius:12px; padding:7px 9px; height:124px; overflow-y:auto; display:flex; flex-direction:column; gap:5px}
+.fe{flex:0 0 auto; font-size:12px; line-height:1.45; border-left:4px solid #b0bec5; background:#fafafa; border-radius:8px; padding:5px 9px}
+.fe.event{border-color:var(--ev)}
+.fe.trap{border-color:var(--tr)}
+.fe.item{border-color:var(--it)}
+.fe.sys{background:transparent; color:#90a4ae; border-left-style:dashed}
+.fe .who{font-size:11px; color:var(--sub)}
+.fe .t{font-weight:700}
+.fe .d{color:#546e7a; font-size:11.5px}
+.fe.fresh{animation:feflash 1.4s ease-out}
+@keyframes feflash{0%{background:#fff3e0} 100%{background:#fafafa}}
+.modes button.alt{opacity:.62}
+/* 打卡确认 / 结算弹层 */
+.modal{position:fixed; inset:0; display:none; align-items:center; justify-content:center; background:rgba(38,50,56,.5); z-index:60}
+.modal.show{display:flex}
+.mbox{width:280px; background:var(--card); border-radius:16px; padding:18px; text-align:center}
+.mbox .t{font-weight:800; font-size:16px}
+.mbox .d{font-size:13px; color:var(--sub); margin:7px 0 13px}
+.mbox .btns{display:flex; gap:9px}
+.mbox .btns button{flex:1; padding:11px; font-size:14px; border-radius:10px; border:0}
+.mbox .ok{background:var(--red); color:#fff; font-weight:700}
+.mbox .no{background:#eceff1; color:var(--sub)}
+.mbox ol{margin:8px 0 0; padding-left:20px; text-align:left; font-size:14px; line-height:2}
+.mbox textarea{width:100%; height:150px; font-size:11px; margin-top:8px}
+.tokenLbl{font-size:9px; font-weight:800; fill:#fff; pointer-events:none}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>🏮 春节派对飞行棋 · 回合结构手感对比</h1>
+    <div class="q">
+      第 3 轮（按你上轮反馈改）：①②手感不错，这轮重点打磨它们——
+      <b>事件卡不再全屏弹窗</b>，改为棋盘上方固定的「📣 世界消息」框滚动更新，不打断操作；
+      <b>世界回合时长新增 90s 档</b>；每个回合结束插入一段<b>休息时间</b>（默认 10s，0–20s 可调、可跳过），
+      消化一下这回合发生了什么。③④留作对照（变灰）。你是🔴<b>你</b>，另外三位是模拟玩家。
+      玩完点「导出体感记录」贴回 issue #7。
+    </div>
+    <div class="modes" id="modes">
+      <button data-m="immediate">① 世界·即时</button>
+      <button data-m="hotseat">② 轮班·限时</button>
+      <button data-m="hotseat-free" class="alt">③ 轮班·不限时</button>
+      <button data-m="resolve" class="alt">④ 世界·结算旧</button>
+    </div>
+    <div class="modeDesc" id="modeDesc"></div>
+  </header>
+
+  <section class="hud">
+    <div class="turnrow">
+      <span id="turnNo">回合 –/30</span>
+      <span id="phaseTxt" class="st"></span>
+      <span class="sp"></span>
+      <button class="mini" id="skipBtn" style="display:none">⏭ 跳过休息</button>
+      <button class="mini" id="exportBtn">导出体感记录</button>
+    </div>
+    <div class="cbar" id="cbar"><div class="fill" id="cfill"></div><span class="txt" id="ctext"></span></div>
+    <div class="chips" id="chips"></div>
+  </section>
+
+  <section id="feedBox">
+    <div class="feedHead">📣 世界消息（新消息在这里滚动，不再弹窗打断操作）</div>
+    <div id="feed"></div>
+  </section>
+
+  <section id="boardBox">
+    <svg id="board" viewBox="0 0 380 380" aria-label="棋盘"></svg>
+    <div class="legend">🟧事件格 🟦道具格 🟪陷阱格 ⬜空格 · 外圈彩色小弧 = 各自的终点支路（旗=终点）</div>
+  </section>
+
+  <section class="actions">
+    <div class="handTitle">道具卡（每次行动至多打出 1 张，点击卡片打出）</div>
+    <div class="hand" id="hand"></div>
+    <button class="roll" id="rollBtn">🎲 掷 骰</button>
+    <div class="diceNote" id="diceNote"></div>
+  </section>
+
+  <section id="log"></section>
+
+  <details class="set" id="setBox" open>
+    <summary>⚙️ 调参 & 场景</summary>
+    <div class="row"><label id="durLbl">世界回合时长</label>
+      <select id="durSel"><option value="10">10 秒</option><option value="15">15 秒</option><option value="20">20 秒</option><option value="30" selected>30 秒（默认）</option><option value="60">60 秒</option><option value="90">90 秒</option></select>
+    </div>
+    <div class="row"><label>回合间休息</label>
+      <select id="restSel"><option value="0">关（0 秒）</option><option value="5">5 秒</option><option value="10" selected>10 秒（默认）</option><option value="15">15 秒</option><option value="20">20 秒</option></select>
+    </div>
+    <div class="row" id="gapRow" style="display:none"><label>④结算逐人间隔</label>
+      <select id="gapSel"><option value="1000">1 秒</option><option value="2000" selected>2 秒</option><option value="3000">3 秒</option></select>
+    </div>
+    <div class="btns">
+      <button class="primary" id="newBtn">🔄 新一局（应用设置）</button>
+      <button id="scFast">场景：全员秒完</button>
+      <button id="scAfk">场景：有人挂机</button>
+      <button id="scBounce">场景：终点反弹</button>
+    </div>
+    <div class="hint" id="scHint"></div>
+    <div class="hint">「回合间休息」：①④=每个世界回合结束后，②③=每整轮（4 人各一次）结束后。0 秒=关。</div>
+    <div class="hint">注：切后台/锁屏后本页计时会被浏览器暂停——stub 不模拟服务端时钟（那是一票研究的结论：真实现用服务端权威 + 快照恢复），请亮屏玩。</div>
+  </details>
+</div>
+
+<!-- 打卡确认 -->
+<div class="modal" id="itemModal"><div class="mbox">
+  <div class="t" id="imT"></div><div class="d" id="imD"></div>
+  <div class="btns"><button class="no" id="imNo">取消</button><button class="ok" id="imOk">打出</button></div>
+</div></div>
+
+<!-- 结算 -->
+<div class="modal" id="overModal"><div class="mbox">
+  <div class="t" id="ovT">🏁 本局结束</div>
+  <div class="d" id="ovR"></div>
+  <ol id="ovList"></ol>
+  <div class="btns" style="margin-top:13px"><button class="ok" id="ovAgain">再来一局</button></div>
+</div></div>
+
+<!-- 导出 -->
+<div class="modal" id="expModal"><div class="mbox">
+  <div class="t">📋 体感记录已生成</div>
+  <div class="d">已尝试复制到剪贴板；失败的话手动全选复制，贴到 issue #7。</div>
+  <textarea id="expTxt" readonly></textarea>
+  <div class="btns" style="margin-top:10px"><button class="ok" id="expClose">关闭</button></div>
+</div></div>
+
+<script>
+'use strict';
+// ==================== MODULE BEGIN（WorldTurnGame：无 DOM，可整体搬进真实现） ====================
+const MAIN = 52, BRANCH = 4, CAP = 30;
+const SPAWNS = [0, 13, 26, 39];
+const STEP_MS = 115;   // 即时/轮班模式：棋子逐格步进间隔
+const AUTO_GAP = 260;  // 世界·即时模式：超时替掷的错峰间隔
+const BOT_FAST = [250, 450], BOT_NORMAL = [600, 1100]; // 轮班模式机器人「思考」时间
+// 格子类型：E=事件 I=道具 T=陷阱 B=空格。52 格 = 事件21 / 道具10 / 陷阱8 / 空格13，出生格(0/13/26/39)为空格
+const BASE13 = ['B','E','I','E','B','T','E','I','E','B','T','E','B'];
+const TYPES = (() => {
+  const t = Array.from({length: MAIN}, (_, i) => BASE13[i % 13]);
+  t[4]='I'; t[17]='I'; t[30]='I'; t[43]='E'; t[46]='B'; // 微调到精确配比
+  return t;
+})();
+
+const EVENTS = [
+  { t:'新年红包',   d:'抽到的人得 1 张道具卡' },
+  { t:'一路顺风',   d:'抽到的人前进 2 格' },
+  { t:'顶头逆风',   d:'抽到的人退 2 格' },
+  { t:'全员拜年',   d:'所有人前进 1 格' },
+  { t:'全员大扫除', d:'所有人退 1 格' },
+  { t:'手滑了',     d:'随机弃掉 1 张道具卡，没有就没发生' },
+  { t:'换座位',     d:'与随机一名对手交换位置（须都在主干）' },
+];
+const TRAPS = [
+  { t:'脚下打滑', d:'退 3 格' },
+  { t:'被罚站',   d:'下一回合罚停，不能掷骰' },
+  { t:'迷路了',   d:'退 5 格' },
+];
+const ITEMS = [
+  { k:'banana', t:'🍌 香蕉皮', d:'打出后：当前第一名退 3 格' },
+  { k:'wind',   t:'🌬️ 顺风波', d:'本次掷骰走完后额外 +2 格' },
+  { k:'double', t:'🎲 加倍骰', d:'本次掷骰点数 ×2' },
+  { k:'charm',  t:'🧿 护身符', d:'免疫本次落格的陷阱' },
+];
+
+function rint(n){ return Math.floor(Math.random() * n); }
+function pick(a){ return a[rint(a.length)]; }
+
+// mode：
+//   'immediate'    世界回合·即时：共用倒计时窗，谁掷完棋子立刻逐格走；全走完提前开下一窗，超时错峰替掷
+//   'resolve'      世界回合·结算（第 1 版对照）：共用倒计时窗，掷完先记下，全员交卷后一起逐个结算
+//   'hotseat'      轮班·限时：按座次轮流，每人独立倒计时
+//   'hotseat-free' 轮班·不限时：按座次轮流，无时限
+// restMs：回合间休息（0=关）——世界模式每个回合后 / 轮班每整轮后插入，给玩家消化上一回合
+class WorldTurnGame {
+  constructor(opts = {}){
+    this.mode = opts.mode || 'immediate';
+    this.turnMs = opts.turnMs ?? 30000;   // 世界回合窗长 / 轮班每人时限（调参旋钮）
+    this.restMs = opts.restMs ?? 10000;   // 回合间休息（0=关）：世界模式每个回合后 / 轮班每整轮后，给玩家消化时间
+    this.gapMs = opts.gapMs ?? 2000;      // （仅④）结算时逐人之间的停顿
+    this.botMode = opts.botMode || 'normal'; // normal | fast | afk（场景用）
+    this.players = [];
+    this.turnNo = 0;
+    this.phase = 'idle';     // idle | acting | resolving | rest | over
+    this.cur = 0;            // 轮班模式：当前行动玩家
+    this.logLines = [];
+    this.stats = { turns: [], decision: [] };
+    this._timers = [];       // {at, fn(ev, now)} 定时回调（行走段/自动掷骰/换人都在这上面排程）
+  }
+
+  at(at, fn){ this._timers.push({ at, fn }); }
+  log(s){ this.logLines.push(s); if (this.logLines.length > 200) this.logLines.shift(); }
+
+  newGame(now){
+    const defs = [
+      { id:0, name:'你',   bot:false, color:'#e53935', spawn:SPAWNS[0] },
+      { id:1, name:'小黄', bot:true,  color:'#f9a825', spawn:SPAWNS[1] },
+      { id:2, name:'小绿', bot:true,  color:'#43a047', spawn:SPAWNS[2] },
+      { id:3, name:'小蓝', bot:true,  color:'#1e88e5', spawn:SPAWNS[3] },
+    ];
+    this.players = defs.map(d => ({ ...d, pos:d.spawn, mainLeft:MAIN, bpos:0, zone:'main',
+      hand:[], pending:null, done:false, die:null, stun:0, actAt:null, itemAt:null, net:0, _walk:null }));
+    this.turnNo = 0; this.phase = 'idle'; this.cur = 0;
+    this.logLines = []; this.stats = { turns: [], decision: [] };
+    this._timers = []; this._busyUntil = 0; this.restUntil = 0;
+    this.log('开局！出生格均分在环上，先绕主干一圈，再进自己的终点支路。');
+    if (this.mode === 'hotseat' || this.mode === 'hotseat-free') this.beginHotseatRound(now, []);
+    else this.newTurn(now);
+  }
+
+  isHotseat(){ return this.mode === 'hotseat' || this.mode === 'hotseat-free'; }
+
+  // ---------- 世界回合模式（immediate / resolve） ----------
+  newTurn(now){
+    this.turnNo++;
+    this.phase = 'acting';
+    this.turnStart = now;
+    this.turnEnds = now + this.turnMs;
+    this._finishers = [];
+    this._allDoneAt = null;       // 全员完成的时刻（关窗要等所有排程行走落地，动态判断）
+    this._autosScheduled = false;
+    this.log(`—— 世界回合 ${this.turnNo} ——`);
+    for (const p of this.players){
+      p.done = false; p.die = null; p.pending = null; p.actAt = null; p.itemAt = null; p._charmed = false;
+      // 注意：不清 _walk —— 上一窗的行走动画让它自己走完，位置是真状态
+      if (p.stun > 0){ p.stun--; p.done = true; this.log(`💤 ${p.name} 罚停中，本回合跳过`); }
+    }
+    for (const p of this.players){
+      if (!p.bot || p.done) continue;
+      if (this.botMode === 'afk' && p.id === 3){ p.actAt = Infinity; continue; }
+      const base = this.botMode === 'fast' ? 400 : 1200;
+      const span = this.botMode === 'fast' ? 900 : Math.max(800, this.turnMs * 0.72 - base);
+      p.actAt = now + base + rint(span);
+      if (p.hand.length && Math.random() < 0.45)
+        p.itemAt = now + 600 + rint(Math.max(300, (p.actAt - now) * 0.5));
+    }
+    this.checkAllDone(now);
+  }
+
+  checkAllDone(now){
+    if (this.mode !== 'immediate' || this.phase !== 'acting') return;
+    if (this.players.every(p => p.done) && this._allDoneAt == null) this._allDoneAt = now;
+  }
+
+  closeWindow(ev, now){
+    this.stats.turns.push({ no:this.turnNo, ms:now - this.turnStart, early: this._allDoneAt != null && this._allDoneAt <= this.turnEnds });
+    if (this._finishers.length){ this.gameOver(ev, 'finish'); return; }
+    if (this.turnNo >= CAP){ this.gameOver(ev, 'cap'); return; }
+    if (this.restMs > 0){ this._enterRest(ev, now, 'newTurn', `世界回合 ${this.turnNo}`); return; }
+    this.newTurn(now);
+  }
+
+  // ---- 回合间休息：给玩家时间消化上一回合发生了什么（可跳过） ----
+  _enterRest(ev, now, next, label){
+    this.phase = 'rest';
+    this._restNext = next;
+    this.restUntil = now + this.restMs;
+    this.log(`⏸ ${label}结束，休息 ${Math.round(this.restMs / 1000)}s —— 消化一下刚才发生了什么`);
+    ev.push({ type:'rest', turnNo:this.turnNo, until:this.restUntil });
+  }
+  _resumeRest(now, ev){
+    if (this._restNext === 'hotseatTurn'){ this.log(`—— 第 ${this.turnNo} 轮 ——`); this.beginTurn(now, ev); }
+    else this.newTurn(now);
+  }
+  skipRest(now){
+    if (this.phase !== 'rest') return false;
+    this.restUntil = now;
+    return true;
+  }
+
+  // ---------- 轮班模式（hotseat / hotseat-free） ----------
+  beginHotseatRound(now, ev){
+    this.turnNo = 1; this.cur = 0;
+    this.log(`—— 第 1 轮 ——`);
+    this.beginTurn(now, ev);
+  }
+
+  beginTurn(now, ev){
+    this.phase = 'acting';
+    const p = this.players[this.cur];
+    p.done = false; p.die = null; p.pending = null; p.actAt = null; p.itemAt = null; p._charmed = false;
+    this.turnStart = now;
+    this.turnEnds = this.mode === 'hotseat' ? now + this.turnMs : Infinity;
+    if (p.stun > 0){
+      p.stun--; p.done = true;
+      this.log(`💤 ${p.name} 罚停中，跳过`);
+      this.at(now + 900, (ev2, n2) => this.endTurnHotseat(ev2, n2));
+      ev.push({ type:'turn', pid:p.id });
+      return;
+    }
+    if (p.bot){
+      const afk = this.botMode === 'afk' && this.mode === 'hotseat'; // 不限时模式没有「挂机」可演示
+      if (p.hand.length && !afk && Math.random() < 0.45)
+        this.at(now + 350, (ev2, n2) => {
+          if (this.phase === 'acting' && this.players[this.cur] === p && !p.done && !p.pending && p.hand.length)
+            this.doPlayItem(p, rint(p.hand.length));
+        });
+      if (!afk){
+        const [a, b] = this.botMode === 'fast' ? BOT_FAST : BOT_NORMAL;
+        const think = a + rint(b - a);
+        this.at(now + think, (ev2, n2) => {
+          if (this.phase === 'acting' && this.players[this.cur] === p && !p.done) this.doRoll(p, n2, false, ev2);
+        });
+      }
+    }
+    ev.push({ type:'turn', pid:p.id });
+  }
+
+  endTurnHotseat(ev, now){
+    if (this.phase !== 'acting') return;
+    this.stats.turns.push({ no:this.turnNo, ms:now - this.turnStart, pid:this.cur });
+    if (this.players.some(p => p.zone === 'done')){ this.gameOver(ev, 'finish'); return; }
+    this.cur++;
+    if (this.cur > 3){
+      this.cur = 0;
+      if (this.turnNo >= CAP){ this.gameOver(ev, 'cap'); return; }
+      this.turnNo++;
+      if (this.restMs > 0){ this._enterRest(ev, now, 'hotseatTurn', `第 ${this.turnNo - 1} 轮`); return; }
+      this.log(`—— 第 ${this.turnNo} 轮 ——`);
+    }
+    this.beginTurn(now, ev);
+  }
+
+  // ---- 玩家操作（页面/机器人调用） ----
+  humanRoll(now){
+    if (this.isHotseat() && this.cur !== 0) return null;
+    return this.doRoll(this.players[0], now, false, []);
+  }
+  humanPlayItem(handIdx){
+    const p = this.players[0];
+    if (this.phase !== 'acting' || p.done || !p.hand[handIdx]) return null;
+    if (this.isHotseat() && this.cur !== 0) return null;
+    return this.doPlayItem(p, handIdx);
+  }
+
+  doPlayItem(p, handIdx){
+    const card = p.hand.splice(handIdx, 1)[0];
+    p.pending = card;
+    this.log(`🃏 ${p.name} 打出 ${card.t}（${card.d}）`);
+    return card;
+  }
+
+  doRoll(p, now, auto, ev){
+    if (this.phase !== 'acting' || p.done) return null;
+    p.die = 1 + rint(6);
+    p.done = true;
+    if (auto) this.log(`⏰ 超时，系统替 ${p.name} 自动掷骰（道具卡不打）`);
+    if (!p.bot) this.stats.decision.push(now - this.turnStart);
+    if (this.mode === 'resolve') return p.die; // 旧版：只记账，等全员交卷一起结算
+
+    // 即时 / 轮班：这张骰立刻生效，棋子马上走
+    const pend = p.pending;
+    if (pend && pend.k === 'charm') p._charmed = true;
+    if (pend && pend.k === 'banana'){
+      const first = this.firstPlace(p);
+      if (first){
+        this.startBackwardWalk(first, 3, now);
+        this.log(`🍌 ${p.name} 把香蕉皮塞给了第一名 ${first.name}，退 3 格`);
+      } else this.log(`🍌 ${p.name} 的香蕉皮没人可害`);
+    }
+    let die = p.die;
+    if (pend && pend.k === 'double'){ die *= 2; this.log(`🎲 加倍骰！${p.name} 点数翻倍 → ${die}`); }
+    p.pending = null;
+    const followUps = [];
+    if (pend && pend.k === 'wind'){
+      followUps.push({ n:2, depth:1, land:true });
+      this.log(`🌬️ ${p.name} 挂上顺风波，走完再加 2 格`);
+    }
+    ev.push({ type:'roll', pid:p.id, die });
+    this.log(`🎲 ${p.name} 掷出 ${p.die} 点`);
+    this.startWalk(p, die, 0, followUps, now);
+    if (this.isHotseat()) p._walk.after = (ev2, n2) => this.endTurnHotseat(ev2, n2);
+    this.checkAllDone(now);
+    return p.die;
+  }
+
+  // ---- 行走引擎（即时/轮班模式）：棋子一格一格走，走完才落格判效果 ----
+  startWalk(p, steps, depth, followUps, now){
+    if (p.zone === 'done' || steps <= 0) return;
+    p._walk = { remaining:steps, depth, land:true, dir:1, followUps:followUps || [], nextAt: now + 160, bounced:false, after:null };
+    this._busyUntil = Math.max(this._busyUntil || 0, now + 160 + steps * STEP_MS + 250);
+  }
+  startBackwardWalk(p, steps, now){
+    if (p.zone === 'done' || steps <= 0) return;
+    if (p._walk){ p._walk.followUps.push({ n:-steps, depth:99, land:false }); return; }
+    p._walk = { remaining:steps, depth:99, land:false, dir:-1, followUps:[], nextAt: now + 160, bounced:false, after:null };
+  }
+  // 事件/陷阱产生的追加移动：正在走就排队，闲着就直接开走
+  queueWalk(p, n, depth, land, now){
+    if (p.zone === 'done' || !n) return;
+    if (p._chainQ) p._chainQ.push({ n, depth, land });
+    else if (p._walk) p._walk.followUps.push({ n, depth, land });
+    else this.startSeg(p, { n, depth, land }, [], now);
+  }
+  startSeg(p, f, rest, now, after){
+    if (f.n > 0) p._walk = { remaining:f.n, depth:f.depth, land:!!f.land, dir:1, followUps:rest || [], nextAt: now + 140, bounced:false, after:after || null };
+    else p._walk = { remaining:-f.n, depth:99, land:false, dir:-1, followUps:rest || [], nextAt: now + 140, bounced:false, after:after || null };
+    this._busyUntil = Math.max(this._busyUntil || 0, now + 140 + Math.abs(f.n) * STEP_MS + 250);
+  }
+
+  stepOne(p, ev, now){
+    const w = p._walk;
+    if (p.zone === 'done'){ p._walk = null; return; }
+    if (w.dir === 1){
+      if (p.zone === 'main'){
+        if (p.mainLeft > 0){
+          p.pos = (p.pos + 1) % MAIN; p.mainLeft--; p.net++;
+        } else { // 已站在出生格，这一步进终点支路
+          p.zone = 'branch'; p.bpos = 1; p.net++;
+          this.log(`🚪 ${p.name} 绕完一圈，进入自己的终点支路！`);
+        }
+      } else { // 支路
+        p.bpos++; p.net++;
+        if (p.bpos >= BRANCH){
+          if (w.remaining > 1){ w.dir = -1; w.bounced = true; } // 踩到旗但还有剩步 → 反弹折返
+          else { this.finish(p, ev); p._walk = null;
+                 if (this.mode !== 'resolve') this.at(now + 600, (ev2) => { if (this.phase !== 'over') this.gameOver(ev2, 'finish'); });
+                 return; }
+        }
+      }
+    } else { // 反向（陷阱/事件后退）：主干绕圈回退；支路退到支路口为止
+      if (p.zone === 'main'){ p.pos = ((p.pos - 1) % MAIN + MAIN) % MAIN; p.net--; }
+      else if (p.bpos > 0){ p.bpos--; p.net--; }
+      w.remaining--;
+      if (w.remaining > 0 && !(p.zone === 'branch' && p.bpos === 0)) w.nextAt = now + STEP_MS;
+      else this._afterWalk(p, ev, now);
+      return;
+    }
+    w.remaining--;
+    if (w.remaining > 0) w.nextAt = now + STEP_MS;
+    else this._afterWalk(p, ev, now);
+  }
+
+  _afterWalk(p, ev, now){
+    const w = p._walk; p._walk = null;
+    if (w.bounced) this.log(`↩️ ${p.name} 超出步数，门口反弹，退到支路第 ${p.bpos} 格`);
+    p._chainQ = [];
+    if (w.land && w.dir === 1 && p.zone === 'main') this.landing(p, ev, w.depth, now); // 落格效果可能再排移动（事件连锁）
+    const segs = p._chainQ.concat(w.followUps);
+    p._chainQ = null;
+    if (p.zone !== 'done' && segs.length){
+      this.startSeg(p, segs.shift(), segs, now, w.after);
+      return;
+    }
+    if (w.after) this.at(now + 150, (ev2, n2) => w.after(ev2, n2));
+  }
+
+  firstPlace(except){
+    let best = null;
+    for (const p of this.players){
+      if (p === except || p.zone === 'done') continue;
+      if (!best || p.net > best.net) best = p;
+    }
+    return best;
+  }
+
+  finish(p, ev){
+    p.zone = 'done'; p.finishTurn = this.turnNo;
+    this._finishers = this._finishers || [];
+    this._finishers.push(p);
+    this.log(`🏁 ${p.name} 踩进终点！`);
+    ev.push({ type:'finish', pid:p.id });
+  }
+
+  // 落格触发（仅主干）：事件/道具/陷阱/空格
+  landing(p, ev, depth, now){
+    if (p.zone !== 'main') return;
+    const t = TYPES[p.pos];
+    if (t === 'B') return;
+    if (t === 'I'){
+      const card = pick(ITEMS);
+      p.hand.push(card);
+      this.log(`🟦 ${p.name} 踩到道具格，得 ${card.t}`);
+      ev.push({ type:'news', kind:'item', pid:p.id, title:card.t, detail:card.d });
+      return;
+    }
+    if (t === 'E'){
+      if (depth >= 2) return; // 连锁上限，防事件套事件跑飞
+      const card = pick(EVENTS);
+      this.log(`🟧 ${p.name} 抽到事件卡「${card.t}」`);
+      ev.push({ type:'news', kind:'event', pid:p.id, title:card.t, detail:card.d });
+      this.applyEvent(p, card, ev, depth, now);
+      return;
+    }
+    if (t === 'T'){
+      const hasCharm = p._charmed;
+      p._charmed = false;
+      if (hasCharm){ this.log(`🧿 护身符挡下了 ${p.name} 的陷阱！`); return; }
+      const trap = pick(TRAPS);
+      this.log(`🟪 ${p.name} 中陷阱「${trap.t}」`);
+      ev.push({ type:'news', kind:'trap', pid:p.id, title:trap.t, detail:trap.d });
+      if (trap.t === '被罚站') p.stun += 1;
+      else if (this.mode === 'resolve') this.relocate(p, trap.t === '迷路了' ? -5 : -3);
+      else this.queueWalk(p, trap.t === '迷路了' ? -5 : -3, 99, false, now);
+    }
+  }
+
+  applyEvent(p, card, ev, depth, now){
+    switch (card.t){
+      case '新年红包': { const c = pick(ITEMS); p.hand.push(c); this.log(`　└ 红包开出 ${c.t}`); break; }
+      case '一路顺风':
+        if (this.mode === 'resolve') this.advance(p, 2, ev, depth + 1);
+        else this.queueWalk(p, 2, depth + 1, true, now);
+        break;
+      case '顶头逆风':
+        if (this.mode === 'resolve') this.relocate(p, -2);
+        else this.queueWalk(p, -2, 99, false, now);
+        break;
+      case '全员拜年':
+        for (const o of this.players) if (o !== p){
+          if (this.mode === 'resolve') this.advance(o, 1, ev, depth + 1);
+          else this.queueWalk(o, 1, depth + 1, true, now);
+        }
+        break;
+      case '全员大扫除':
+        for (const o of this.players) if (o !== p){
+          if (this.mode === 'resolve') this.relocate(o, -1);
+          else this.queueWalk(o, -1, 99, false, now);
+        }
+        break;
+      case '手滑了': if (p.hand.length) { const c = p.hand.splice(rint(p.hand.length), 1)[0]; this.log(`　└ 手滑弃掉了 ${c.t}`); } break;
+      case '换座位': {
+        const others = this.players.filter(o => o !== p && o.zone === 'main');
+        if (others.length){
+          const o = pick(others);
+          const tmp = p.pos; p.pos = o.pos; o.pos = tmp;
+          this.log(`　└ ${p.name} 和 ${o.name} 换了座位`);
+        } else this.log('　└ 周围没人，换座位没生效');
+        break;
+      }
+    }
+  }
+
+  // 后退（旧版结算模式专用）：主干绕圈回退；支路只退到支路口（stub 简化），不触发落格
+  relocate(p, steps){
+    if (p.zone === 'done' || steps >= 0) return;
+    const n = -steps;
+    p.net -= n;
+    if (p.zone === 'main') p.pos = ((p.pos - n) % MAIN + MAIN) % MAIN;
+    else p.bpos = Math.max(0, p.bpos - n);
+  }
+
+  // 旧版结算模式：一次前进 steps 格（主干 → 支路 → 反弹 → 终点），落格只在主干触发
+  advance(p, steps, ev, depth){
+    if (p.zone === 'done' || steps <= 0) return;
+    if (p.zone === 'main'){
+      const adv = Math.min(steps, p.mainLeft);
+      p.pos = (p.pos + adv) % MAIN;
+      p.mainLeft -= adv; p.net += adv;
+      const rem = steps - adv;
+      if (rem > 0){
+        p.zone = 'branch'; p.bpos = 0;
+        this.log(`🚪 ${p.name} 绕完一圈，进入自己的终点支路！`);
+        this.advanceBranch(p, rem, ev);
+      } else {
+        this.landing(p, ev, depth);
+      }
+    } else {
+      this.advanceBranch(p, steps, ev);
+    }
+  }
+
+  advanceBranch(p, steps, ev){
+    p.bpos += steps; p.net += steps;
+    if (p.bpos === BRANCH){ this.finish(p, ev); return; }
+    if (p.bpos > BRANCH){
+      const over = p.bpos - BRANCH;
+      p.bpos = Math.max(0, BRANCH * 2 - p.bpos); // 反弹折返，超出几格退几格
+      this.log(`↩️ ${p.name} 超出 ${over} 步，门口反弹，退到支路第 ${p.bpos} 格`);
+      return;
+    }
+    this.log(`🧗 ${p.name} 在终点支路第 ${p.bpos}/${BRANCH} 格，还差 ${BRANCH - p.bpos} 步`);
+  }
+
+  // ---- 时钟驱动：页面每 ~100ms 调一次，now 单调递增（真实现换成服务端时钟） ----
+  tick(now){
+    const ev = [];
+    if (this._timers.length){
+      const due = this._timers.filter(t => now >= t.at).sort((a, b) => a.at - b.at);
+      if (due.length) this._timers = this._timers.filter(t => now < t.at);
+      for (const t of due) t.fn(ev, now);
+    }
+    for (const p of this.players){
+      if (p._walk && now >= p._walk.nextAt) this.stepOne(p, ev, now);
+    }
+    if (this.phase === 'acting' && !this.isHotseat()){
+      for (const p of this.players){
+        if (!p.bot || p.done) continue;
+        if (p.itemAt != null && now >= p.itemAt && now < p.actAt && !p.pending && p.hand.length){
+          this.doPlayItem(p, rint(p.hand.length)); p.itemAt = null;
+        }
+        if (p.actAt != null && now >= p.actAt) this.doRoll(p, now, false, ev);
+      }
+      if (this.mode === 'resolve'){
+        if (this.phase === 'acting' && this.players.every(p => p.done)) this.beginResolve(now + 400, 'early');
+        else if (this.phase === 'acting' && now >= this.turnEnds){
+          for (const p of this.players) if (!p.done) this.doRoll(p, now, true, ev);
+          this.beginResolve(now + 400, 'timeout');
+        }
+      } else { // immediate：关窗条件动态判断——全员完成且所有排程行走（含事件连锁/回退段）都落地
+        if (this.phase === 'acting' && this.players.every(p => p.done)
+          && this._allDoneAt != null && now >= this._allDoneAt + 600
+          && now >= (this._busyUntil || 0) + 250) this.closeWindow(ev, now);
+        else if (this.phase === 'acting' && !this._autosScheduled && now >= this.turnEnds){
+          this._autosScheduled = true;
+          this.players.filter(p => !p.done).forEach((p, i) =>
+            this.at(now + i * AUTO_GAP, (ev2, n2) => { if (this.phase === 'acting' && !p.done) this.doRoll(p, n2, true, ev2); }));
+        }
+      }
+    }
+    if (this.phase === 'acting' && this.mode === 'hotseat' && now >= this.turnEnds){
+      const p = this.players[this.cur];
+      if (!p.done) this.doRoll(p, now, true, ev);
+    }
+    if (this.phase === 'rest' && now >= this.restUntil) this._resumeRest(now, ev);
+    if (this.mode === 'resolve' && this.phase === 'resolving'){
+      while (this.phase === 'resolving' && this._ri < 4 && now >= this._nextAt){
+        const p = this.players[this._ri++];
+        const gap = this.stepPlayer(p, ev);
+        this._nextAt += gap;
+      }
+      if (this.phase === 'resolving' && this._ri >= 4 && now >= this._nextAt) this.endTurn(ev, now);
+    }
+    return ev;
+  }
+
+  beginResolve(at, why){
+    this.phase = 'resolving';
+    this.stats.turns.push({ no:this.turnNo, ms:at - this.turnStart, early: why === 'early' });
+    this.log(why === 'early' ? '⚡ 全员完成，提前结算！' : '⏰ 时间到，强制结算');
+    this._ri = 0; this._nextAt = at;
+  }
+
+  // 旧版结算：结算一个玩家。返回到下一位的间隔（事件卡会拖长节奏，这是要体感的点）
+  stepPlayer(p, ev){
+    if (p.finishTurn != null || this.phase !== 'resolving') return 500;
+    this._lastLanded = false;
+    let die = p.die;
+    const pend = p.pending;
+    if (pend && pend.k === 'charm') p._charmed = true;
+    if (pend && pend.k === 'banana'){
+      const first = this.firstPlace(p);
+      if (first){
+        this.relocate(first, -3);
+        this.log(`🍌 ${p.name} 把香蕉皮塞给了第一名 ${first.name}，退 3 格`);
+      } else this.log(`🍌 ${p.name} 的香蕉皮没人可害`);
+    }
+    if (pend && pend.k === 'double' && die != null){
+      die *= 2;
+      this.log(`🎲 加倍骰！${p.name} 点数翻倍 → ${die}`);
+    }
+    p.pending = null;
+    let gap = 800;
+    if (die != null){
+      ev.push({ type:'roll', pid:p.id, die });
+      this.log(`🎲 ${p.name} 掷出 ${die} 点`);
+      this.advance(p, die, ev, 0);
+      if (pend && pend.k === 'wind' && p.finishTurn == null){
+        this.log(`🌬️ 顺风波推了 ${p.name} 一把，额外 +2`);
+        this.advance(p, 2, ev, 1);
+      }
+      gap = Math.max(gap, this._lastLanded ? this.gapMs + 300 : 800);
+      this._lastLanded = false;
+    }
+    return gap;
+  }
+
+  endTurn(ev, now){
+    if (this._finishers.length){ this.gameOver(ev, 'finish'); return; }
+    if (this.turnNo >= CAP){ this.gameOver(ev, 'cap'); return; }
+    if (this.restMs > 0){ this._enterRest(ev, now, 'newTurn', `世界回合 ${this.turnNo}`); return; }
+    this.newTurn(now);
+  }
+
+  gameOver(ev, reason){
+    this.phase = 'over';
+    const rank = [...this.players].sort((a, b) => (b.finishTurn != null) - (a.finishTurn != null) || b.net - a.net);
+    this.log(reason === 'finish' ? '🏁 有人到终点，全局立即结束！' : `⌛ 回合帽 ${CAP} 到，强制结算排名`);
+    ev.push({ type:'over', reason, rank: rank.map(p => ({ name:p.name, color:p.color, net:p.net, finished:p.finishTurn != null })) });
+  }
+
+  snapshot(){
+    return {
+      mode: this.mode, cur: this.cur,
+      turnNo: this.turnNo, cap: CAP, phase: this.phase,
+      restUntil: this.phase === 'rest' ? this.restUntil : null,
+      turnStart: this.turnStart, turnEnds: this.turnEnds, turnMs: this.turnMs,
+      players: this.players.map(p => ({ id:p.id, name:p.name, bot:p.bot, color:p.color,
+        zone:p.zone, pos:p.pos, bpos:p.bpos, mainLeft:p.mainLeft, net:p.net,
+        done:p.done, die:p.die, stun:p.stun, pending:p.pending, hand:p.hand.map(c => ({...c})) })),
+      log: this.logLines.slice(-40),
+      stats: { turns: this.stats.turns.slice(), decision: this.stats.decision.slice() },
+    };
+  }
+}
+// ==================== MODULE END ====================
+
+// ==================== 页面壳（随手扔的部分） ====================
+const MODES = {
+  'immediate':    { label:'① 世界·即时',   desc:'共用一个倒计时窗，全员同时行动；谁掷完，棋子立刻就走（文明 6 式即时反馈）。全员走完提前开下一窗，超时的由系统错峰替掷。每个回合结束后休息一会儿（可在⚙️调）。' },
+  'hotseat':      { label:'② 轮班·限时',   desc:'按座次轮流行动：轮到谁，谁的倒计时开始走；做完立刻换下一位，超时自动掷骰。每整轮（4 人各一次）结束后休息一会儿（可在⚙️调）。' },
+  'hotseat-free': { label:'③ 轮班·不限时', desc:'按座次轮流行动，没有任何时限——最从容，也最容易有人卡住整桌。（上轮反馈偏弱，留作对照）' },
+  'resolve':      { label:'④ 世界·结算旧', desc:'第 1 版对照：共用倒计时，掷完先记下，等全员交卷后一起逐个结算。' },
+};
+let mode = 'immediate';
+let restSkips = 0;
+let game = null;
+let snap = null;
+const $ = id => document.getElementById(id);
+const isHotseatMode = m => m === 'hotseat' || m === 'hotseat-free';
+
+// ---- 棋盘静态层 ----
+const NS = 'http://www.w3.org/2000/svg';
+const CX = 190, CY = 190, R_RING = 128, R_ARC = 150, R_BR = 156, R_FIN = 180;
+const CELL_TYPE_FILL = { E:'#ffe0b2', I:'#bbdefb', T:'#e1bee7', B:'#f5f5f5' };
+const P_COLORS = ['#e53935', '#f9a825', '#43a047', '#1e88e5'];
+function angDeg(i){ return i * 360 / MAIN - 90; }
+function pt(r, deg){ const a = deg * Math.PI / 180; return [CX + r * Math.cos(a), CY + r * Math.sin(a)]; }
+function el(tag, attrs){ const e = document.createElementNS(NS, tag); for (const k in attrs) e.setAttribute(k, attrs[k]); return e; }
+
+function buildBoard(){
+  const svg = $('board');
+  svg.innerHTML = '';
+  // 4 色分区弧（每区 13 格）
+  for (let q = 0; q < 4; q++){
+    const a0 = q * 13 * 360 / MAIN - 90, a1 = (q * 13 + 12) * 360 / MAIN - 90;
+    const [x0, y0] = pt(R_ARC, a0), [x1, y1] = pt(R_ARC, a1);
+    svg.appendChild(el('path', { d:`M ${x0} ${y0} A ${R_ARC} ${R_ARC} 0 0 1 ${x1} ${y1}`,
+      fill:'none', stroke:P_COLORS[q], 'stroke-width':7, opacity:.28 }));
+  }
+  // 52 主干格
+  for (let i = 0; i < MAIN; i++){
+    const [x, y] = pt(R_RING, angDeg(i));
+    svg.appendChild(el('circle', { cx:x, cy:y, r:10.5, fill:CELL_TYPE_FILL[TYPES[i]], stroke:'#b0bec5', 'stroke-width':.8 }));
+    const qi = SPAWNS.indexOf(i);
+    if (qi >= 0) svg.appendChild(el('circle', { cx:x, cy:y, r:10.5, fill:'none', stroke:P_COLORS[qi], 'stroke-width':2.6 }));
+  }
+  // 4 条终点支路（出生格向外的小弧）+ 终点旗
+  for (let q = 0; q < 4; q++){
+    const a = angDeg(q * 13);
+    for (let j = 0; j < BRANCH; j++){
+      const [x, y] = pt(R_BR, a + (j - 1.5) * 10);
+      svg.appendChild(el('circle', { cx:x, cy:y, r:8.5, fill:'#fff', stroke:P_COLORS[q], 'stroke-width':1.6, 'stroke-dasharray':'2.5 2' }));
+    }
+    const [fx, fy] = pt(R_FIN, a);
+    const t = el('text', { x:fx, y:fy + 6, 'text-anchor':'middle', 'font-size':17 });
+    t.textContent = '🏁';
+    svg.appendChild(t);
+  }
+  svg.appendChild(el('g', { id:'tokens' }));
+}
+function tokenPt(p){
+  const off = [0, 6, -6, 11][p.id];
+  if (p.zone === 'main'){ const [x, y] = pt(R_RING + off, angDeg(p.pos)); return [x, y]; }
+  if (p.zone === 'branch'){
+    const a = angDeg(SPAWNS[p.id]) + (p.bpos - 1.5) * 10;
+    const [x, y] = pt(R_BR + off * .6, a); return [x, y];
+  }
+  const a = angDeg(SPAWNS[p.id]);
+  const [x, y] = pt(R_FIN, a); return [x, y];
+}
+let tokenEls = [];
+function rebuildTokens(){
+  const g = $('board').querySelector('#tokens');
+  g.innerHTML = '';
+  tokenEls = snap.players.map(p => {
+    const tg = el('g', { style:'transition:transform .13s linear' });
+    if (p.id === 0) tg.appendChild(el('circle', { cx:0, cy:0, r:11.5, fill:'none', stroke:'#263238', 'stroke-width':1.6, 'stroke-dasharray':'3 2.5' }));
+    tg.appendChild(el('circle', { cx:0, cy:0, r:8.5, fill:p.color, stroke:'#fff', 'stroke-width':2 }));
+    const lb = el('text', { x:0, y:3.2, 'text-anchor':'middle', class:'tokenLbl' });
+    lb.textContent = p.id === 0 ? '你' : p.name[1];
+    tg.appendChild(lb);
+    g.appendChild(tg);
+    return tg;
+  });
+}
+function renderTokens(){
+  snap.players.forEach((p, i) => {
+    const [x, y] = tokenPt(p);
+    tokenEls[i].setAttribute('transform', `translate(${x},${y})`);
+  });
+}
+
+// ---- HUD / 手牌 / 日志 ----
+function posText(p){
+  if (p.zone === 'done') return '🏁终点';
+  if (p.zone === 'branch') return `支路${p.bpos}/4`;
+  if (p.mainLeft === 0) return '🚪支路口';
+  return `进支路还差${p.mainLeft}步`;
+}
+function statusText(p){
+  const m = snap.mode;
+  if (snap.phase === 'rest') return p.die != null ? `🎲${p.die}` : '⏸';
+  if (m === 'resolve'){
+    if (snap.phase === 'acting'){
+      if (p.done) return p.stun > 0 && p.die == null ? '💤罚停' : (p.die != null ? `✅掷了${p.die}` : '✅');
+      return '⏳行动中';
+    }
+    if (snap.phase === 'resolving') return p.die != null ? `🎲${p.die}` : '';
+    return '';
+  }
+  if (m === 'immediate'){
+    if (p.done) return p.die != null ? `✅掷了${p.die}` : '💤罚停';
+    return '⏳行动中';
+  }
+  // 轮班
+  if (snap.cur === p.id) return p.done ? (p.die != null ? `🎲${p.die}` : '…') : '▶ 行动中';
+  return p.stun > 0 ? '💤罚停' : '等待';
+}
+function phaseText(){
+  if (snap.phase === 'over') return '已结束';
+  if (snap.phase === 'rest') return '⏸ 休息中 · 消化一下';
+  if (snap.mode === 'immediate') return '全员行动中';
+  if (snap.mode === 'resolve') return snap.phase === 'resolving' ? '结算中…' : '全员行动中';
+  return `轮到 ${snap.players[snap.cur].name}`;
+}
+function canHumanAct(){
+  if (!snap || snap.phase !== 'acting') return false;
+  const me = snap.players[0];
+  if (isHotseatMode(snap.mode)) return snap.cur === 0 && !me.done;
+  return !me.done;
+}
+function render(){
+  const hotseat = isHotseatMode(snap.mode);
+  $('turnNo').textContent = hotseat ? `第 ${snap.turnNo} 轮/30` : `世界回合 ${snap.turnNo}/30`;
+  $('phaseTxt').textContent = phaseText();
+  $('chips').innerHTML = snap.players.map(p =>
+    `<span class="chip ${p.done ? 'done' : ''} ${hotseat && snap.cur === p.id ? 'cur' : ''}"><span class="dot" style="background:${p.color}"></span><b>${p.name}</b><span class="st">${posText(p)}${p.pending ? ' 🃏' : ''} ${statusText(p)}</span></span>`).join('');
+  const me = snap.players[0];
+  const canAct = canHumanAct();
+  $('rollBtn').disabled = !canAct;
+  let txt = '🎲 掷 骰';
+  if (snap.phase !== 'acting') txt = snap.phase === 'over' ? '🏁 本局结束' : snap.phase === 'rest' ? '⏸ 休息中…' : '🎲 等待结算…';
+  else if (hotseat && snap.cur !== 0) txt = `⏳ 等 ${snap.players[snap.cur].name} 行动…`;
+  else if (me.done) txt = me.die != null ? `已掷 ${me.die} 点 · ${snap.mode === 'immediate' ? '看大家走' : '等其他人'}` : '💤 罚停中';
+  $('rollBtn').textContent = txt;
+  $('rollBtn').classList.toggle('mine', hotseat && snap.phase === 'acting' && snap.cur === 0 && !me.done);
+  $('skipBtn').style.display = snap.phase === 'rest' ? '' : 'none';
+  $('diceNote').textContent =
+    hotseat ? (snap.cur !== 0 ? `轮到 ${snap.players[snap.cur].name}……` : (me.done ? '' : '轮到你了：可选打 1 张道具卡，然后掷骰'))
+    : snap.mode === 'immediate' ? (me.done && me.die != null ? '你掷出骰子，棋子立刻走起来了' : '')
+    : (me.done && me.die != null && snap.phase === 'acting' ? `你掷出 ${me.die} 点，等全员完成一起结算` : '');
+  $('hand').innerHTML = me.hand.length
+    ? me.hand.map((c, i) => `<div class="card" data-i="${i}"><div class="t">${c.t}</div><div class="d">${c.d}</div></div>`).join('')
+    : '<div class="card empty">手牌空空的，踩到 🟦 道具格得卡</div>';
+  $('log').innerHTML = snap.log.map(l => `<div class="ln">${l}</div>`).join('');
+  $('log').scrollTop = 99999;
+  renderTokens();
+}
+function renderCountdown(now){
+  const bar = $('cbar');
+  if (!snap || snap.phase === 'idle') return;
+  if (snap.phase === 'over'){
+    $('cfill').style.width = '100%'; $('ctext').textContent = '结束'; bar.className = 'cbar';
+    return;
+  }
+  if (snap.mode === 'resolve' && snap.phase === 'resolving'){
+    $('cfill').style.width = '100%'; $('ctext').textContent = '结算中…'; bar.className = 'cbar';
+    return;
+  }
+  if (snap.phase === 'rest'){
+    const left = Math.max(0, (snap.restUntil - now) / 1000);
+    $('cfill').style.width = '100%'; $('ctext').textContent = `⏸ 休息 ${left.toFixed(0)}s · 消化一下`; bar.className = 'cbar';
+    return;
+  }
+  if (snap.mode === 'hotseat-free'){
+    $('cfill').style.width = '100%';
+    $('ctext').textContent = `不限时 · 轮到 ${snap.players[snap.cur].name}`;
+    bar.className = 'cbar';
+    return;
+  }
+  const left = Math.max(0, snap.turnEnds - now), ratio = left / snap.turnMs;
+  $('cfill').style.width = (ratio * 100).toFixed(1) + '%';
+  $('ctext').textContent = (snap.mode === 'hotseat' ? `${snap.players[snap.cur].name} ` : '') + `${(left / 1000).toFixed(1)}s`;
+  bar.className = 'cbar' + (ratio < .2 ? ' danger' : ratio < .5 ? ' warn' : '');
+}
+
+// ---- 世界消息框：事件/陷阱/道具滚动更新，不弹窗、不打断操作 ----
+function pushFeed(html, cls){
+  const box = $('feed');
+  const d = document.createElement('div');
+  d.className = 'fe ' + cls + ' fresh';
+  d.innerHTML = html;
+  box.insertBefore(d, box.firstChild);
+  while (box.children.length > 30) box.removeChild(box.lastChild);
+}
+const KIND_LABEL = { event:'事件卡', trap:'陷阱', item:'道具' };
+function pushNews(e){
+  const name = game.players[e.pid].name;
+  pushFeed(`<span class="who">${name} · ${KIND_LABEL[e.kind] || ''}</span><div class="t">${e.title}</div><div class="d">${e.detail}</div>`, e.kind);
+}
+
+// ---- 打卡确认 ----
+let pendingCardIdx = -1;
+$('hand').addEventListener('click', e => {
+  const c = e.target.closest('.card[data-i]');
+  if (!c || !canHumanAct()) return;
+  pendingCardIdx = +c.dataset.i;
+  const card = snap.players[0].hand[pendingCardIdx];
+  $('imT').textContent = card.t; $('imD').textContent = card.d;
+  $('itemModal').classList.add('show');
+});
+$('imNo').onclick = () => { $('itemModal').classList.remove('show'); pendingCardIdx = -1; };
+$('imOk').onclick = () => {
+  $('itemModal').classList.remove('show');
+  if (pendingCardIdx >= 0) game.humanPlayItem(pendingCardIdx);
+  pendingCardIdx = -1;
+  refresh();
+};
+
+// ---- 结算弹层 ----
+function showOver(e){
+  $('ovR').textContent = e.reason === 'finish' ? '有人踩进终点，全局立即结束！' : `回合帽 ${snap.cap} 到，按进度结算`;
+  $('ovList').innerHTML = e.rank.map((p, i) =>
+    `<li><span style="color:${p.color};font-weight:700">${p.name}</span> — ${p.finished ? '🏁 踩进终点' : `进度 ${p.net} 步`}${i === 0 ? ' 🎉' : ''}</li>`).join('');
+  $('overModal').classList.add('show');
+}
+$('ovAgain').onclick = () => { $('overModal').classList.remove('show'); newRealGame(); };
+
+// ---- 导出体感记录 ----
+function exportRecord(){
+  if (!snap) return;
+  const ts = snap.stats.turns;
+  const dec = snap.stats.decision.map(ms => ms / 1000);
+  const avg = a => a.length ? (a.reduce((s, x) => s + x, 0) / a.length).toFixed(1) : '–';
+  const lines = [
+    '【回合结构手感 stub · 体感记录】（贴回 issue #7）',
+    `模式：${MODES[game.mode].label}`,
+    `设置：${(game.mode === 'immediate' || game.mode === 'resolve') ? '世界回合' : '每人行动'} ${game.turnMs / 1000}s ｜ 回合间休息 ${game.restMs / 1000}s（跳过 ${restSkips} 次）${game.mode === 'resolve' ? ` ｜ 结算逐人间隔 ${game.gapMs / 1000}s` : ''} ｜ 场景=${game.botMode}`,
+  ];
+  if (game.mode === 'immediate' || game.mode === 'resolve'){
+    const early = ts.filter(t => t.early).length;
+    lines.push(`样本：共 ${ts.length} 个世界回合`,
+      `提前推进 ${early} 次（${ts.length ? Math.round(early / ts.length * 100) : 0}%）｜ 超时强制 ${ts.length - early} 次`);
+  } else {
+    lines.push(`样本：共 ${snap.turnNo} 轮（每轮 4 人次）`);
+  }
+  lines.push(`你的决策用时：平均 ${avg(dec)}s${dec.length ? `（最快 ${Math.min(...dec).toFixed(1)}s / 最慢 ${Math.max(...dec).toFixed(1)}s）` : ''}`);
+  if (game.mode === 'immediate' || game.mode === 'resolve')
+    lines.push('逐回合：' + ts.map(t => `#${t.no} ${(t.ms / 1000).toFixed(1)}s${t.early ? '⚡' : '⏰'}`).join(' ｜ '));
+  const text = lines.join('\n');
+  $('expTxt').value = text;
+  $('expModal').classList.add('show');
+  if (navigator.clipboard) navigator.clipboard.writeText(text).catch(() => {});
+}
+$('exportBtn').onclick = exportRecord;
+$('expClose').onclick = () => $('expModal').classList.remove('show');
+
+// ---- 模式切换 / 开局 / 场景 / 调参 ----
+function newRealGame(){
+  const g = new WorldTurnGame({ mode, turnMs: +$('durSel').value * 1000, restMs: +$('restSel').value * 1000, gapMs: +$('gapSel').value });
+  g.botMode = 'normal';
+  game = g; restSkips = 0;
+  game.newGame(Date.now());
+  $('feed').innerHTML = '';
+  $('overModal').classList.remove('show');
+  window.scrollTo({ top: 0, behavior: 'smooth' });
+  refresh();
+}
+function runScenario(name){
+  const g = new WorldTurnGame({ mode, turnMs: +$('durSel').value * 1000, restMs: +$('restSel').value * 1000, gapMs: +$('gapSel').value });
+  g.botMode = name === 'fast' ? 'fast' : name === 'afk' ? 'afk' : 'normal';
+  game = g; restSkips = 0;
+  game.newGame(Date.now());
+  $('feed').innerHTML = '';
+  if (name === 'bounce'){
+    const ps = game.players;
+    Object.assign(ps[0], { zone:'branch', bpos:2, mainLeft:0, net:MAIN + 2 });
+    Object.assign(ps[1], { zone:'branch', bpos:3, mainLeft:0, net:MAIN + 3 });
+    ps[2].mainLeft = 18; ps[2].net = MAIN - 18;
+    ps[3].mainLeft = 8;  ps[3].net = MAIN - 8;
+    game.log('【场景】你在支路第 2 格（差 2 步），小黄在支路第 3 格（差 1 步）——掷骰体会「刚好踩进 vs 超出反弹」。');
+  }
+  if (name === 'afk') game.log(mode === 'hotseat' ? '【场景】机器人集体挂机（你也可以试试不动）——看每人的时限怎么兜底。' : '【场景】小蓝挂机不操作——看超时替掷怎么兜底。');
+  if (name === 'fast') game.log('【场景】全员秒完——看这个模式的节奏能压多快。');
+  $('overModal').classList.remove('show');
+  window.scrollTo({ top: 0, behavior: 'smooth' });
+  refresh();
+}
+function setMode(m){
+  mode = m;
+  document.querySelectorAll('#modes button').forEach(b => b.classList.toggle('on', b.dataset.m === m));
+  $('modeDesc').textContent = MODES[m].desc;
+  $('durLbl').textContent = m === 'immediate' || m === 'resolve' ? '世界回合时长' : '每人行动时限';
+  $('durSel').disabled = m === 'hotseat-free';
+  $('gapRow').style.display = m === 'resolve' ? '' : 'none';
+  $('scAfk').style.display = m === 'hotseat-free' ? 'none' : '';
+  $('scHint').textContent =
+    m === 'hotseat-free' ? '场景会重开一局：①全员秒完→机器人轮到就秒掷；③终点反弹→你第一个行动，差 2 步进终点。本模式没有时限，挂机场景不适用。'
+    : m === 'hotseat' ? '场景会重开一局：①全员秒完→机器人轮到就秒掷；②挂机→轮到的人不动，时限到自动掷骰；③终点反弹→你第一个行动，差 2 步进终点。'
+    : '场景会重开一局并摆好局面：①全员秒完→看「提前推进」有多快；②小蓝挂机→看超时替掷不拖局；③终点反弹→你差 2 步进终点，小黄差 1 步，体会「刚好踩进 vs 超出反弹」。';
+  newRealGame();
+}
+$('modes').addEventListener('click', e => {
+  const b = e.target.closest('button[data-m]');
+  if (b) setMode(b.dataset.m);
+});
+$('newBtn').onclick = newRealGame;
+$('scFast').onclick = () => runScenario('fast');
+$('scAfk').onclick = () => runScenario('afk');
+$('scBounce').onclick = () => runScenario('bounce');
+$('rollBtn').onclick = () => { if (canHumanAct()){ game.humanRoll(Date.now()); refresh(); } };
+$('skipBtn').onclick = () => { if (game.skipRest(Date.now())) restSkips++; refresh(); };
+
+// ---- 主循环 ----
+function handle(evs){
+  let needRender = false;
+  for (const e of evs){
+    if (e.type === 'news') pushNews(e);
+    else if (e.type === 'rest') pushFeed(`⏸ 回合结束，休息一会儿——看看刚才发生了什么（不想等就点「⏭ 跳过休息」）`, 'sys');
+    else if (e.type === 'over') pushFeed('🏁 本局结束', 'sys');
+    else if (e.type === 'turn' && e.pid === 0) window.scrollTo({ top: 0, behavior: 'smooth' }); // 轮到你，把操作区带回来
+    needRender = true;
+  }
+  if (needRender) refresh();
+}
+let builtFor = null;
+function refresh(){
+  snap = game.snapshot();
+  if (builtFor !== game){ builtFor = game; rebuildTokens(); } // 新一局重建棋子（位置归位）
+  render();
+}
+let lastKey = '';
+setInterval(() => {
+  const now = Date.now();
+  const evs = game.tick(now);
+  handle(evs);
+  const walking = game.players.some(p => p._walk); // 行走中逐帧刷新，棋子才动得起来
+  const key = game.phase + '|' + game.turnNo + '|' + game.cur + '|' + game.mode;
+  if (walking || key !== lastKey){ lastKey = key; refresh(); }
+  renderCountdown(now);
+}, 100);
+
+buildBoard();
+setMode('immediate');
+</script>
+</body>
+</html>
