@@ -153,7 +153,10 @@
 
   const urlParam = new URLSearchParams(location.search).get("ws");
   if (urlParam) $("url").value = urlParam;
-  else $("url").value = localStorage.getItem("probe.ws") || "";
+  else if (localStorage.getItem("probe.ws")) $("url").value = localStorage.getItem("probe.ws");
+  else if (location.protocol.startsWith("http"))
+    // 页面由 Worker 同域全包时，默认连本域大厅，手机打开即用
+    $("url").value = (location.protocol === "https:" ? "wss://" : "ws://") + location.host + "/ws/lobby";
   if ($("url").value) connect();
 </script>
 </body>
