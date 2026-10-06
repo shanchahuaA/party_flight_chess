@@ -8,7 +8,8 @@
   "durable_objects": {
     "bindings": [{ "name": "ROOM", "class_name": "Room" }]
   },
-  // 静态页由本 Worker 同域全包（docs/脚手架约定.md 的备选方案，因仓库私有 + 免费计划下 GitHub Pages 不可用而启用）
+  // 静态资产同域全包：Worker 域名（如 sync.<域名>）打开即是页面，与 WS 同源；
+  // GitHub Pages 为主发布位（deploy.yml 的 pages job），这里是同域备用路径。
   "assets": { "directory": "../client" },
   "observability": { "enabled": true }
 }
