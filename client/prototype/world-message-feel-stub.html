@@ -1,0 +1,1291 @@
+<!doctype html>
+<!--
+  [PROTOTYPE] 世界消息/满屏棋盘呈现 stub —— 一次性代码（GitHub issue #11）
+  定案背景（issue #7 三轮 + #11 三轮拷问，详见 docs/界面呈现定案.md）：
+    棋盘满屏（竖屏手游式）；战报（世界消息的载体）以半透明流水叠加在棋盘上，不打断操作；
+    底部 dock = 固定钮（掷骰/确认结束）+ 情境任务槽 + 手牌横滑；
+    播报与棋盘全联动（触发者描边/目标红脉冲/场地格角标）；消息即日志（战报=本局唯一信息史）。
+  本 stub 要体感裁决的变体（顶部调参条切换）：
+    战报形态：V1 叠加流水 / V2 顶部让位带 / V3 pill 抽屉
+    联动样式：S1 描边脉冲 / S2 光圈跳动
+    抉择卡形态：K1 底部抽屉 / K2 中央卡浮层
+    另验证：任务槽（抉择+黑市 mock）、设置/帮助/暗牌目标弹窗、观战态、淡出时机、战报全屏抽屉翻阅。
+  这是手感原型，不是实现起点；MODULE 标记间的 WorldMsgGame 纯模块（消息结构部分）可参考搬进真实现。
+  运行：电脑双击打开；手机 `python -m http.server 8137` 后访问同 Wi-Fi 局域网地址。
+-->
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
+<title>[原型] 世界消息呈现 stub</title>
+<style>
+:root{
+  --red:#e53935; --yellow:#f9a825; --green:#43a047; --blue:#1e88e5;
+  --ink:#263238; --sub:#607d8b; --bg:#eceff1; --card:#fff; --line:#cfd8dc;
+  --ev:#ff7043; --it:#42a5f5; --tr:#ab47bc; --mal:#546e7a;
+  --boardbg:#e8eef1;
+}
+*{box-sizing:border-box; -webkit-tap-highlight-color:transparent}
+html,body{margin:0; height:100%; overflow:hidden}
+body{background:var(--bg); color:var(--ink); font:15px/1.5 system-ui,-apple-system,"PingFang SC","Microsoft YaHei",sans-serif}
+button{font-family:inherit; touch-action:manipulation}
+
+/* ---- 满屏棋盘 ---- */
+#board{position:fixed; inset:0; width:100%; height:100%; background:
+  radial-gradient(circle at 50% 46%, #f5f9fa 0%, var(--boardbg) 55%, #dde6ea 100%)}
+#board text{user-select:none}
+.tokenLbl{font-size:9px; font-weight:800; fill:#fff; pointer-events:none}
+.hpBarBg{fill:rgba(0,0,0,.25); pointer-events:none}
+.hpBar{fill:#66bb6a; pointer-events:none; transition:width .2s}
+.hpBar.low{fill:#ef5350}
+.tkMain{transition:transform .13s linear}
+.tk.glow .tkMain{animation:tkGlow .55s ease-in-out 2; stroke:#ffd54f}
+@keyframes tkGlow{0%,100%{stroke-width:2}50%{stroke-width:6}}
+.tk.ring .tkMain{animation:tkJump .3s ease-in-out 3}
+@keyframes tkJump{0%,100%{transform:translateY(0)}50%{transform:translateY(-5px)}}
+.pulseRing{transform-box:fill-box; transform-origin:center; pointer-events:none; animation:ringOut 1s ease-out 1}
+.pulseRing.target{stroke:#ff5252 !important}
+@keyframes ringOut{0%{transform:scale(1); opacity:.9} 100%{transform:scale(2.6); opacity:0}}
+.tk.dead .tkMain{opacity:.32}
+.tk.dead text{opacity:.32}
+.tk.targetable{cursor:pointer}
+.tk.targetable circle.core{stroke:#ffca28; stroke-width:4}
+.pickHint{position:fixed; left:50%; top:calc(12px + env(safe-area-inset-top)); transform:translateX(-50%);
+  background:#fff8e1; border:1px solid #ffe082; color:#6d4c41; font-size:13px; font-weight:700;
+  padding:8px 14px; border-radius:999px; z-index:70; display:none}
+.pickHint.show{display:block}
+
+/* ---- 顶部 HUD ---- */
+.hud{position:fixed; top:0; left:0; right:0; padding:calc(6px + env(safe-area-inset-top)) 10px 6px;
+  display:flex; align-items:center; gap:8px; z-index:30; pointer-events:none}
+.hud > *{pointer-events:auto}
+.hud .pill{background:rgba(255,255,255,.92); border:1px solid var(--line); border-radius:999px;
+  padding:6px 11px; font-size:12.5px; font-weight:700; white-space:nowrap; box-shadow:0 1px 4px rgba(0,0,0,.08)}
+.hud .pill .st{color:var(--sub); font-weight:600}
+.hud .sp{flex:1}
+.hud button{border:1px solid var(--line); background:rgba(255,255,255,.92); border-radius:999px;
+  padding:6px 10px; font-size:15px; box-shadow:0 1px 4px rgba(0,0,0,.08)}
+#skipBtn{display:none; font-size:12px !important; color:var(--sub)}
+#skipBtn.show{display:inline-block}
+.badge{display:inline-block; min-width:15px; background:var(--red); color:#fff; font-size:10px;
+  border-radius:999px; padding:0 4px; margin-left:3px; vertical-align:1px}
+
+/* ---- 原型调参条（仅原型用） ---- */
+#dbg{position:fixed; top:calc(46px + env(safe-area-inset-top)); left:0; right:0; z-index:31;
+  display:flex; gap:5px; overflow-x:auto; padding:3px 8px; scrollbar-width:none; pointer-events:none}
+#dbg > *{pointer-events:auto; flex:0 0 auto}
+#dbg .grp{display:flex; align-items:center; background:rgba(38,50,56,.72); border-radius:999px; padding:2px; color:#fff; font-size:10.5px}
+#dbg .grp span{padding:0 6px; opacity:.8}
+#dbg .grp button{border:0; background:transparent; color:#fff; opacity:.62; font-size:10.5px; padding:4px 7px; border-radius:999px}
+#dbg .grp button.on{background:#fff; color:var(--ink); opacity:1; font-weight:700}
+#dbg button.act{background:#fff8e1; border:0; border-radius:999px; font-size:10.5px; padding:5px 9px; color:#6d4c41; font-weight:700}
+
+/* ---- 底部 dock ---- */
+#dock{position:fixed; left:0; right:0; bottom:0; z-index:40; padding:6px 10px calc(8px + env(safe-area-inset-bottom));
+  background:linear-gradient(to top, rgba(236,239,241,.98) 62%, rgba(236,239,241,0)); display:flex;
+  flex-direction:column; gap:7px; transition:transform .25s, opacity .25s}
+#dock.hidden{transform:translateY(110%); opacity:0; pointer-events:none}
+#tasks{display:flex; flex-direction:column; gap:5px; min-height:0}
+.task{display:flex; align-items:center; gap:8px; background:#fff; border:1.5px solid var(--ev);
+  border-radius:12px; padding:8px 11px; font-size:13px; box-shadow:0 2px 8px rgba(0,0,0,.1); animation:taskIn .25s ease-out}
+@keyframes taskIn{from{transform:translateY(10px); opacity:0}}
+.task b{font-weight:800}
+.task .go{margin-left:auto; background:var(--ev); color:#fff; border:0; border-radius:9px; padding:7px 13px; font-size:12.5px; font-weight:700; white-space:nowrap}
+.task.mkt{border-color:#26a69a}
+.task.mkt .go{background:#26a69a}
+.task .miniOps{display:flex; gap:5px; margin-left:auto}
+.task .miniOps button{border:1px solid #26a69a; background:#e0f2f1; color:#00695c; border-radius:8px; padding:6px 10px; font-size:12px; font-weight:700}
+.task .miniOps button:disabled{opacity:.35}
+.task .x{border:0; background:transparent; color:#b0bec5; font-size:15px; padding:0 2px}
+#handRow{display:flex; gap:7px; overflow-x:auto; padding:2px 1px; scrollbar-width:none; min-height:66px}
+.handCard{flex:0 0 auto; width:86px; background:#fff; border:2px solid var(--line); border-radius:11px;
+  padding:6px 7px; font-size:11px; cursor:pointer; box-shadow:0 1px 3px rgba(0,0,0,.08)}
+.handCard .t{font-weight:800; font-size:12px}
+.handCard .d{color:var(--sub); font-size:10px; line-height:1.3; margin-top:2px; max-height:34px; overflow:hidden}
+.handCard.empty{border-style:dashed; color:#b0bec5; cursor:default; width:auto; flex:1; text-align:center; padding:20px 6px}
+.handCard.sel{border-color:var(--ev); background:#fff5f5}
+#btnRow{display:flex; align-items:center; gap:10px}
+#rollBtn{width:76px; height:76px; border-radius:50%; border:0; background:var(--red); color:#fff;
+  font-size:16px; font-weight:800; letter-spacing:1px; box-shadow:0 3px 10px rgba(229,57,53,.4); flex:0 0 auto}
+#rollBtn:disabled{background:#b0bec5; box-shadow:none}
+#rollBtn.mine{animation:btnPulse 1.1s ease-in-out infinite}
+@keyframes btnPulse{0%,100%{transform:scale(1)}50%{transform:scale(1.06)}}
+#confirmBtn{flex:1; padding:17px 10px; border:0; border-radius:14px; background:#546e7a; color:#cfd8dc;
+  font-size:14.5px; font-weight:800}
+#confirmBtn.armed{background:var(--green); color:#fff; box-shadow:0 3px 10px rgba(67,160,71,.4)}
+#hpPill{background:rgba(255,255,255,.92); border:1px solid var(--line); border-radius:999px; padding:5px 10px;
+  font-size:12.5px; font-weight:800; flex:0 0 auto; align-self:center}
+#hpPill.low{color:var(--red); border-color:#ef9a9a}
+
+/* ---- 观战横幅 ---- */
+#spect{position:fixed; top:50%; left:0; right:0; transform:translateY(-50%); z-index:29; text-align:center;
+  pointer-events:none; display:none}
+#spect.show{display:block}
+#spect .b{display:inline-block; background:rgba(38,50,56,.72); color:#fff; font-size:15px; font-weight:800;
+  padding:10px 22px; border-radius:999px; letter-spacing:2px}
+
+/* ---- 战报 V1：叠加流水（LOL 式） ---- */
+#feedV1{position:fixed; left:8px; bottom:calc(8px + env(safe-area-inset-bottom) + 158px); width:min(66%, 320px);
+  max-height:138px; overflow:hidden; z-index:25; display:flex; flex-direction:column-reverse; gap:4px;
+  background:rgba(38,50,56,.78); border-radius:13px; padding:7px 9px; color:#eceff1;
+  transition:opacity .8s; backdrop-filter:blur(2px)}
+#feedV1.faded{opacity:.22}
+#feedV1 .fe{flex:0 0 auto; font-size:11.5px; line-height:1.4; padding:3px 7px; border-radius:7px; background:rgba(255,255,255,.07);
+  border-left:3px solid #90a4ae; overflow:hidden; max-height:4.6em}
+#feedV2{position:fixed; top:calc(76px + env(safe-area-inset-top)); left:0; right:0; z-index:25;
+  display:none; flex-direction:column; gap:3px; padding:5px 10px; max-height:76px; overflow:hidden}
+#feedV2 .fe{font-size:11.5px; background:rgba(255,255,255,.9); border-radius:9px; padding:4px 9px;
+  border-left:3px solid #90a4ae; color:var(--ink); overflow:hidden}
+#feedV3{position:fixed; left:10px; bottom:calc(8px + env(safe-area-inset-bottom) + 224px); z-index:26;
+  display:none; background:rgba(38,50,56,.85); color:#fff; border:0; border-radius:999px;
+  padding:9px 15px; font-size:12.5px; font-weight:700; max-width:72%; overflow:hidden; white-space:nowrap; text-overflow:ellipsis}
+.mode-v2 #feedV1{display:none}
+.mode-v2 #feedV2{display:flex}
+.mode-v3 #feedV1{display:none}
+.mode-v3 #feedV3{display:block}
+
+.fe{border-left-color:#90a4ae}
+.fe.event{border-left-color:var(--ev)}
+.fe.trap{border-left-color:var(--tr)}
+.fe.item{border-left-color:var(--it)}
+.fe.malice{border-left-color:var(--mal)}
+.fe.system{border-left-style:dashed; opacity:.85}
+.fe.summary{border-left-color:#263238; background:rgba(255,255,255,.14) !important; font-weight:700}
+.fe.fresh{animation:feflash 2s ease-out}
+@keyframes feflash{0%{background:rgba(255,183,77,.55)} 100%{}}
+.fe .ic{margin-right:3px}
+.fe .who{font-weight:800}
+.fe .eff{opacity:.92}
+
+/* ---- 战报全屏抽屉 ---- */
+#drawer{position:fixed; inset:0; z-index:80; display:none}
+#drawer.show{display:block}
+#drawer .scrim{position:absolute; inset:0; background:rgba(38,50,56,.45)}
+#drawer .panel{position:absolute; left:0; right:0; bottom:0; height:88%; background:#fff;
+  border-radius:18px 18px 0 0; display:flex; flex-direction:column; animation:up .22s ease-out}
+@keyframes up{from{transform:translateY(40px); opacity:.6}}
+#drawer .head{display:flex; align-items:center; padding:12px 14px 8px; border-bottom:1px solid var(--line)}
+#drawer .head b{font-size:14.5px}
+#drawer .head .st{font-size:11px; color:var(--sub); margin-left:8px}
+#drawer .head button{margin-left:auto; border:0; background:#eceff1; border-radius:999px; padding:6px 12px; font-size:12px}
+#drawer .list{flex:1; overflow-y:auto; padding:10px 12px 16px; display:flex; flex-direction:column; gap:4px}
+#drawer .list .fe{background:#fafafa; border-radius:8px; padding:5px 9px; font-size:12.5px; color:#37474f; cursor:default}
+#drawer .list .fe.hasFlavor{cursor:pointer}
+#drawer .list .fe .flavor{display:none; font-size:11.5px; color:#8d6e63; margin-top:3px; font-style:italic}
+#drawer .list .fe.openFlavor .flavor{display:block}
+#drawer .list .sec{font-size:11px; font-weight:800; color:#90a4ae; letter-spacing:1px;
+  margin:7px 0 2px; padding-top:7px; border-top:1.5px dashed var(--line)}
+#drawer .more{margin:6px auto 0; border:1px dashed var(--line); background:#fff; color:var(--sub);
+  border-radius:999px; padding:7px 14px; font-size:12px}
+
+/* ---- 弹窗（设置/帮助/暗牌目标/卡面/结算） ---- */
+.modal{position:fixed; inset:0; z-index:90; display:none; align-items:center; justify-content:center; padding:18px}
+.modal.show{display:flex}
+.modal .scrim{position:absolute; inset:0; background:rgba(38,50,56,.5)}
+.modal .box{position:relative; width:min(340px, 100%); max-height:82%; overflow-y:auto; background:#fff;
+  border-radius:16px; padding:16px 16px 14px; box-shadow:0 10px 40px rgba(0,0,0,.25)}
+.modal .box h3{margin:0 0 6px; font-size:16px}
+.modal .box .d{font-size:12.5px; color:var(--sub)}
+.modal .row{display:flex; align-items:center; gap:8px; margin-top:10px}
+.modal .row label{flex:0 0 auto; color:var(--sub); font-size:12.5px}
+.modal .row select{flex:1; font-size:13px; padding:4px}
+.modal .frozen{background:#f5f5f5; border-radius:10px; padding:9px 11px; font-size:12.5px; color:#546e7a; margin-top:8px; line-height:1.7}
+.modal .sw{display:flex; align-items:center; gap:8px; margin-top:9px; font-size:13px}
+.modal .btns{display:flex; gap:8px; margin-top:14px}
+.modal .btns button{flex:1; padding:12px; font-size:14px; border-radius:11px; border:0}
+.modal .ok{background:var(--red); color:#fff; font-weight:800}
+.modal .no{background:#eceff1; color:var(--sub)}
+.modal .alt{background:#e8f5e9; color:#2e7d32; font-weight:700}
+.modal ol{margin:6px 0 0; padding-left:20px; font-size:13px; line-height:2; text-align:left}
+.modal .rule{font-size:12.5px; line-height:1.75; color:#455a64}
+.modal .rule b{color:#263238}
+.modal .goal{background:#fff8e1; border:1px dashed #ffe082; border-radius:12px; padding:11px 12px; margin-top:8px}
+.modal .goal .t{font-weight:800; font-size:14px}
+.modal .goal .h{font-size:12.5px; color:#6d4c41; margin-top:3px}
+.modal .pasv{font-size:12.5px; color:var(--sub); margin-top:6px}
+
+/* ---- 抉择卡 K1 底部抽屉 / K2 中央浮层 ---- */
+#choiceK1{position:fixed; inset:0; z-index:85; display:none}
+#choiceK1.show{display:block}
+#choiceK1 .scrim{position:absolute; inset:0; background:rgba(38,50,56,.35)}
+#choiceK1 .panel{position:absolute; left:0; right:0; bottom:0; background:#fff; border-radius:18px 18px 0 0;
+  padding:16px 16px calc(14px + env(safe-area-inset-bottom)); animation:up .2s ease-out}
+#choiceK2{position:fixed; inset:0; z-index:85; display:none; align-items:center; justify-content:center}
+#choiceK2.show{display:flex}
+#choiceK2 .scrim{position:absolute; inset:0; background:rgba(38,50,56,.55)}
+#choiceK2 .panel{position:relative; width:min(300px, 88%); background:#fff; border-radius:16px; padding:18px;
+  text-align:center; animation:pop .18s ease-out}
+@keyframes pop{from{transform:scale(.9); opacity:0}}
+.choiceBox .kind{font-size:11px; color:#bf360c; font-weight:800; letter-spacing:2px}
+.choiceBox .t{font-size:19px; font-weight:900; margin-top:3px}
+.choiceBox .flavor{font-size:13px; color:#8d6e63; font-style:italic; margin:8px 0 12px}
+.choiceBox .opts{display:flex; flex-direction:column; gap:9px}
+.choiceBox .opts button{padding:13px; font-size:14px; border-radius:12px; border:1.5px solid var(--line); background:#fafafa; text-align:left; line-height:1.4}
+.choiceBox .opts button.def{border-color:var(--green); background:#e8f5e9; font-weight:700}
+.choiceBox .countdown{font-size:11px; color:#b0bec5; margin-top:9px}
+</style>
+</head>
+<body>
+
+<svg id="board" viewBox="0 0 380 640" preserveAspectRatio="xMidYMid meet" aria-label="棋盘"></svg>
+
+<!-- 顶部 HUD -->
+<div class="hud">
+  <span class="pill"><span id="turnNo">回合 –/15</span> · <span class="st" id="phaseTxt"></span></span>
+  <button id="skipBtn">⏭ 跳过休息</button>
+  <span class="sp"></span>
+  <button id="goalBtn" title="暗牌目标">🎯</button>
+  <button id="helpBtn" title="帮助">📖</button>
+  <button id="gearBtn" title="设置">⚙️</button>
+</div>
+
+<!-- 原型调参条 -->
+<div id="dbg">
+  <span class="grp"><span>战报</span><button data-feed="v1" class="on">V1叠加</button><button data-feed="v2">V2让位</button><button data-feed="v3">V3pill</button></span>
+  <span class="grp"><span>联动</span><button data-pulse="glow" class="on">S1描边</button><button data-pulse="ring">S2光圈</button></span>
+  <span class="grp"><span>抉择卡</span><button data-choice="k1" class="on">K1抽屉</button><button data-choice="k2">K2中央</button></span>
+  <button class="act" id="mktBtn">🧪 触发黑市窗</button>
+  <button class="act" id="spectBtn">☠ 观战态</button>
+  <button class="act" id="stormBtn">🌪 事件风暴</button>
+  <button class="act" id="exportBtn">📋 导出记录</button>
+</div>
+
+<!-- 战报 V2 顶部让位带 -->
+<div id="feedV2"></div>
+<!-- 战报 V1 叠加流水 -->
+<div id="feedV1" onclick="UI.openDrawer()"></div>
+<!-- 战报 V3 pill -->
+<button id="feedV3" onclick="UI.openDrawer()"></button>
+
+<!-- 底部 dock -->
+<div id="spect"><span class="b">☠ 观战中 · 全局可见</span></div>
+<div id="dock">
+  <div id="tasks"></div>
+  <div id="handRow"></div>
+  <div id="btnRow">
+    <span id="hpPill">❤️ 10</span>
+    <button id="rollBtn" disabled>🎲 掷骰</button>
+    <button id="confirmBtn">✔ 确认结束</button>
+  </div>
+</div>
+<div class="pickHint" id="pickHint">👆 点对手棋子选定目标（再点一次取消可换）</div>
+
+<!-- 战报全屏抽屉 -->
+<div id="drawer">
+  <div class="scrim" onclick="UI.closeDrawer()"></div>
+  <div class="panel">
+    <div class="head"><b>📜 战报</b><span class="st" id="drawerSt"></span><button onclick="UI.closeDrawer()">收起</button></div>
+    <div class="list" id="drawerList"></div>
+  </div>
+</div>
+
+<!-- 抉择卡 K1 底部抽屉 -->
+<div id="choiceK1">
+  <div class="scrim"></div>
+  <div class="panel choiceBox">
+    <div class="kind">— 事件抉择 —</div>
+    <div class="t" id="k1T"></div><div class="flavor" id="k1F"></div>
+    <div class="opts" id="k1O"></div>
+    <div class="countdown" id="k1C"></div>
+  </div>
+</div>
+<!-- 抉择卡 K2 中央浮层 -->
+<div id="choiceK2">
+  <div class="scrim"></div>
+  <div class="panel choiceBox">
+    <div class="kind">— 事件抉择 —</div>
+    <div class="t" id="k2T"></div><div class="flavor" id="k2F"></div>
+    <div class="opts" id="k2O"></div>
+    <div class="countdown" id="k2C"></div>
+  </div>
+</div>
+
+<!-- 设置弹窗 -->
+<div class="modal" id="setModal"><div class="scrim"></div><div class="box">
+  <h3>⚙️ 设置</h3>
+  <div class="d">真实现里：数值在<b>大厅/结算态</b>由房主可改，局中一律冻结；这里跟着局面演示。</div>
+  <div class="frozen" id="cfgFrozen">本局配置：局长 15 ｜ 血量 10 ｜ 世界回合窗 30s ｜ 休息 10s ｜ 计时模式 世界·即时<br>🔒 局中冻结——想改？等结算页「再来一局（可改配置）」。</div>
+  <div id="cfgEdit" style="display:none">
+    <div class="row"><label>局长</label><select id="capSel"><option>10</option><option selected>15</option><option>20</option><option>30</option></select></div>
+    <div class="row"><label>血量</label><select id="hpSel"><option>6</option><option selected>10</option><option>15</option></select></div>
+    <div class="row"><label>世界回合窗</label><select id="durSel"><option value="10">10 秒</option><option value="15">15 秒</option><option value="30" selected>30 秒（默认）</option><option value="60">60 秒</option></select></div>
+    <div class="row"><label>回合间休息</label><select id="restSel"><option value="0">关</option><option value="5">5 秒</option><option value="10" selected>10 秒（默认）</option><option value="20">20 秒</option></select></div>
+  </div>
+  <div class="sw"><input type="checkbox" id="sndSw" checked><label for="sndSw">音效（MVP 占位）</label></div>
+  <div class="sw"><input type="checkbox" id="vibSw" checked><label for="vibSw">震动</label></div>
+  <div class="btns">
+    <button class="no" id="setClose">关闭</button>
+    <button class="ok" id="setApply" style="display:none">应用并开新一局</button>
+  </div>
+</div></div>
+
+<!-- 帮助弹窗 -->
+<div class="modal" id="helpModal"><div class="scrim"></div><div class="box">
+  <h3>📖 帮助 · 一页纸规则（速查）</h3>
+  <div class="rule">
+    <b>回合内</b>：可选打道具卡 → 必做掷骰（棋子立刻走）→ 落格结算（事件/道具/陷阱）→ 点「确认结束」进等待区；不确认则窗内持续可操作。<br>
+    <b>事件</b>：抉择卡弹给你本人点选（超时按 ★ 默认项代选）；别人的事看战报。<br>
+    <b>道具</b>：确认前任意时刻可打，张数不限；目标按卡面（自选/自动/全体/场地）。<br>
+    <b>淘汰</b>：血量 10，血尽即观战，死了就死了。<br>
+    <b>胜负</b>：默认 15 个世界回合走完结算（进度+存活+称号+整蛊积分）；到终点=通关席拿大额分。<br>
+    <b>世界恶意</b>：周期全局负面；最后一波=终局布景，可合作可坑人。<br>
+    <b>暗牌目标</b>：开局抽 2 选 1、保密，终局亮牌拿称号。<br>
+    <b>警长查货窗</b>：黑市开张=自由转让+查验抓谎，线下嘴炮随便上。
+  </div>
+  <div class="btns"><button class="ok" onclick="UI.close('helpModal')">关闭</button></div>
+</div></div>
+
+<!-- 暗牌目标弹窗 -->
+<div class="modal" id="goalModal"><div class="scrim"></div><div class="box">
+  <h3>🎯 你的暗牌目标</h3>
+  <div class="goal"><div class="t">🃏 整蛊王</div><div class="h">成功坑人 ≥3 次（对他人保密，终局亮牌）</div></div>
+  <div class="pasv">角色「轻装上阵」：开局多 1 张道具卡（已生效）。</div>
+  <div class="d" style="margin-top:8px">进度只在结算屏判定，局中不显示——防剧透。</div>
+  <div class="btns"><button class="ok" onclick="UI.close('goalModal')">关闭</button></div>
+</div></div>
+
+<!-- 结算弹窗（结算页 mock） -->
+<div class="modal" id="overModal"><div class="scrim"></div><div class="box">
+  <h3 id="ovT">🏁 本局结束</h3>
+  <div class="d" id="ovR"></div>
+  <ol id="ovList"></ol>
+  <div class="d" style="margin-top:8px">完整结算页 = 积分四项分项 + 亮暗牌称号 + 找战犯数据（本 stub 不展开）。</div>
+  <div class="btns">
+    <button class="no" onclick="UI.close('overModal'); UI.open('setModal'); UI.enterReconfig()">⚙️ 改配置再来</button>
+    <button class="ok" id="ovAgain">直接再来一局</button>
+  </div>
+</div></div>
+
+<!-- 导出弹窗 -->
+<div class="modal" id="expModal"><div class="scrim"></div><div class="box">
+  <h3>📋 体感记录已生成</h3>
+  <div class="d">已尝试复制到剪贴板；失败的话手动全选复制，贴到 issue #11。</div>
+  <textarea id="expTxt" readonly style="width:100%; height:140px; font-size:11px; margin-top:8px"></textarea>
+  <div class="btns"><button class="ok" onclick="UI.close('expModal')">关闭</button></div>
+</div></div>
+
+<script>
+'use strict';
+// ==================== MODULE BEGIN（WorldMsgGame：无 DOM；消息结构部分可参考搬进真实现） ====================
+const MAIN = 52, BRANCH = 4;
+const SPAWNS = [0, 13, 26, 39];
+const STEP_MS = 115, AUTO_GAP = 260;
+const BOT_FAST = [250, 450], BOT_NORMAL = [600, 1100];
+const BASE13 = ['B','E','I','E','B','T','E','I','E','B','T','E','B'];
+const TYPES = (() => {
+  const t = Array.from({length: MAIN}, (_, i) => BASE13[i % 13]);
+  t[4]='I'; t[17]='I'; t[30]='I'; t[43]='E'; t[46]='B';
+  return t;
+})();
+
+const ITEMS = [
+  { k:'banana',  t:'🍌 香蕉皮',  d:'场地型：丢在脚下，下一个踩上的人罚停 1 回合' },
+  { k:'slingshot', t:'🪃 弹弓',  d:'自动指认：随机一名对手回退 2 格' },
+  { k:'potion',  t:'💊 治疗药水', d:'自己回 1 血' },
+  { k:'wind',    t:'🌬️ 顺风波', d:'本次掷骰走完后额外 +2 格' },
+  { k:'double',  t:'🎲 加倍骰',  d:'本次掷骰点数 ×2' },
+  { k:'charm',   t:'🧿 护身符',  d:'免疫下一次踩中的陷阱' },
+];
+// 事件池：opts 有值 = 抉择卡（def = 默认项下标）
+const EVENTS = [
+  { t:'新年红包',   d:'抽到的人得 1 张道具卡' },
+  { t:'一路顺风',   d:'抽到的人前进 2 格' },
+  { t:'顶头逆风',   d:'抽到的人退 2 格' },
+  { t:'全员拜年',   d:'所有人前进 1 格' },
+  { t:'全员大扫除', d:'所有人退 1 格' },
+  { t:'手滑了',     d:'随机弃掉 1 张道具卡' },
+  { t:'温泉房',     d:'门缝里漏出暖融融的雾气。', opts:['★ 泡一下（回 1 血）','泡个够（回 2 血，罚停 1 回合）'], def:0 },
+  { t:'断桥',       d:'桥断了一半，下面深不见底。', opts:['★ 绕远路（回退 2）','冒险跳过去（前进 3，扣 1 血）'], def:0 },
+  { t:'捡到钱袋',   d:'墙角躺着一只鼓鼓的钱袋。', opts:['★ 归还失主（抽 1 道具）','自己收下（前进 1）'], def:0 },
+];
+
+function rint(n){ return Math.floor(Math.random() * n); }
+function pick(a){ return a[rint(a.length)]; }
+
+// World·即时 单模式；消息为结构化 MessageEntry（消息即日志）
+class WorldMsgGame {
+  constructor(opts = {}){
+    this.turnMs = opts.turnMs ?? 30000;
+    this.restMs = opts.restMs ?? 10000;
+    this.cap = opts.cap ?? 15;        // 局长（默认 15）
+    this.hpMax = opts.hpMax ?? 10;
+    this.botMode = opts.botMode || 'normal'; // normal | fast | storm（事件风暴=事件密度×3，压测战报）
+    this.players = [];
+    this.turnNo = 0;
+    this.phase = 'idle';   // idle | acting | rest | over
+    this.messages = [];    // 全量战报（消息即日志）
+    this._mid = 0;
+    this.ground = {};      // pos -> true（场地型道具附着格）
+    this.choice = null;    // { pid, card, deadline, shownAt } 待决抉择卡
+    this._timers = [];
+  }
+
+  at(at, fn){ this._timers.push({ at, fn }); }
+  msg(kind, who, title, eff, extra = {}){
+    const p = who != null ? this.players[who] : null;
+    this._mid++;
+    const m = { id:this._mid, turn:this.turnNo, kind, who, title, eff,
+      targets: extra.targets || null, flavor: extra.flavor || null,
+      emphasis: extra.emphasis || 'normal' };
+    this.messages.push(m);
+    if (this.messages.length > 500) this.messages.splice(0, this.messages.length - 500); // stub 上限；真实现全量持久
+    return m;
+  }
+  msgRaw(kind, title, extra = {}){ return this.msg(kind, null, title, null, extra); }
+
+  newGame(now){
+    const defs = [
+      { id:0, name:'你',   bot:false, color:'#e53935', spawn:SPAWNS[0] },
+      { id:1, name:'小黄', bot:true,  color:'#f9a825', spawn:SPAWNS[1] },
+      { id:2, name:'小绿', bot:true,  color:'#43a047', spawn:SPAWNS[2] },
+      { id:3, name:'小蓝', bot:true,  color:'#1e88e5', spawn:SPAWNS[3] },
+    ];
+    this.players = defs.map(d => ({ ...d, pos:d.spawn, mainLeft:MAIN, bpos:0, zone:'main',
+      hand:[], pending:null, done:false, hp:this.hpMax, stun:0, actAt:null, itemAt:null, net:0, _walk:null }));
+    this.turnNo = 0; this.phase = 'idle'; this.messages = []; this._mid = 0;
+    this.ground = {}; this.choice = null; this._timers = [];
+    this._busyUntil = 0; this.restUntil = 0; this._deadCount = 0;
+    this.msgRaw('system', '开局！出生格均分在环上，绕主干后进各自支路。满屏棋盘+底部 dock，战报叠在左下角。');
+    this.newTurn(now);
+  }
+
+  newTurn(now){
+    this.turnNo++;
+    this.phase = 'acting';
+    this.turnStart = now;
+    this.turnEnds = now + this.turnMs;
+    this._finishers = [];
+    this._allDoneAt = null;
+    this._autosScheduled = false;
+    for (const p of this.players){
+      if (p.zone === 'dead'){ p.done = true; continue; }
+      p.done = false; p.die = null; p.pending = null; p.actAt = null; p.itemAt = null; p._charmed = false;
+      if (p.stun > 0){
+        p.stun--; p.done = true;
+        this.msg('system', p.id, `${p.name} 罚停中，本回合跳过`, null);
+      }
+    }
+    for (const p of this.players){
+      if (!p.bot || p.done) continue;
+      const base = this.botMode === 'fast' ? 350 : 1200;
+      const span = this.botMode === 'fast' ? 800 : Math.max(800, this.turnMs * 0.72 - base);
+      p.actAt = now + base + rint(span);
+      if (p.hand.length && Math.random() < (this.botMode === 'storm' ? 0.9 : 0.45))
+        p.itemAt = now + 600 + rint(Math.max(300, (p.actAt - now) * 0.5));
+    }
+  }
+
+  closeWindow(ev, now){
+    if (this._finishers.length){ this.gameOver(ev, 'finish'); return; }
+    if (this.turnNo >= this.cap){ this.gameOver(ev, 'cap'); return; }
+    if (this.restMs > 0){ this._enterRest(ev, now); return; }
+    this.newTurn(now);
+  }
+
+  _enterRest(ev, now){
+    this.phase = 'rest';
+    this.restUntil = now + this.restMs;
+    this.pushSummary(ev);
+  }
+  pushSummary(ev){
+    const parts = [];
+    for (const p of this.players){
+      const ms = this.messages.filter(m => m.turn === this.turnNo && m.who === p.id && m.kind !== 'summary');
+      if (!ms.length) continue;
+      const bits = [];
+      const dmg = ms.filter(m => m.kind === 'trap').length;
+      const item = ms.some(m => m.kind === 'item' && m.title && m.title.includes('踩到'));
+      const stun = ms.some(m => m.eff && m.eff.includes('罚停'));
+      if (dmg) bits.push(`💔×${dmg}`);
+      if (item) bits.push('🃏得卡');
+      if (stun) bits.push('💤');
+      if (bits.length) parts.push(`${p.name} ${bits.join(' ')}`);
+    }
+    const text = parts.length ? `回合 ${this.turnNo} 小结：${parts.join(' · ')}` : `回合 ${this.turnNo} 小结：波澜不惊`;
+    this.msgRaw('summary', text);
+    ev.push({ type:'summary' });
+  }
+  skipRest(now){ if (this.phase !== 'rest') return false; this.restUntil = now; return true; }
+
+  // ---- 玩家操作 ----
+  humanRoll(now){ return this.doRoll(this.players[0], now, false); }
+  humanPlayItem(handIdx){
+    const p = this.players[0];
+    if (this.phase !== 'acting' || p.done || p.zone === 'dead' || !p.hand[handIdx]) return null;
+    return p.hand[handIdx]; // 返回待打卡，页面选完目标后调 resolveItem
+  }
+  humanTargetResolve(p, handIdx, targetId, now){
+    const card = p.hand.splice(handIdx, 1)[0];
+    p.pending = card;
+    this.doPlayResolve(p, targetId, now);
+  }
+  humanChoice(optIdx, now){
+    if (!this.choice) return null;
+    const c = this.choice; this.choice = null;
+    this.applyChoice(c, optIdx, now);
+    return c;
+  }
+
+  doPlayItem(p, handIdx, now, targetId){
+    const card = p.hand.splice(handIdx, 1)[0];
+    p.pending = card;
+    this.doPlayResolve(p, targetId, now);
+  }
+  doPlayResolve(p, targetId, now){
+    const card = p.pending;
+    if (!card) return;
+    if (card.k === 'banana'){
+      if (p.zone === 'main'){
+        this.ground[p.pos] = true;
+        this.msg('item', p.id, `${p.name} 打出香蕉皮（场地型）`, `附在脚下第 ${p.pos} 格，下一个踩上的人罚停`);
+        evSafe(this, 'ground', { pos:p.pos });
+      } else { // stub 简化：支路上无处可埋，退化为直接整第一名
+        const t = this.autoTarget(p);
+        if (t){
+          this.msg('item', p.id, `${p.name} 打出香蕉皮`, `${t.name} 回退 2 格`, { targets:[t.id] });
+          this.queueWalk(t, -2, 99, false, now);
+        } else this.msg('item', p.id, `${p.name} 打出香蕉皮`, '没人可害');
+      }
+    } else if (card.k === 'slingshot'){
+      let t = targetId != null ? this.players[targetId] : this.autoTarget(p);
+      if (!t || t.zone === 'dead' || t.zone === 'done') t = this.autoTarget(p);
+      if (t){
+        this.msg('item', p.id, `${p.name} 打出弹弓`, `${t.name} 回退 2 格`, { targets:[t.id] });
+        this.queueWalk(t, -2, 99, false, now);
+      } else this.msg('item', p.id, `${p.name} 打出弹弓`, '没人可害');
+    } else if (card.k === 'potion'){
+      p.hp = Math.min(this.hpMax, p.hp + 1);
+      this.msg('item', p.id, `${p.name} 打出治疗药水`, '回 1 血');
+    } else if (card.k === 'charm'){
+      this.msg('item', p.id, `${p.name} 挂好护身符`, '免疫下一次陷阱');
+    } else {
+      this.msg('item', p.id, `${p.name} 打出 ${card.t}`, card.d);
+    }
+    function evSafe(g, type, data){ g._groundEv = { type, ...data }; }
+  }
+
+  autoTarget(except){
+    const others = this.players.filter(o => o !== except && o.zone !== 'dead' && o.zone !== 'done');
+    return others.length ? pick(others) : null;
+  }
+
+  doRoll(p, now, auto){
+    if (this.phase !== 'acting' || p.done || p.zone === 'dead') return null;
+    p.die = 1 + rint(6);
+    p.done = true;
+    if (auto) this.msg('system', p.id, `超时，系统替 ${p.name} 自动掷骰`, '道具卡不打');
+    const pend = p.pending;
+    if (pend && pend.k === 'charm') p._charmed = true;
+    if (pend && pend.k === 'double'){ p.die *= 2; this.msg('item', p.id, `${p.name} 用了加倍骰`, `点数翻倍 → ${p.die}`); }
+    p.pending = null;
+    const followUps = [];
+    if (pend && pend.k === 'wind'){ followUps.push({ n:2, depth:1, land:true }); this.msg('item', p.id, `${p.name} 挂上顺风波`, '走完再加 2 格'); }
+    this.msg('system', p.id, `${p.name} 掷出 ${p.die} 点`, null, { emphasis:'none' });
+    this.startWalk(p, p.die, 0, followUps, now);
+    return p.die;
+  }
+
+  startWalk(p, steps, depth, followUps, now){
+    if (p.zone === 'done' || p.zone === 'dead' || steps <= 0) return;
+    p._walk = { remaining:steps, depth, land:true, dir:1, followUps:followUps || [], nextAt: now + 160, bounced:false, after:null };
+    this._busyUntil = Math.max(this._busyUntil || 0, now + 160 + steps * STEP_MS + 250);
+  }
+  queueWalk(p, n, depth, land, now){
+    if (p.zone === 'done' || p.zone === 'dead' || !n) return;
+    if (p._chainQ) p._chainQ.push({ n, depth, land });
+    else if (p._walk) p._walk.followUps.push({ n, depth, land });
+    else this.startSeg(p, { n, depth, land }, [], now);
+  }
+  startSeg(p, f, rest, now, after){
+    if (f.n > 0) p._walk = { remaining:f.n, depth:f.depth, land:!!f.land, dir:1, followUps:rest || [], nextAt: now + 140, bounced:false, after:after || null };
+    else p._walk = { remaining:-f.n, depth:99, land:false, dir:-1, followUps:rest || [], nextAt: now + 140, bounced:false, after:after || null };
+    this._busyUntil = Math.max(this._busyUntil || 0, now + 140 + Math.abs(f.n) * STEP_MS + 250);
+  }
+
+  stepOne(p, ev, now){
+    const w = p._walk;
+    if (p.zone === 'done' || p.zone === 'dead'){ p._walk = null; return; }
+    if (w.dir === 1){
+      if (p.zone === 'main'){
+        if (p.mainLeft > 0){ p.pos = (p.pos + 1) % MAIN; p.mainLeft--; p.net++; }
+        else { p.zone = 'branch'; p.bpos = 1; p.net++; this.msg('system', p.id, `${p.name} 绕完一圈，进入自己的终点支路！`, null); }
+      } else {
+        p.bpos++; p.net++;
+        if (p.bpos >= BRANCH){
+          if (w.remaining > 1){ w.dir = -1; w.bounced = true; }
+          else { this.finish(p, ev); p._walk = null;
+                 this.at(now + 600, () => { if (this.phase !== 'over') this.gameOver(ev, 'finish'); });
+                 return; }
+        }
+      }
+    } else {
+      if (p.zone === 'main'){ p.pos = ((p.pos - 1) % MAIN + MAIN) % MAIN; p.net--; }
+      else if (p.bpos > 0){ p.bpos--; p.net--; }
+      w.remaining--;
+      if (w.remaining > 0 && !(p.zone === 'branch' && p.bpos === 0)) w.nextAt = now + STEP_MS;
+      else this._afterWalk(p, ev, now);
+      return;
+    }
+    w.remaining--;
+    if (w.remaining > 0) w.nextAt = now + STEP_MS;
+    else this._afterWalk(p, ev, now);
+  }
+
+  _afterWalk(p, ev, now){
+    const w = p._walk; p._walk = null;
+    if (w.bounced) this.msg('system', p.id, `${p.name} 超出步数，门口反弹`, `退到支路第 ${p.bpos} 格`);
+    p._chainQ = [];
+    if (w.land && w.dir === 1 && p.zone === 'main') this.landing(p, ev, w.depth, now);
+    const segs = p._chainQ.concat(w.followUps);
+    p._chainQ = null;
+    if (p.zone !== 'done' && p.zone !== 'dead' && segs.length){ this.startSeg(p, segs.shift(), segs, now, w.after); return; }
+  }
+
+  finish(p, ev){
+    p.zone = 'done'; p.finishTurn = this.turnNo;
+    this._finishers.push(p);
+    this.msg('system', p.id, `🏁 ${p.name} 踩进终点（通关席）！`, '不再掷骰，仍可打卡', { emphasis:'big' });
+    ev.push({ type:'finish', pid:p.id });
+  }
+
+  landing(p, ev, depth, now){
+    if (p.zone !== 'main') return;
+    // 场地型道具优先：踩上香蕉皮
+    if (this.ground[p.pos]){
+      delete this.ground[p.pos];
+      p.stun += 1;
+      this.msg('trap', p.id, `${p.name} 踩中了香蕉皮！`, '罚停 1 回合', { emphasis:'target' });
+      return;
+    }
+    // 事件风暴模式：空格有概率当事件格用、抉择卡加权——压测战报密度用的
+    let eff = TYPES[p.pos];
+    if (eff === 'B' && this.botMode === 'storm' && Math.random() < 0.35) eff = 'E';
+    if (eff === 'B') return;
+    if (eff === 'I'){
+      const card = pick(ITEMS);
+      p.hand.push(card);
+      this.msg('item', p.id, `${p.name} 踩到道具格`, `得 ${card.t}`);
+      return;
+    }
+    if (eff === 'E'){
+      if (depth >= 2) return;
+      let pool = EVENTS;
+      if (this.botMode === 'storm') pool = EVENTS.concat(EVENTS.filter(e => e.opts)); // 抉择卡双倍权重
+      const card = pick(pool);
+      if (card.opts){
+        this.msg('event', p.id, `${p.name} 抽到「${card.t}」`, p.bot ? '思考中…' : '需要你抉择');
+        this.beginChoice(p, card, now);
+        return;
+      }
+      this.msg('event', p.id, `${p.name} 抽到「${card.t}」`, card.d);
+      this.applyEvent(p, card, ev, depth, now);
+      // 事件风暴：同一落格连锁抽卡（直到深度上限），压测战报
+      if (this.botMode === 'storm' && depth < 2) this.landing(p, ev, depth + 1, now);
+      return;
+    }
+    if (eff === 'T'){
+      const hasCharm = p._charmed; p._charmed = false;
+      if (hasCharm){ this.msg('item', p.id, `🧿 护身符挡下了 ${p.name} 的陷阱`, null); return; }
+      const trap = pick(TRAPS);
+      const dmg = trap.dmg || 0;
+      this.hurt(p, dmg, `${p.name} 中陷阱「${trap.t}」`, `${trap.d}${dmg ? ` · −${dmg} 💔` : ''}`);
+      if (trap.stun) p.stun += trap.stun;
+      else this.queueWalk(p, -trap.back, 99, false, now);
+    }
+  }
+  hurt(p, dmg, title, eff){
+    p.hp -= dmg;
+    this.msg('trap', p.id, title, eff, { targets: dmg ? [p.id] : null, emphasis: dmg ? 'target' : 'normal' });
+    if (p.hp <= 0 && p.zone !== 'dead'){
+      p.zone = 'dead'; p._walk = null; this._deadCount++;
+      this.msgRaw('malice', `☠ ${p.name} 血尽出局，进入观战`, { emphasis:'big' });
+    }
+  }
+
+  beginChoice(p, card, now){
+    const timeout = this.botMode === 'storm' ? 3000 : 8000;
+    this.choice = { pid:p.id, card, deadline: now + timeout, def: card.def ?? 0 };
+    if (p.bot){
+      const opt = Math.random() < 0.7 ? this.choice.def : 1 - this.choice.def;
+      this.at(now + 1400 + rint(1600), () => {
+        if (this.choice && this.choice.pid === p.id){ this.choice = null; this.applyChoiceNow(p, card, opt, now2); }
+      });
+    }
+  }
+  applyChoice(c, optIdx, now){ this.applyChoiceNow(this.players[c.pid], c.card, optIdx, now); }
+  applyChoiceNow(p, card, optIdx, now){
+    const idx = optIdx ?? this.choice?.def ?? card.def ?? 0;
+    const label = card.opts[idx];
+    const isDefault = idx === (card.def ?? 0);
+    this.msg('event', p.id, `${p.name} 选了「${label.replace(/^★ /,'')}」${isDefault && p.bot ? '（代选）' : ''}`, null);
+    // 简化结算：解析括号里的效果词
+    if (label.includes('回 1 血')) { p.hp = Math.min(this.hpMax, p.hp + 1); this.msg('event', p.id, `${p.name} 回 1 血`, null); }
+    if (label.includes('回 2 血')) { p.hp = Math.min(this.hpMax, p.hp + 2); this.msg('event', p.id, `${p.name} 回 2 血`, null); p.stun += 1; this.msg('trap', p.id, `${p.name} 泡过头了`, '罚停 1 回合'); }
+    if (label.includes('回退 2')) this.queueWalk(p, -2, 99, false, now);
+    if (label.includes('前进 3') && label.includes('扣 1 血')) this.hurt(p, 1, `${p.name} 冒险跳过去`, '前进 3 · −1 💔'), this.queueWalk(p, 3, 99, true, now);
+    else if (label.includes('前进 3')) this.queueWalk(p, 3, 99, true, now);
+    if (label.includes('前进 1')) this.queueWalk(p, 1, 99, true, now);
+    if (label.includes('归还失主')) { const c2 = pick(ITEMS); p.hand.push(c2); this.msg('event', p.id, `${p.name} 收获 ${c2.t}`, null); }
+  }
+
+  applyEvent(p, card, ev, depth, now){
+    switch (card.t){
+      case '新年红包': { const c = pick(ITEMS); p.hand.push(c); this.msg('event', p.id, `　└ 红包开出 ${c.t}`, null); break; }
+      case '一路顺风': this.queueWalk(p, 2, depth + 1, true, now); break;
+      case '顶头逆风': this.queueWalk(p, -2, 99, false, now); break;
+      case '全员拜年': for (const o of this.players) if (o !== p && o.zone !== 'dead' && o.zone !== 'done') this.queueWalk(o, 1, depth + 1, true, now); break;
+      case '全员大扫除': for (const o of this.players) if (o !== p && o.zone !== 'dead' && o.zone !== 'done') this.queueWalk(o, -1, 99, false, now); break;
+      case '手滑了': if (p.hand.length){ const c = p.hand.splice(rint(p.hand.length), 1)[0]; this.msg('event', p.id, `　└ 手滑弃掉了 ${c.t}`, null); } break;
+    }
+  }
+
+  tick(now){
+    now2 = now; // 抉择结算用的当前时钟
+    const ev = [];
+    if (this._groundEv){ ev.push(this._groundEv); this._groundEv = null; }
+    if (this._timers.length){
+      const due = this._timers.filter(t => now >= t.at).sort((a, b) => a.at - b.at);
+      if (due.length) this._timers = this._timers.filter(t => now < t.at);
+      for (const t of due) t.fn(ev, now);
+    }
+    for (const p of this.players){
+      if (p._walk && now >= p._walk.nextAt) this.stepOne(p, ev, now);
+    }
+    // 抉择超时 → 默认项代选
+    if (this.choice && now >= this.choice.deadline){
+      const c = this.choice; this.choice = null;
+      this.msg('event', c.pid, `${this.players[c.pid].name} 超时，按默认项代选`, null);
+      this.applyChoiceNow(this.players[c.pid], c.card, null, now);
+    }
+    if (this.phase === 'acting'){
+      for (const p of this.players){
+        if (!p.bot || p.done || p.zone === 'dead') continue;
+        if (p.itemAt != null && now >= p.itemAt && now < p.actAt && !p.pending && p.hand.length){
+          const card = p.hand[rint(p.hand.length)];
+          p.hand.splice(p.hand.indexOf(card), 1); p.pending = card;
+          p.itemAt = null;
+          this.doPlayResolve(p, undefined, now);
+        }
+        if (p.actAt != null && now >= p.actAt) this.doRoll(p, now, false);
+      }
+      if (this.players.every(p => p.done) && this._allDoneAt == null) this._allDoneAt = now;
+      if (this.phase === 'acting' && this.players.every(p => p.done)
+        && this._allDoneAt != null && now >= this._allDoneAt + 600
+        && now >= (this._busyUntil || 0) + 250) this.closeWindow(ev, now);
+      else if (this.phase === 'acting' && !this._autosScheduled && now >= this.turnEnds){
+        this._autosScheduled = true;
+        this.players.filter(p => !p.done && p.zone !== 'dead').forEach((p, i) =>
+          this.at(now + i * AUTO_GAP, () => { if (this.phase === 'acting' && !p.done) this.doRoll(p, now2, true); }));
+      }
+    }
+    if (this.phase === 'rest' && now >= this.restUntil){ this.phase = 'acting'; this.newTurn(now); }
+    return ev;
+  }
+
+  gameOver(ev, reason){
+    this.phase = 'over';
+    const rank = [...this.players].sort((a, b) => (b.finishTurn != null) - (a.finishTurn != null) || (b.zone === 'dead' ? -1 : b.net - a.net));
+    this.msgRaw('system', reason === 'finish' ? '🏁 有人通关，全局立即结束！' : `⌛ 局长 ${this.cap} 回合到，进入结算`, { emphasis:'big' });
+    ev.push({ type:'over', reason, rank: rank.map(p => ({ name:p.name, color:p.color, net:p.net, finished:p.finishTurn != null, dead:p.zone === 'dead', hp:p.hp })) });
+  }
+
+  snapshot(){
+    return {
+      turnNo: this.turnNo, cap: this.cap, phase: this.phase,
+      restUntil: this.phase === 'rest' ? this.restUntil : null,
+      turnStart: this.turnStart, turnEnds: this.turnEnds, turnMs: this.turnMs, hpMax: this.hpMax,
+      players: this.players.map(p => ({ id:p.id, name:p.name, bot:p.bot, color:p.color,
+        zone:p.zone, pos:p.pos, bpos:p.bpos, mainLeft:p.mainLeft, net:p.net, hp:p.hp, stun:p.stun,
+        done:p.done, die:p.die, pending:p.pending, hand:p.hand.map(c => ({...c})) })),
+      messages: this.messages.slice(),   // 全量（消息即日志）
+      ground: { ...this.ground },
+      choice: this.choice ? { pid:this.choice.pid, deadline:this.choice.deadline, card:this.choice.card } : null,
+    };
+  }
+}
+const TRAPS = [
+  { t:'脚下打滑', d:'退 3 格', back:3, dmg:1 },
+  { t:'被罚站',   d:'罚停 1 回合', stun:1 },
+  { t:'迷路了',   d:'退 5 格', back:5, dmg:2 },
+];
+let now2 = 0; // tick 注入的当前时钟（定时回调里用）
+// ==================== MODULE END ====================
+
+// ==================== 页面壳（随手扔的部分） ====================
+const $ = id => document.getElementById(id);
+const NS = 'http://www.w3.org/2000/svg';
+const CX = 190, CY = 296, R_RING = 118, R_ARC = 138, R_BR = 146, R_FIN = 168;
+const CELL_TYPE_FILL = { E:'#ffe0b2', I:'#bbdefb', T:'#e1bee7', B:'#f5f5f5' };
+const P_COLORS = ['#e53935', '#f9a825', '#43a047', '#1e88e5'];
+function angDeg(i){ return i * 360 / MAIN - 90; }
+function pt(r, deg){ const a = deg * Math.PI / 180; return [CX + r * Math.cos(a), CY + r * Math.sin(a)]; }
+function el(tag, attrs){ const e = document.createElementNS(NS, tag); for (const k in attrs) e.setAttribute(k, attrs[k]); return e; }
+
+let game = null, snap = null, tokenEls = [], groundEls = {};
+const UI = {
+  feedMode: 'v1', pulseMode: 'glow', choiceMode: 'k1',
+  unread: 0, lastMsgAt: 0, restSkips: 0, opens: 0, feedModeHistory: [],
+  spectate: false, targetSel: null, selHandIdx: -1,
+};
+
+function buildBoard(){
+  const svg = $('board');
+  svg.innerHTML = '';
+  for (let q = 0; q < 4; q++){
+    const a0 = q * 13 * 360 / MAIN - 90, a1 = (q * 13 + 12) * 360 / MAIN - 90;
+    const [x0, y0] = pt(R_ARC, a0), [x1, y1] = pt(R_ARC, a1);
+    svg.appendChild(el('path', { d:`M ${x0} ${y0} A ${R_ARC} ${R_ARC} 0 0 1 ${x1} ${y1}`,
+      fill:'none', stroke:P_COLORS[q], 'stroke-width':6, opacity:.25 }));
+  }
+  for (let i = 0; i < MAIN; i++){
+    const [x, y] = pt(R_RING, angDeg(i));
+    svg.appendChild(el('circle', { cx:x, cy:y, r:9, fill:CELL_TYPE_FILL[TYPES[i]], stroke:'#b0bec5', 'stroke-width':.8 }));
+    const qi = SPAWNS.indexOf(i);
+    if (qi >= 0) svg.appendChild(el('circle', { cx:x, cy:y, r:9, fill:'none', stroke:P_COLORS[qi], 'stroke-width':2.2 }));
+  }
+  for (let q = 0; q < 4; q++){
+    const a = angDeg(q * 13);
+    for (let j = 0; j < BRANCH; j++){
+      const [x, y] = pt(R_BR, a + (j - 1.5) * 9);
+      svg.appendChild(el('circle', { cx:x, cy:y, r:7.5, fill:'#fff', stroke:P_COLORS[q], 'stroke-width':1.4, 'stroke-dasharray':'2.5 2' }));
+    }
+    const [fx, fy] = pt(R_FIN, a);
+    const t = el('text', { x:fx, y:fy + 6, 'text-anchor':'middle', 'font-size':16 });
+    t.textContent = '🏁';
+    svg.appendChild(t);
+  }
+  svg.appendChild(el('g', { id:'groundG' }));
+  svg.appendChild(el('g', { id:'tokens' }));
+}
+function tokenPt(p){
+  const off = [0, 6, -6, 11][p.id];
+  if (p.zone === 'main'){ const [x, y] = pt(R_RING + off, angDeg(p.pos)); return [x, y]; }
+  if (p.zone === 'branch'){
+    const a = angDeg(SPAWNS[p.id]) + (p.bpos - 1.5) * 9;
+    const [x, y] = pt(R_BR + off * .6, a); return [x, y];
+  }
+  if (p.zone === 'dead'){ const [x, y] = pt(R_FIN + 12, angDeg(SPAWNS[p.id]) ); return [x, y]; }
+  const [x, y] = pt(R_FIN, angDeg(SPAWNS[p.id])); return [x, y];
+}
+function rebuildTokens(){
+  const g = $('board').querySelector('#tokens');
+  g.innerHTML = '';
+  tokenEls = snap.players.map(p => {
+    const tg = el('g', { class:'tk' });
+    tg.dataset.pid = p.id;
+    if (p.id === 0) tg.appendChild(el('circle', { cx:0, cy:0, r:11, fill:'none', stroke:'#263238', 'stroke-width':1.5, 'stroke-dasharray':'3 2.5' }));
+    const core = el('circle', { cx:0, cy:0, r:8.5, fill:p.color, stroke:'#fff', 'stroke-width':2, class:'tkMain' });
+    core.id = 'core' + p.id;
+    tg.appendChild(core);
+    const lb = el('text', { x:0, y:3.2, 'text-anchor':'middle', class:'tokenLbl' });
+    lb.textContent = p.id === 0 ? '你' : p.name[1];
+    tg.appendChild(lb);
+    // 微型血条（棋子下方）
+    const hb = el('g', { class:'hp' });
+    hb.appendChild(el('rect', { x:-9, y:11, width:18, height:3, rx:1.5, class:'hpBarBg' }));
+    hb.appendChild(el('rect', { x:-9, y:11, width:18, height:3, rx:1.5, class:'hpBar', id:'hp' + p.id }));
+    tg.appendChild(hb);
+    tg.addEventListener('click', () => onTokenClick(p.id));
+    g.appendChild(tg);
+    return tg;
+  });
+}
+function pulseToken(pid, level){
+  const tg = tokenEls[pid];
+  if (!tg || UI.pulseMode === 'none') return;
+  if (level === 'target'){
+    tg.classList.remove('ring'); void tg.getBoundingClientRect;
+    const [x, y] = tokenPt(snap.players[pid]);
+    const ring = el('circle', { cx:x, cy:y, r:10, fill:'none', stroke:'#ff5252', 'stroke-width':3, class:'pulseRing target' });
+    $('board').appendChild(ring); setTimeout(() => ring.remove(), 1100);
+    tg.classList.add(UI.pulseMode === 'ring' ? 'ring' : 'glow');
+    setTimeout(() => tg.classList.remove('glow', 'ring'), 1200);
+  } else if (UI.pulseMode === 'glow'){
+    tg.classList.remove('glow'); void tg.getBoundingClientRect; tg.classList.add('glow');
+    setTimeout(() => tg.classList.remove('glow'), 1150);
+  } else {
+    const [x, y] = tokenPt(snap.players[pid]);
+    const ring = el('circle', { cx:x, cy:y, r:10, fill:'none', stroke:'#ffd54f', 'stroke-width':2.5, class:'pulseRing' });
+    $('board').appendChild(ring); setTimeout(() => ring.remove(), 1100);
+    tg.classList.add('ring');
+    setTimeout(() => tg.classList.remove('ring'), 1000);
+  }
+}
+function renderGround(){
+  const g = $('board').querySelector('#groundG');
+  g.innerHTML = ''; groundEls = {};
+  for (const pos in snap.ground){
+    const [x, y] = pt(R_RING, angDeg(+pos));
+    const t = el('text', { x:x, y:y - 12, 'text-anchor':'middle', 'font-size':13 });
+    t.textContent = '🍌';
+    g.appendChild(t);
+    groundEls[pos] = t;
+  }
+}
+function onTokenClick(pid){
+  if (!UI.targetSel || pid === 0) return;
+  $('pickHint').classList.remove('show');
+  tokenEls.forEach(t => t.classList.remove('targetable'));
+  UI.targetSel = null;
+  game.humanTargetResolve(snap.players[0], UI.selHandIdx, pid, Date.now());
+  UI.selHandIdx = -1;
+  refresh();
+}
+
+// ---- 战报渲染（三形态共用条目 HTML 生成） ----
+const KIND_ICON = { event:'🃏', trap:'⚠️', item:'🎁', malice:'🌲', system:'📣', summary:'📜', score:'📣' };
+const KIND_LABEL = { event:'事件卡', trap:'陷阱', item:'道具', malice:'世界恶意', system:'系统', summary:'小结', score:'结算' };
+function entryHtml(m, showWho){
+  const who = m.who != null ? game.players[m.who].name : '';
+  const icon = KIND_ICON[m.kind] || '📣';
+  if (m.kind === 'summary') return `<span class="ic">📜</span>${m.title}`;
+  let s = `<span class="ic">${icon}</span>`;
+  if (who) s += `<span class="who">${who}</span> `;
+  s += `${m.title}`;
+  if (m.eff) s += ` <span class="eff">→ ${m.eff}</span>`;
+  return s;
+}
+function feedClass(m){ return m.kind + (m.emphasis === 'target' || m.emphasis === 'big' ? ' fresh-strong' : ''); }
+
+function pushFeedEntry(m){
+  UI.lastMsgAt = Date.now();
+  UI.unread++;
+  const html = `<div class="fe ${m.kind} fresh" data-id="${m.id}">${entryHtml(m)}</div>`;
+  if (UI.feedMode === 'v1'){
+    const box = $('feedV1');
+    box.insertAdjacentHTML('beforeend', html);
+    while (box.children.length > 4) box.removeChild(box.firstChild);
+  } else if (UI.feedMode === 'v2'){
+    const box = $('feedV2');
+    box.insertAdjacentHTML('afterbegin', html);
+    while (box.children.length > 2) box.removeChild(box.lastChild);
+  } else {
+    $('feedV3').innerHTML = `${KIND_ICON[m.kind] || ''} ${strip(m.title)}${m.eff ? ' → ' + m.eff : ''} <span class="badge">${UI.unread}</span>`;
+  }
+  updateV3Badge();
+}
+function strip(html){ return html.replace(/<[^>]*>/g, ''); }
+function updateV3Badge(){ if (UI.feedMode !== 'v3') return; }
+
+function renderDrawer(){
+  const list = $('drawerList');
+  const all = game.messages.slice().reverse(); // 最新在最上
+  const shown = all.slice(0, 50);
+  const sections = [];
+  let html = '';
+  let curTurn = null;
+  for (const m of shown){
+    if (m.kind === 'summary'){
+      html += `<div class="sec">${m.title}</div>`;
+      curTurn = m.turn;
+      continue;
+    }
+    const flavor = m.flavor ? `<div class="flavor">${m.flavor}</div>` : '';
+    html += `<div class="fe ${m.kind} ${m.flavor ? 'hasFlavor' : ''}" ${m.flavor ? 'onclick="this.classList.toggle(\'openFlavor\')"' : ''}>${entryHtml(m)}${flavor}</div>`;
+  }
+  list.innerHTML = html + (all.length > 50 ? '<button class="more" onclick="UI.loadOlder()">加载更早（还有 ' + (all.length - 50) + ' 条）</button>' : '');
+  $('drawerSt').textContent = `共 ${all.length} 条 · 回合分节已插入`;
+}
+UI.loadOlder = function(){
+  // stub 简化：一次渲染全部
+  const list = $('drawerList');
+  const all = game.messages.slice().reverse();
+  let html = ''; 
+  for (const m of all){
+    if (m.kind === 'summary'){ html += `<div class="sec">${m.title}</div>`; continue; }
+    const flavor = m.flavor ? `<div class="flavor">${m.flavor}</div>` : '';
+    html += `<div class="fe ${m.kind} ${m.flavor ? 'hasFlavor' : ''}" ${m.flavor ? 'onclick="this.classList.toggle(\'openFlavor\')"' : ''}>${entryHtml(m)}${flavor}</div>`;
+  }
+  list.innerHTML = html;
+  list.scrollTop = 300;
+};
+
+// ---- HUD / dock 渲染 ----
+function canHumanAct(){
+  if (!snap || snap.phase !== 'acting') return false;
+  const me = snap.players[0];
+  if (me.zone === 'dead') return false;
+  return !me.done;
+}
+function render(){
+  $('turnNo').textContent = `回合 ${snap.turnNo}/${snap.cap}`;
+  $('phaseTxt').textContent = snap.phase === 'rest' ? '⏸ 休息中' : snap.phase === 'over' ? '已结束' : '行动中';
+  $('skipBtn').classList.toggle('show', snap.phase === 'rest');
+  const me = snap.players[0];
+  const canAct = canHumanAct() && !UI.spectate;
+  $('rollBtn').disabled = !canAct;
+  $('rollBtn').classList.toggle('mine', canAct);
+  $('rollBtn').textContent = snap.phase === 'over' ? '🏁 结束' : canAct ? '🎲 掷骰' : me.zone === 'dead' ? '☠ 观战' : '…';
+  const armed = me.done || !canAct;
+  $('confirmBtn').classList.toggle('armed', !armed && snap.phase === 'acting');
+  $('confirmBtn').textContent = me.zone === 'dead' ? '☠ 观战中' : armed ? '已确认 · 看大家走' : '✔ 确认结束';
+  $('hpPill').textContent = `❤️ ${me.hp}/${snap.hpMax}`;
+  $('hpPill').classList.toggle('low', me.hp <= 3);
+  // 手牌
+  $('handRow').innerHTML = me.hand.length
+    ? me.hand.map((c, i) => `<div class="handCard ${UI.selHandIdx === i ? 'sel' : ''}" data-i="${i}"><div class="t">${c.t}</div><div class="d">${c.d}</div></div>`).join('')
+    : '<div class="handCard empty">手牌空空的，踩道具格得卡</div>';
+  // 任务槽
+  renderTasks();
+  // 血条微条
+  snap.players.forEach(p => {
+    const bar = document.getElementById('hp' + p.id);
+    if (bar){
+      const w = Math.max(0, p.hp / snap.hpMax) * 18;
+      bar.setAttribute('width', w.toFixed(1));
+      bar.classList.toggle('low', p.hp <= 3);
+    }
+    const tg = tokenEls[p.id];
+    if (tg) tg.classList.toggle('dead', p.zone === 'dead');
+  });
+  renderTokens();
+}
+function renderTokens(){
+  snap.players.forEach((p, i) => {
+    const [x, y] = tokenPt(p);
+    tokenEls[i].setAttribute('transform', `translate(${x},${y})`);
+  });
+}
+function renderTasks(){
+  const box = $('tasks');
+  const rows = [];
+  // 抉择任务条（弹给本人的抉择卡）
+  if (snap.choice && snap.choice.pid === 0 && !UI.spectate){
+    const card = snap.choice.card;
+    const left = Math.max(0, (snap.choice.deadline - Date.now()) / 1000).toFixed(0);
+    rows.push(`<div class="task"><b>🃏 ${card.t}</b><span class="st">需要你抉择</span><button class="go" onclick="UI.openChoice()">选 (${left}s)</button><button class="x" onclick="UI.closeChoiceTask()">✕</button></div>`);
+  }
+  // 黑市窗任务条组（mock）
+  if (UI.mktOn && snap.phase === 'acting'){
+    rows.push(`<div class="task mkt"><b>🛃 警长查货窗</b><span class="st">你是偷渡者</span>
+      <span class="miniOps"><button onclick="UI.mktOp('报备')">报备</button><button onclick="UI.mktOp('转让')">转让</button><button onclick="UI.mktOp('查验')">查验</button></span>
+      <button class="x" onclick="UI.mktClose()">✕</button></div>`);
+  }
+  // 目标选择进行中
+  if (UI.targetSel){
+    rows.push(`<div class="task"><b>🎯 选定目标</b><span class="st">点棋盘上的对手棋子</span><button class="x" onclick="UI.cancelTarget()">✕</button></div>`);
+  }
+  box.innerHTML = rows.join('');
+}
+function renderCountdown(now){
+  // 满屏 HUD 里不再放大进度条；顶部 pill 里的文字即倒计时
+  let txt = '';
+  if (!snap || snap.phase === 'idle') return;
+  if (snap.phase === 'over') txt = '🏁 已结束';
+  else if (snap.phase === 'rest') txt = `⏸ 休息 ${Math.max(0, Math.ceil((snap.restUntil - now) / 1000))}s`;
+  else txt = `⏳ ${Math.max(0, Math.ceil((snap.turnEnds - now) / 1000))}s`;
+  $('phaseTxt').textContent = txt;
+}
+
+// ---- UI 交互 ----
+UI.openDrawer = function(){
+  UI.opens++;
+  UI.unread = 0;
+  renderDrawer();
+  $('drawer').classList.add('show');
+  $('feedV3').innerHTML = '💬 战报';
+};
+UI.closeDrawer = function(){ $('drawer').classList.remove('show'); };
+UI.close = function(id){ $(id).classList.remove('show'); };
+UI.open = function(id){ $(id).classList.add('show'); };
+UI.openChoice = function(){
+  if (!snap.choice) return;
+  const card = snap.choice.card;
+  const boxId = UI.choiceMode === 'k1' ? 'choiceK1' : 'choiceK2';
+  const pre = UI.choiceMode === 'k1' ? 'k1' : 'k2';
+  $(pre + 'T').textContent = card.t;
+  $(pre + 'F').textContent = card.d;
+  $(pre + 'O').innerHTML = card.opts.map((o, i) =>
+    `<button class="${i === (card.def ?? 0) ? 'def' : ''}" onclick="UI.pick(${i})">${o}${i === (card.def ?? 0) ? '（默认）' : ''}</button>`).join('');
+  $(boxId).classList.add('show');
+};
+UI.pick = function(i){
+  $('choiceK1').classList.remove('show'); $('choiceK2').classList.remove('show');
+  if (game.choice) game.humanChoice(i, Date.now());
+  refresh();
+};
+UI.closeChoiceTask = function(){
+  // 关掉任务条 = 留在原地不管（超时自动按默认项代选）
+  UI.unread++;
+  refresh();
+};
+UI.cancelTarget = function(){
+  UI.targetSel = null; UI.selHandIdx = -1;
+  tokenEls.forEach(t => t.classList.remove('targetable'));
+  $('pickHint').classList.remove('show');
+  refresh();
+};
+UI.mktOp = function(op){
+  game.msgRaw('item', `🛃 你（${op === '报备' ? '报备了顺风靴' : op === '转让' ? '转让了一张道具卡（明面）' : '查验了小黄——抓到谎报！'}）`, op === '查验' ? { targets:[3] } : {});
+  if (op === '查验') pulseToken(3, 'target');
+  refresh();
+};
+UI.mktClose = function(){ UI.mktOn = false; refresh(); };
+UI.enterReconfig = function(){
+  $('cfgFrozen').style.display = 'none';
+  $('cfgEdit').style.display = '';
+  $('setApply').style.display = '';
+};
+$('gearBtn').onclick = () => UI.open('setModal');
+$('setClose').onclick = () => UI.close('setModal');
+$('setApply').onclick = () => {
+  UI.close('setModal');
+  $('cfgFrozen').style.display = ''; $('cfgEdit').style.display = 'none'; $('setApply').style.display = 'none';
+  newRealGame();
+};
+$('helpBtn').onclick = () => UI.open('helpModal');
+$('goalBtn').onclick = () => UI.open('goalModal');
+$('ovAgain').onclick = () => { UI.close('overModal'); newRealGame(); };
+
+// 手牌点击 → 打卡（场地型直接打；指他型进入目标选择）
+$('handRow').addEventListener('click', e => {
+  const c = e.target.closest('.handCard[data-i]');
+  if (!c || !canHumanAct()) return;
+  const idx = +c.dataset.i;
+  const card = snap.players[0].hand[idx];
+  if (card.k === 'slingshot'){
+    UI.selHandIdx = idx; UI.targetSel = true;
+    $('pickHint').classList.add('show');
+    snap.players.forEach(p => { if (p.id !== 0 && p.zone !== 'dead' && p.zone !== 'done' && tokenEls[p.id]) tokenEls[p.id].classList.add('targetable'); });
+    refresh();
+  } else {
+    game.humanTargetResolve(snap.players[0], idx, undefined, Date.now());
+    refresh();
+  }
+});
+$('rollBtn').onclick = () => { if (canHumanAct() && !UI.targetSel){ game.humanRoll(Date.now()); refresh(); } };
+$('skipBtn').onclick = () => { if (game.skipRest(Date.now())) UI.restSkips++; refresh(); };
+// 确认结束：stub 里只有掷骰一个必做操作，掷完即视为已确认（真实现是独立按钮）
+$('confirmBtn').onclick = () => {
+  const me = snap.players[0];
+  if (!canHumanAct() || me.die != null) return;
+  game.humanRoll(Date.now());
+  refresh();
+};
+
+// ---- 调参条 ----
+document.querySelectorAll('#dbg [data-feed]').forEach(b => b.onclick = () => {
+  document.body.classList.remove('mode-v2', 'mode-v3');
+  UI.feedMode = b.dataset.feed;
+  if (UI.feedMode === 'v2') document.body.classList.add('mode-v2');
+  if (UI.feedMode === 'v3') document.body.classList.add('mode-v3');
+  document.querySelectorAll('#dbg [data-feed]').forEach(x => x.classList.toggle('on', x === b));
+  // 切形态时把已存消息重灌进新形态
+  $('feedV1').innerHTML = ''; $('feedV2').innerHTML = '';
+  UI.unread = 0;
+  const recent = game.messages.slice(-4);
+  for (const m of recent) pushFeedEntry(m);
+  UI.unread = 0; updateV3Badge();
+  render();
+});
+document.querySelectorAll('#dbg [data-pulse]').forEach(b => b.onclick = () => {
+  UI.pulseMode = b.dataset.pulse;
+  document.querySelectorAll('#dbg [data-pulse]').forEach(x => x.classList.toggle('on', x === b));
+});
+document.querySelectorAll('#dbg [data-choice]').forEach(b => b.onclick = () => {
+  UI.choiceMode = b.dataset.choice;
+  document.querySelectorAll('#dbg [data-choice]').forEach(x => x.classList.toggle('on', x === b));
+});
+$('mktBtn').onclick = () => { UI.mktOn = true; game.msgRaw('system', '🛃 黑市开张！随机指派警长与偷渡者，窗内可转让/查验（任务条在 dock 上方）', { emphasis:'big' }); refresh(); };
+$('spectBtn').onclick = () => {
+  UI.spectate = !UI.spectate;
+  $('spect').classList.toggle('show', UI.spectate);
+  $('dock').classList.toggle('hidden', UI.spectate);
+  document.body.classList.toggle('dockHidden', UI.spectate);
+  $('spectBtn').textContent = UI.spectate ? '🎮 回到现场' : '☠ 观战态';
+  refresh();
+};
+$('stormBtn').onclick = () => { newRealGame('storm'); };
+function newRealGame(botMode){
+  const g = new WorldMsgGame({
+    turnMs: +($('durSel')?.value || 30) * 1000,
+    restMs: +($('restSel')?.value || 10) * 1000,
+    cap: +($('capSel')?.value || 15),
+    hpMax: +($('hpSel')?.value || 10),
+    botMode: botMode || 'normal',
+  });
+  game = g;
+  UI.unread = 0; UI.selHandIdx = -1; UI.targetSel = null; UI.mktOn = false;
+  if (UI.spectate) $('spectBtn').onclick();
+  game.newGame(Date.now());
+  $('feedV1').innerHTML = ''; $('feedV2').innerHTML = '';
+  $('drawer').classList.remove('show');
+  for (const m of game.messages.slice(-4)) pushFeedEntry(m);
+  refresh();
+}
+function exportRecord(){
+  if (!game) return;
+  const lines = [
+    '【世界消息呈现 stub · 体感记录】（贴回 issue #11）',
+    `变体：战报=${UI.feedMode} 联动=${UI.pulseMode} 抉择卡=${UI.choiceMode}`,
+    `战报抽屉打开 ${UI.opens} 次 ｜ 跳过休息 ${UI.restSkips} 次 ｜ 消息总数 ${game.messages.length}`,
+    '请回答：1) 战报三形态选哪个？2) 描边/光圈选哪个？3) 抉择卡两形态选哪个？',
+    '4) 任务槽+手牌点不点得过来？5) HUD 遮棋盘吗？6) 淡出时机合适吗？',
+  ];
+  const text = lines.join('\n');
+  $('expTxt').value = text;
+  UI.open('expModal');
+  if (navigator.clipboard) navigator.clipboard.writeText(text).catch(() => {});
+}
+$('exportBtn').onclick = exportRecord;
+
+// ---- 主循环 ----
+function handle(evs){
+  let need = false;
+  for (const e of evs){
+    if (e.type === 'ground'){ /* 由 news 条目驱动角标重绘 */ }
+    need = true;
+  }
+  if (need) refresh();
+}
+let builtFor = null;
+function refresh(){
+  snap = game.snapshot();
+  if (builtFor !== game){ builtFor = game; rebuildTokens(); }
+  renderGround();
+  render();
+  // 战报区锚在 dock 上方（任务槽多少会改变 dock 高度）
+  const dockH = $('dock').getBoundingClientRect().height;
+  const bottom = `calc(${Math.round(dockH)}px + env(safe-area-inset-bottom) + 10px)`;
+  $('feedV1').style.bottom = bottom;
+  $('feedV3').style.bottom = bottom;
+}
+// 战报条目按消息 id 差量渲染（全量数组带 cap 裁剪也不受影响）
+let seenId = 0;
+function drainMessages(){
+  for (const m of game.messages){
+    if (m.id <= seenId) continue;
+    seenId = m.id;
+    pushFeedEntry(m);
+    // 联动：普通描边/目标红脉冲
+    if (m.who != null && m.emphasis !== 'none' && m.kind !== 'summary') pulseToken(m.who, 'normal');
+    if (m.targets) m.targets.forEach(t => pulseToken(t, 'target'));
+  }
+}
+setInterval(() => {
+  const now = Date.now();
+  if (game.phase === 'idle') return;
+  game.tick(now);
+  drainMessages();
+  const walking = game.players.some(p => p._walk);
+  const key = game.phase + '|' + game.turnNo + '|' + (game.choice ? game.choice.pid : -1);
+  if (walking || key !== lastKey){ lastKey = key; refresh(); }
+  // 抉择倒计时：按秒节流刷新任务条（避免 100ms 重排 DOM 吞点击）；首现时自动弹卡给本人
+  if (game.choice){
+    if (game.choice.pid === 0 && !UI._choiceShown){ UI._choiceShown = true; UI.openChoice(); }
+    const s = Math.ceil((game.choice.deadline - Date.now()) / 1000);
+    if (s !== UI._lastChoiceSec){ UI._lastChoiceSec = s; renderTasks(); }
+  } else { UI._choiceShown = false; UI._lastChoiceSec = -1; }
+  renderCountdown(now);
+  // V1 淡出：10 秒无新消息
+  if (UI.feedMode === 'v1'){
+    $('feedV1').classList.toggle('faded', now - UI.lastMsgAt > 10000);
+  }
+}, 100);
+let lastKey = '';
+
+buildBoard();
+newRealGame();
+</script>
+</body>
+</html>
