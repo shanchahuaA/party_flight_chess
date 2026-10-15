@@ -1,19 +1,19 @@
 <!doctype html>
 <!--
   [PROTOTYPE] 棋盘与世界恶意 stub —— 一次性代码（GitHub issue #13）
-  ★ 第一轮回填裁决（原版实玩后）：① 地图不止单环，试「3 环网状拓扑」——新增形状 E 三环网（默认）；
-    ② 岔路口格更像事件 → 拆掉岔路系统，并入事件卡（两张「岔路口」抉择卡）；
-    ③ 恶意三型全保留，节奏定每 3 回合一波，范围加大（木头 2→3 格+预警阴影、滚石 7→10 格、塌陷 4→6 格）；
-    ④ 最后一波裁定 B 合力大怪（A 各自过波保留在调参条对比），默认 B；
-    ⑤ 满屏棋盘被 HUD/dock 遮挡 → boardWrap 可视带方案；80 格太小 → 100 格。
+  ★ 前两轮回填：①恶意三型保留·每 3 回合一波·范围加大（木头 3 格/滚石 10 格/塌陷 6 格）②岔路口格并入
+    事件卡 ③最后一波定 B 合力大怪（A 留调参对比）④boardWrap 可视带·满屏可见 ⑤80→100 格。
+  ★ 第三轮回填（大富翁 11 参考图裁决）：地图像大富翁——方砖直街 + 环岛转向的「真·网」：
+    外环(64)+中横街(11)+中竖街(9)+西巷(6)+东巷(6)+下横巷(4) = 100 格，7 座环岛（6 三岔 + 1 四岔）；
+    走法改图上游走：撞上岔路多选项时人类环岛选路（超时自动直行），bot 顺直行偏好漫游；
+    逆行（退格卡）沿来路原路退回；事件卡/恶意演出照旧。深色庄园底 + 街名 + 地皮块占位。
   本 stub 现在要体感裁决的事：
-    1. 三环网棋盘读不读得清、走得爽不爽（换乘口会不会晕）——对比 A 波浪环/B 葫芦8字/C 蛇形折返/D 螺旋回环；
-       岔路并进事件卡之后，抽到时想不想选（vs 原来真实的岔路口格，哪个手感好）；
-       100 格密度上棋子/血条/让位带战报是否还成立。
-    2. 世界恶意每 3 回合 + 加大范围后的压迫感是否合适；三型（🪵木头/🪨滚石/🕳塌陷）手感。
-    3. 最后一波 B 合力年兽战（共享血条、反噬全场、递卡合作）——终选形态的完整手感。
+    1. 庄园路网（环岛岔路 + 直街网格）读不读得清、走得爽不爽？环岛选路的手感（点路 vs 抉择卡事件）？
+       7 座环岛密度合适吗？街名路牌会不会晕？砖格密度上棋子/血条/让位带战报是否还成立。
+    2. 世界恶意每 3 回合 + 加大范围后的压迫感；三型（🪵木头/🪨滚石/🕳塌陷）手感。
+    3. 最后一波 B 合力年兽战——终选形态完整手感。
   规则基线 = 一页纸规则 v2：100 格网状棋盘 / 15 世界回合结算制 / 血 10 淘汰制 / 通关席不掷骰可打卡须过波 / 团灭=暗牌作废。
-  这是手感原型，不是实现起点；三环网布局函数（shapePoly 'e'）与恶意节奏参数结论可参考。
+  这是手感原型，不是实现起点；路网构建（buildRoadNet）与恶意节奏参数结论可参考。
   运行：电脑双击打开；手机 `python -m http.server 8137` 后访问同 Wi-Fi 局域网地址。
 -->
 <html lang="zh-CN">
@@ -36,7 +36,7 @@ button{font-family:inherit; touch-action:manipulation}
 /* ---- 满屏棋盘（boardWrap 可视带：避开 HUD/dbg 与 dock，棋盘永远完整可见） ---- */
 #boardWrap{position:fixed; left:0; right:0; top:84px; bottom:150px; z-index:0}
 #board{width:100%; height:100%; background:
-  radial-gradient(circle at 50% 46%, #f5f9fa 0%, var(--boardbg) 55%, #dde6ea 100%)}
+  radial-gradient(circle at 50% 42%, #2e4053 0%, #25333f 55%, #1d2833 100%)}
 #board text{user-select:none}
 #board.shake{animation:shake .45s}
 @keyframes shake{0%,100%{transform:translate(0,0)}20%{transform:translate(3px,-2px)}40%{transform:translate(-3px,2px)}60%{transform:translate(2px,1px)}80%{transform:translate(-2px,-1px)}}
@@ -224,7 +224,7 @@ textarea{font-family:inherit}
 <body>
 
 <div id="boardWrap">
-<svg id="board" viewBox="0 0 380 560" preserveAspectRatio="xMidYMid meet" aria-label="棋盘"></svg>
+<svg id="board" viewBox="0 0 380 478" preserveAspectRatio="xMidYMid meet" aria-label="棋盘"></svg>
 </div><!-- /boardWrap -->
 
 <!-- 顶部 HUD -->
@@ -240,7 +240,6 @@ textarea{font-family:inherit}
 
 <!-- 原型调参条（形状/恶意/波形/速度） -->
 <div id="dbg">
-  <span class="grp"><span>形状</span><button data-shape="e" class="on">E三环网</button><button data-shape="a">A波浪环</button><button data-shape="b">B葫芦8字</button><button data-shape="c">C蛇形折返</button><button data-shape="d">D螺旋回环</button></span>
   <span class="grp"><span>恶意</span><button data-mev="3" class="on">每3回合</button><button data-mev="4">每4</button><button data-mev="5">每5</button><button data-mev="0">关</button></span>
   <span class="grp"><span>强度</span><button data-mst="mild" class="on">温和</button><button data-mst="wild">猛</button></span>
   <span class="grp"><span>最后一波</span><button data-wave="b" class="on">B合力大怪</button><button data-wave="a">A各自过波</button></span>
@@ -302,14 +301,14 @@ textarea{font-family:inherit}
 
 <!-- 开场说明（三轮体感法） -->
 <div class="modal show" id="introModal"><div class="scrim"></div><div class="box">
-  <h3>🧪 三环网与世界恶意 · 体感 stub（第 2 版）</h3>
+  <h3>🏰 大富翁式庄园路网 · 体感 stub（第 3 版）</h3>
   <div class="rule">
-    按第一轮裁决改版：100 格、岔路并入事件卡、恶意每 3 回合·范围加大、最后一波定 <b>B 合力大怪</b>。<br>
-    本轮要验的：<b>形状 E 三环网</b>（100 格分摊在 3 只环 + 右侧换乘口）。你执红色棋子，另三位是机器人。<br>
+    参考大富翁 11 改版：<b>方砖直街 + 环岛</b>——100 格外环+中横街+中西巷/东巷+下横巷，7 座 ✚ 环岛交叉。<br>
+    你执红色棋子，另三位是机器人。<b>走到环岛岔口时，路不止一条：会弹出选路条，点你要去的方向</b>（超时自动直行）——这回的岔路长在地图上，不在事件卡里（事件卡里的两张「岔路口」抉择卡也仍在）。<br>
     <b>建议三轮</b>：<br>
-    ① 默认参数整局——三环网读不读得清？走一圈晕不晕？恶意每 3 回合·范围加大后压迫感如何？<br>
-    ② 调参条切回单环（A/B/C/D）对比——「网」和「环」哪个才是你要的地图？<br>
-    ③ ⏩ 直通最后一波，完整打一场 B 合力年兽战（现在就是默认形态）。
+    ① 默认参数整局——路网读不读得清？街名路牌（外环/中横街/西巷…）找不找得到？环岛选路频不频、烦不烦？<br>
+    ② 多走几圈试试内圈抄近 / 外圈绕远的手感——「网」是不是你要的地图形态？<br>
+    ③ ⏩ 直通最后一波，完整打一场 B 合力年兽战（恶意每 3 回合·范围加大照旧）。
   </div>
   <div class="btns"><button class="ok" id="introGo">🎲 开始第 1 轮</button></div>
 </div></div>
@@ -328,8 +327,9 @@ textarea{font-family:inherit}
   <h3>📖 帮助 · 一页纸规则（速查）</h3>
   <div class="rule">
     <b>回合内</b>：可选打道具卡 → 必做掷骰（棋子立刻走）→ 落格结算 → 点「确认结束」；不确认则窗内持续可操作。<br>
-    <b>棋盘</b>：100 格；默认 <b>三环网</b>（三只环 + 右侧换乘口串成一条主路），调参条可切回单环弯绕（A/B/C/D）。<br>
-    <b>岔路</b>：不再有岔路口格——并入事件卡，抽到「岔路口」抉择卡时现场二选一。<br>
+    <b>棋盘</b>：100 格 <b>大富翁式庄园路网</b>——方砖直街 + 7 座 ✚ 环岛（外环 64 + 中横街 11 + 中竖街 9 + 西巷 6 + 东巷 6 + 下横巷 4）。<br>
+    <b>走法</b>：掷骰后逐格走；到环岛有多条路时人类弹选路条（超时自动直行），bot 顺直行偏好自己逛街；退格卡沿来路原路退回。<br>
+    <b>岔路</b>：岔路口格不存在——路网本身有环岛可选拆路；另一路岔味在事件卡（两张「岔路口」抉择卡）。<br>
     <b>通关席</b>：净走满一圈回到自己出生格，进 4 格终点支路，尽头刚好踩进=通关席（超出反弹）：不再掷骰，仍可打卡，必须过最后一波。<br>
     <b>淘汰</b>：血 10，血尽即观战，死了就死了。<br>
     <b>世界恶意</b>：每 3 回合一波全局负面——🪵 大木头（预警阴影+落点砸 3 格）/ 🪨 滚石（滚过 10 格路段）/ 🕳 塌陷区（塌 6 格，持续 2 回合）。<br>
@@ -356,7 +356,7 @@ textarea{font-family:inherit}
   <ul class="rank" id="endRank"></ul>
   <div class="goal" style="margin-top:10px">
     <div class="t">❓ 体感三问（贴回 issue #13）</div>
-    <div class="h">1) 三环网 vs 单环弯绕（A/B/C/D）哪个爽？换乘口晕不晕？ 2) 恶意每 3 回合+加大范围，压迫感合适吗？ 3) 岔路并进事件卡后，抽到想选吗？比真的岔路口格手感如何？</div>
+    <div class="h">1) 庄园路网 vs 上一版三环网——大富翁方砖+环岛的形态对味吗？环岛选路频不频/烦不烦？ 2) 恶意每 3 回合+加大范围，压迫感合适吗？ 3) 街名路牌与深色底读不读得清？</div>
   </div>
   <div class="d" style="margin-top:8px">完整结算页（亮暗牌/称号/找战犯）不属本 stub。</div>
   <div class="btns">
@@ -376,23 +376,59 @@ textarea{font-family:inherit}
 <script>
 'use strict';
 // ==================== MODULE BEGIN（MaliceGame：无 DOM） ====================
-const MAIN = 100, BRANCH = 4;
-const SPAWNS = [0, 25, 50, 75];
+const BRANCH = 4;
 const STEP_MS = 115, AUTO_GAP = 260;
 const ZONE_COLORS = ['#e53935', '#f9a825', '#43a047', '#1e88e5'];
 
-// 100 格类型：每区 25 格 = 事件 10 / 道具 5 / 陷阱 4 / 空格 6（种子洗匀，各区错开）
-function zoneTypes(seed){
-  const arr = [].concat(Array(10).fill('E'), Array(5).fill('I'), Array(4).fill('T'), Array(6).fill('B'));
-  let s = seed;
-  for (let i = arr.length - 1; i > 0; i--){
+// ==================== 大富翁式庄园路网 ★第三轮裁决 ====================
+// 方砖直街 + 环岛：外环 64 + 中横街 11 + 中竖街 9 + 西巷 6 + 东巷 6 + 下横巷 4 = 100 格；
+// 7 座环岛（deg≥3）：6 个三岔 + (6,16) 一个四岔。图上游走，可选拆路。
+const CELL = 22, GX0 = 48, GY0 = 16;
+const ROADNAMES = { O:'外环', MH:'中横街', MV:'中竖街', V2:'西巷', V3:'东巷', DH:'下横巷', J:'环岛' };
+const NODES = [], NODE_AT = {};
+(function buildRoadNet(){
+  function addNode(c, r, st){
+    const key = c + ',' + r;
+    let n = NODE_AT[key];
+    if (!n){ n = { id: NODES.length, col:c, row:r, x: GX0 + c * CELL, y: GY0 + r * CELL, links:[], street: st, spawn:-1, type:'B' }; NODES.push(n); NODE_AT[key] = n; }
+    return n;
+  }
+  function link(a, b){
+    if (!a.links.includes(b.id)) a.links.push(b.id);
+    if (!b.links.includes(a.id)) b.links.push(a.id);
+  }
+  function run(st, c0, r0, c1, r1){
+    const dc = Math.sign(c1 - c0), dr = Math.sign(r1 - r0), len = Math.abs(c1 - c0) + Math.abs(r1 - r0);
+    let prev = null;
+    for (let i = 0; i <= len; i++){
+      const n = addNode(c0 + dc * i, r0 + dr * i, st);
+      if (prev) link(prev, n);
+      prev = n;
+    }
+  }
+  run('O', 0, 0, 12, 0); run('O', 12, 0, 12, 20); run('O', 12, 20, 0, 20); run('O', 0, 20, 0, 0);   // 外环
+  run('MH', 0, 10, 12, 10);      // 中横街
+  run('MV', 6, 10, 6, 20);       // 中竖街
+  run('V2', 3, 10, 3, 16);       // 西巷
+  run('V3', 9, 10, 9, 16);       // 东巷（与中竖街隔着两块园地，下横巷四岔穿中竖街）
+  run('DH', 3, 16, 9, 16);       // 下横巷
+  for (const n of NODES) if (n.links.length >= 3) n.street = 'J';
+  if (NODES.length !== 100) throw new Error('庄园路网应为 100 格，实际 ' + NODES.length);
+})();
+const MAIN = NODES.length;
+const SPAWNS = [[6, 0], [12, 4], [0, 17], [12, 17]].map(([c, r]) => NODE_AT[c + ',' + r].id);
+SPAWNS.forEach((id, qi) => { NODES[id].spawn = qi; });// 类型：环岛/出生格留稳底；其余 89 格按 事件38/道具18/陷阱14/空格19 种子洗匀
+(function assignTypes(){
+  const pool = NODES.filter(n => n.links.length <= 2 && n.spawn < 0);
+  const bag = [].concat(Array(38).fill('E'), Array(18).fill('I'), Array(14).fill('T'), Array(19).fill('B'));
+  let s = 20261015;
+  for (let i = bag.length - 1; i > 0; i--){
     s = (s * 9301 + 49297) % 233280;
     const j = Math.floor(s / 233280 * (i + 1));
-    [arr[i], arr[j]] = [arr[j], arr[i]];
+    [bag[i], bag[j]] = [bag[j], bag[i]];
   }
-  return arr;
-}
-const TYPES = [].concat(zoneTypes(7), zoneTypes(23), zoneTypes(41), zoneTypes(66));
+  pool.forEach((n, i) => n.type = bag[i]);
+})();
 
 const ITEMS = [
   { k:'banana',  t:'🍌 香蕉皮',  d:'场地型：丢在脚下，下一个踩上的人罚停 1 回合' },
@@ -444,6 +480,7 @@ class MaliceGame {
     this.maliceEvery = opts.maliceEvery ?? 3;   // 0 = 关（★ 裁决③：每 3 回合一波）
     this.maliceWild = !!opts.maliceWild;        // 温和 false / 猛 true
     this.waveForm = opts.waveForm || 'b';       // ★ 裁决④：B 合力大怪定案默认；a 保留调参对比
+    this.askMs = opts.askMs ?? 2200;            // 环岛选路等待窗（超时自动直行）
     this.players = [];
     this.turnNo = 0;
     this.phase = 'idle';   // idle | acting | rest | wave | over
@@ -479,14 +516,14 @@ class MaliceGame {
     // 暗牌目标随机指派（stub 简化：抽 2 选 1 太繁，只发 1 条）
     const bag = [0,1,2,3].sort(() => Math.random() - .5);
     defs.forEach((d, i) => d.goal = GOALS[bag[i]]);
-    this.players = defs.map(d => ({ ...d, pos:d.spawn, bpos:0, zone:'main',
+    this.players = defs.map(d => ({ ...d, pos:d.spawn, _from:null, _trail:[], bpos:0, zone:'main',
       hand:[], pending:null, done:false, hp:this.hpMax, stun:0, actAt:null, itemAt:null,
       trumps:0, finishTurn:null, _walk:null }));
     this.turnNo = 0; this.phase = 'idle'; this.messages = []; this._mid = 0;
     this.ground = {}; this.choice = null; this.zones = []; this.fx = []; this.maliceLog = [];
     this._timers = []; this._busyUntil = 0; this.restUntil = 0;
     this.wave = null; this._deadCount = 0;
-    this.msgRaw('system', `开局！100 格棋盘·局长 ${this.cap} 回合结算。抽到「岔路口」事件卡记得选路；每 ${this.maliceEvery || '—'} 回合警惕世界恶意。`);
+    this.msgRaw('system', `开局！大富翁式庄园路网 100 格 · 局长 ${this.cap} 回合结算。走到 ✚ 环岛时选条路；每 ${this.maliceEvery || '—'} 回合警惕世界恶意。`);
     this.players[0].hand.push(pick(ITEMS));   // stub：轻装上阵（开局多 1 张道具卡）
     this._schedMalice();
     this.newTurn(now);
@@ -709,37 +746,96 @@ class MaliceGame {
     this._busyUntil = Math.max(this._busyUntil || 0, now + 140 + Math.abs(f.n) * STEP_MS + 250);
   }
   cellType(pos){
-    return TYPES[pos] || 'B';
+    const n = NODES[pos];
+    return n ? n.type : 'B';
+  }
+  // ---- 环岛选路（★第三轮：路即图，岔口长在地图上） ----
+  routeOpts(p){
+    const cur = NODES[p.pos];
+    let avail = cur.links.filter(l => l !== p._from);
+    if (!avail.length) avail = cur.links.slice();   // 死角回头
+    return avail.map(id => {
+      const t = NODES[id];
+      const arrow = t.col > cur.col ? '→' : t.col < cur.col ? '←' : t.row > cur.row ? '↓' : '↑';
+      return { id, label: `${arrow} ${ROADNAMES[t.street] || '路'}` };
+    });
+  }
+  _straightId(cur, fromId){
+    if (fromId == null) return null;
+    const pv = NODES[fromId];
+    const nx = cur.col + (cur.col - pv.col), ny = cur.row + (cur.row - pv.row);
+    const cand = NODE_AT[nx + ',' + ny];
+    return cand && cur.links.includes(cand.id) ? cand.id : null;
+  }
+  humanDir(optIdx, now){
+    const p = this.players[0];
+    if (!p._walk || !p._walk.routeAsk) return null;
+    const ask = p._walk.routeAsk;
+    const opt = ask.opts[optIdx] || ask.opts[0];
+    p._walk.routeAsk = null; p._walk.nextId = opt.id;
+    return opt.id;
   }
   stepOne(p, ev, now){
     const w = p._walk;
     if (p.zone === 'done' || p.zone === 'dead'){ p._walk = null; return; }
     if (w.dir === 1){
       if (p.zone === 'main'){
-        p.pos = (p.pos + 1) % MAIN; p.net = (p.net || 0) + 1;
-        // 前向踩上自己出生格 → 进终点支路。stub 局部裁定：
-        // 也要求净步数 ≥ MAIN-10（≈一圈），防「被回了 2 格后跨门槛」的倒鞋骗门——真规则要不要这条留规则票定。
-        if (p.pos === p.spawn && (p.net || 0) >= MAIN - 10){
-          p.zone = 'branch'; p.bpos = 0;
-          this.msg('system', p.id, '绕满一圈，进自己的终点支路！', '尽头刚好踩进=通关席', { emphasis:'highlight' });
+        if (w.routeAsk) return;                       // 等人类点路（tick 里有超时兜底）
+        if (w.nextId != null){
+          const tgt = w.nextId; w.nextId = null;
+          this._advance(p, tgt, w, ev, now);
+          return;
         }
-      } else {
+        const opts = this.routeOpts(p);
+        if (opts.length === 1){ this._advance(p, opts[0].id, w, ev, now); return; }
+        if (p.bot){
+          const st = this._straightId(NODES[p.pos], p._from);
+          const hit = st != null ? opts.find(o => o.id === st) : null;
+          this._advance(p, (hit && Math.random() < 0.6 ? hit : pick(opts)).id, w, ev, now);
+          return;
+        }
+        // 人类：岔口有多条路可走 → 停步弹选路条
+        w.routeAsk = { opts, deadline: now + this.askMs };
+        if (this.phase === 'acting') this.msg('system', p.id, '到环岛了——选条路走', null, { emphasis:'none' });
+        return;
+      } else {   // 终点支路
         p.bpos++;
         if (p.bpos >= BRANCH){
           if (w.remaining > 1){ w.dir = -1; w.bounced = true; w.remaining--; w.nextAt = now + STEP_MS; return; }
           this._finisher(p, ev); p._walk = null; return;
         }
+        w.remaining--;
+        if (w.remaining > 0) w.nextAt = now + STEP_MS;
+        else this._afterWalk(p, ev, now);
       }
-      w.remaining--;
-      if (w.remaining > 0) w.nextAt = now + STEP_MS;
-      else this._afterWalk(p, ev, now);
-    } else {
-      if (p.zone === 'main'){ p.pos = ((p.pos - 1) % MAIN + MAIN) % MAIN; p.net--; }
-      else if (p.bpos > 0){ p.bpos--; p.net--; }
+    } else {     // 逆行：沿来路栈原路退回（退格卡穿环岛也严格走回头路）
+      if (p.zone === 'main'){
+        if (p._trail && p._trail.length){
+          p.pos = p._trail.pop();
+          p.net = (p.net || 0) - 1;
+        } else if (p._from != null){
+          const back = p._from; p._from = p.pos; p.pos = back;   // 栈空兜底：沿来路退一步
+          p.net = (p.net || 0) - 1;
+        }
+      } else if (p.bpos > 0){ p.bpos--; p.net--; }
       w.remaining--;
       if (w.remaining > 0) w.nextAt = now + STEP_MS;
       else this._afterWalk(p, ev, now);
     }
+  }
+  _advance(p, targetId, w, ev, now){
+    p._trail.push(p.pos);          // 来路栈：退格卡沿这条链原路走回头
+    p._from = p.pos;
+    p.pos = targetId;
+    p.net = (p.net || 0) + 1;
+    // 前向踩上自己出生格 → 进终点支路。stub 局部裁定：净步数 ≥ MAIN-10（≈一圈），防倒退骗门——要不要留此条归规则票。
+    if (p.pos === p.spawn && (p.net || 0) >= MAIN - 10){
+      p.zone = 'branch'; p.bpos = 0;
+      this.msg('system', p.id, '绕得够远，回到自家门前——进终点支路！', '尽头刚好踩进=通关席', { emphasis:'highlight' });
+    }
+    w.remaining--;
+    if (w.remaining > 0) w.nextAt = now + STEP_MS;
+    else this._afterWalk(p, ev, now);
   }
   _afterWalk(p, ev, now){
     const w = p._walk; p._walk = null;
@@ -873,19 +969,35 @@ class MaliceGame {
       this.fx.push({ k:'crack', cells:this._malice.crackCells, until: now + this.turnMs });
     }
   }
-  _segCells(start, n){
-    const cells = [];
-    for (let i = 0; i < n; i++) cells.push((start + i) % MAIN);
-    return cells;
+  // 沿图取一段连续路径：直行优先（木头落点/塌陷裂纹/滚石路线都走这段）
+  _walkPath(startId, n){
+    const out = [];
+    let cur = NODES[startId], prevId = null;
+    for (let i = 0; i < n; i++){
+      out.push(cur.id);
+      const st = this._straightId(cur, prevId);
+      let nxt;
+      if (st != null && cur.links.includes(st)){
+        nxt = st;
+      } else {
+        const avail = cur.links.filter(l => l !== prevId);
+        if (!avail.length) break;
+        nxt = avail[0];
+      }
+      if (out.includes(nxt)) break;   // 小环兜底：不原路打转
+      prevId = cur.id; cur = NODES[nxt];
+    }
+    return out;
   }
+  _segCells(start, n){ return this._walkPath(start, n); }
   _maliceCrash(ev, now){
     this._maliceCrashAt = null;
-    const cells = this._maliceCells || this._segCells(rint(MAIN), 3);
+    const cells = this._maliceCells || this._walkPath(rint(MAIN), 3);
     const dmg = this.maliceWild ? 2 : 1;
     const victims = this.players.filter(p => p.zone === 'main' && cells.includes(p.pos));
     this.fx.push({ k:'wood', cells, until: now + 2200 });
     ev.push({ type:'shake' });
-    this.maliceLog.push(`回合 ${this.turnNo} 大木头落点 ${cells.join('/')} · 砸中 ${victims.map(v=>v.name).join('、') || '无人'}`);
+    this.maliceLog.push(`回合 ${this.turnNo} 大木头落 ${cells.length} 格街段（${ROADNAMES[NODES[cells[0]].street] || '路'}头）· 砸中 ${victims.map(v=>v.name).join('、') || '无人'}`);
     if (victims.length){
       for (const v of victims) this.hurt(v, dmg, `🪵 大木头砸中！`, `−${dmg} 💔`);
     } else {
@@ -893,14 +1005,14 @@ class MaliceGame {
     }
   }
   _rollStone(ev, now){
-    const start = rint(MAIN), len = 10;   // ★ 裁决③：滚过路段 7→10 格
+    const path = this._walkPath(rint(MAIN), 10), len = path.length;   // ★ 裁决③：滚过路段 7→10 格（沿街直行）
     const dmg = this.maliceWild ? 2 : 1, back = this.maliceWild ? 3 : 2;
-    this.maliceLog.push(`回合 ${this.turnNo} 滚石从第 ${start} 格滚过 ${len} 格`);
+    this.maliceLog.push(`回合 ${this.turnNo} 滚石滚过 ${path.length} 格街段`);
     this.msgRaw('malice', '🪨 巨石轰隆滚来——快躲！', { emphasis:'big' });
     let i = 0;
     const stepStone = (t) => {
       if (!this._malice || this._malice.kind !== 1) return;   // 窗关即止：滚石不出本回合
-      const pos = (start + i) % MAIN;
+      const pos = path[Math.min(i, len - 1)];
       this.fx.push({ k:'stone', cells:[pos], until: t + 220 });
       const victims = this.players.filter(p => p.zone === 'main' && p.pos === pos);
       for (const v of victims){
@@ -916,7 +1028,7 @@ class MaliceGame {
     const cells = this._malice.crackCells || this._segCells(rint(MAIN), 6);   // ★ 裁决③：塌陷 4→6 格
     const until = this.turnNo + 2;
     this.zones.push({ cells, until });
-    this.maliceLog.push(`回合 ${this.turnNo} 塌陷区塌在第 ${cells[0]}–${cells[cells.length-1]} 格，持续到回合 ${until}`);
+    this.maliceLog.push(`回合 ${this.turnNo} 塌陷区塌在 ${ROADNAMES[NODES[cells[0]].street] || '路'}段 ${cells.length} 格，持续到回合 ${until}`);
     const victims = this.players.filter(p => p.zone === 'main' && cells.includes(p.pos));
     for (const v of victims){
       const dmg = this.maliceWild ? 2 : 1;
@@ -1066,7 +1178,17 @@ class MaliceGame {
       for (const t of due) t.fn(ev, now);
     }
     for (const p of this.players){
-      if (p._walk && now >= p._walk.nextAt) this.stepOne(p, ev, now);
+      if (!p._walk) continue;
+      if (p._walk.routeAsk && now >= p._walk.routeAsk.deadline){
+        // 环岛选路超时：优先直行，无直行走第一项
+        const opts = p._walk.routeAsk.opts;
+        const st = this._straightId(NODES[p.pos], p._from);
+        const hit = st != null ? opts.find(o => o.id === st) : null;
+        const ch = hit || opts[0];
+        p._walk.routeAsk = null; p._walk.nextId = ch.id;
+        if (!p.bot) this.msg('system', p.id, '环岛超时，先直行', null, { emphasis:'none' });
+      }
+      if (now >= (p._walk.nextAt || 0)) this.stepOne(p, ev, now);
     }
     if (this.choice && now >= this.choice.deadline){
       const c = this.choice; this.choice = null;
@@ -1149,12 +1271,14 @@ class MaliceGame {
       maliceEvery: this.maliceEvery, maliceWild: this.maliceWild,
       waveForm: this.waveForm, wave: this.wave ? { ...this.wave } : null,
       players: this.players.map(p => ({ id:p.id, name:p.name, bot:p.bot, color:p.color, spawn:p.spawn, goal:p.goal,
-        zone:p.zone, pos:p.pos, bpos:p.bpos, net:p.net || 0, hp:p.hp, stun:p.stun,
+        zone:p.zone, pos:p.pos, _from:p._from, bpos:p.bpos, net:p.net || 0, hp:p.hp, stun:p.stun,
         done:p.done, die:p.die, pending:p.pending, hand:p.hand.map(c => ({...c})),
         trumps:p.trumps, finishTurn:p.finishTurn })),
       messages: this.messages.slice(),
       ground: { ...this.ground },
       choice: this.choice ? { pid:this.choice.pid, deadline:this.choice.deadline, card:this.choice.card } : null,
+      dirAsk: (this.players[0]._walk && this.players[0]._walk.routeAsk)
+        ? { labels: this.players[0]._walk.routeAsk.opts.map(o => o.label), deadline: this.players[0]._walk.routeAsk.deadline } : null,
       maliceView: this.maliceView(),
       nextMalice: this.nextMaliceTurn(),
     };
@@ -1170,120 +1294,30 @@ function el(tag, attrs){ const e = document.createElementNS(NS, tag); for (const
 const CELL_TYPE_FILL = { E:'#ffe0b2', I:'#bbdefb', T:'#e1bee7', B:'#f5f5f5' };
 const P_COLORS = ['#e53935', '#f9a825', '#43a047', '#1e88e5'];
 
-// ---- 形状：闭曲线/折线采样 → 弧长均分 100 格 ----
-function shapePoly(id){
-  const pts = [];
-  if (id === 'e'){        // ★ E 三环网（裁决①）：三只扁环 + 右侧两条换乘段串成一条主路
-    const ring = (cy) => {
-      const rx = 140, ry = 62, cx = 178;
-      for (let i = 0; i <= 160; i++){
-        const th = i / 160 * 2 * Math.PI;          // 0=右端，顺时针（y 向下）
-        pts.push([cx + rx * Math.cos(th), cy + ry * Math.sin(th)]);
-      }
-    };
-    const hop = (y0, y1) => { for (let i = 1; i <= 8; i++) pts.push([330, y0 + (y1 - y0) * i / 8]); };
-    ring(118);
-    hop(118, 282);        // 环1 右端 → 环2 右端（换乘口 1）
-    ring(282);
-    hop(282, 446);        // 换乘口 2
-    ring(446);
-    // 尾点回到起点方向留 6px 开口，供 wrap 提示虚线（cell99→cell0 由 pos%MAIN 自然衔接）
-  } else if (id === 'a'){ // A 波浪环：椭圆 + 4 瓣径向波
-    const cx = 190, cy = 280, rx = 142, ry = 200;
-    for (let i = 0; i <= 720; i++){
-      const th = i / 720 * 2 * Math.PI;
-      const m = 1 + 0.22 * Math.sin(4 * th + 1.2);
-      pts.push([cx + rx * m * Math.cos(th), cy + ry * m * Math.sin(th)]);
-    }
-  } else if (id === 'b'){ // B 葫芦8字：竖 8 双瓣、腰部收窄（相位错开避免同点交叉）
-    const A = 136, B = 210, cy = 280, ph = 0.25;
-    for (let i = 0; i <= 900; i++){
-      const t = i / 900 * 2 * Math.PI;
-      pts.push([190 + A * Math.sin(t), cy - B * Math.sin(2 * t + ph)]);
-    }
-  } else if (id === 'c'){ // C 蛇形折返：8 行弓字 + 左侧回环边
-    const y0 = 62, dy = 60, xL = 56, xR = 332, bulge = 20;
-    pts.push([xL, y0]);
-    for (let r = 0; r < 8; r++){
-      const y = y0 + r * dy;
-      const even = r % 2 === 0;
-      const xa = even ? xL : xR, xb = even ? xR : xL;
-      for (let i = 1; i <= 10; i++) pts.push([xa + (xb - xa) * i / 10, y]);
-      for (let i = 1; i <= 8; i++){
-        const ph = i / 8 * Math.PI;
-        pts.push([(even ? xR : xL) + (even ? 1 : -1) * bulge * Math.sin(ph), y + dy * (1 - Math.cos(ph)) / 2]);
-      }
-    }
-    // 末行终点在左侧 → 沿左边缘折回起点
-    pts.push([xL - 26, y0 + 7 * dy]);
-    pts.push([xL - 26, y0]);
-    pts.push([xL, y0]);
-  } else {                 // D 螺旋回环：2.5 圈进再出，无缝闭合
-    const cx = 190, cy = 280, rx = 148, ry = 208, turns = 2.5, dip = 0.46;
-    for (let i = 0; i <= 1000; i++){
-      const t = i / 1000;
-      const th = turns * 2 * Math.PI * t - Math.PI / 2;
-      const r = 1 - dip * Math.sin(Math.PI * t);
-      pts.push([cx + rx * r * Math.cos(th), cy + ry * r * Math.sin(th)]);
-    }
-  }
-  return pts;
-}
-function resample(poly, n){
-  // 累积弧长 → n 个等距点 + 切线
-  const L = [0];
-  for (let i = 1; i < poly.length; i++){
-    const dx = poly[i][0] - poly[i-1][0], dy = poly[i][1] - poly[i-1][1];
-    L.push(L[i-1] + Math.hypot(dx, dy));
-  }
-  const total = L[L.length - 1];
-  const out = [];
-  let j = 0;
-  for (let k = 0; k < n; k++){
-    const target = total * k / n;
-    while (j < L.length - 2 && L[j + 1] < target) j++;
-    const seg = L[j + 1] - L[j] || 1;
-    const f = (target - L[j]) / seg;
-    const x = poly[j][0] + (poly[j+1][0] - poly[j][0]) * f;
-    const y = poly[j][1] + (poly[j+1][1] - poly[j][1]) * f;
-    out.push([x, y, poly[j+1][0] - poly[j][0], poly[j+1][1] - poly[j][1]]);
-  }
-  return out;
-}
-function tangentNormal(cell){
-  const [x, y, dx, dy] = cell;
-  const len = Math.hypot(dx, dy) || 1;
-  return [dy / len, -dx / len];   // 单位法线
-}
-function outwardSign(pt, n, cx = 190, cy = 326){
-  return ((pt[0] - cx) * n[0] + (pt[1] - cy) * n[1]) > 0 ? 1 : -1;
-}
-
-const SHAPES = { e: { name: 'E 三环网' }, a: { name: 'A 波浪环' }, b: { name: 'B 葫芦8字' }, c: { name: 'C 蛇形折返' }, d: { name: 'D 螺旋回环' } };
-let layout = null;   // { cells:[{x,y,nx,ny}], tails:{spawn:{cells,sign}} }
-function computeLayout(shapeId){
-  const poly = shapePoly(shapeId);
-  const cells = resample(poly, MAIN).map(c => {
-    const n = tangentNormal(c);
-    return { x:c[0], y:c[1], nx:n[0], ny:n[1] };
-  });
-  // 终点支路尾：从出生格沿法线排 4 格 + 终点旗（优先向内伸进环空区，越界再向外）
-  const tails = {};
-  for (const s of SPAWNS){
-    const c = cells[s];
-    let sign = -outwardSign([c.x, c.y], [c.nx, c.ny]);
-    const mk = sg => [1, 2, 3, 4].map(k => ({
-      x: c.x + c.nx * 11 * k * sg, y: c.y + c.ny * 11 * k * sg, nx:c.nx, ny:c.ny }));
-    let tc = mk(sign);
-    const bad = tc.some(t => t.x < 14 || t.x > 366 || t.y < 56 || t.y > 548);
-    if (bad){ sign = -sign; tc = mk(sign); }
-    tails[s] = { cells: tc, sign };
-  }
-  return { cells, tails };
-}
+// ---- 庄园路网渲染（★第三轮：方砖直街 + 环岛，SVG 按格子画） ----
+// 非走格的园内点缀：地皮块占位（正服可换真实地块玩法）
+const SVG_CELL = 22, SVG_GX0 = 48, SVG_GY0 = 16;
+const gx = c => SVG_GX0 + c * SVG_CELL, gy = r => SVG_GY0 + r * SVG_CELL;
+const YARDS = [
+  { c:1, r:2, w:4, h:7, icon:'🏰', name:'庄园主楼' },
+  { c:9, r:6, w:3, h:4, icon:'🌳' },
+  { c:4, r:12, w:2, h:4, icon:'🌳' },
+  { c:10, r:12, w:2, h:4, icon:'🐑' },
+  { c:1, r:18, w:2, h:2, icon:'🌳' },
+  { c:10, r:18, w:2, h:2, icon:'🌾' },
+];
+// 屋前小路：每个出生格向园内伸 4 格 + 终点旗（只画与站位，不入走格图）
+const SPAWN_DIRS = [[0, 1], [-1, 0], [1, 0], [-1, 0]];
+const TAILS = {};
+SPAWNS.forEach((sid, qi) => {
+  const n0 = NODES[sid], d = SPAWN_DIRS[qi];
+  TAILS[sid] = {
+    cells: [1, 2, 3, 4].map(k => ({ x: gx(n0.col + d[0] * k), y: gy(n0.row + d[1] * k) })),
+    flag: { x: gx(n0.col + d[0] * 5), y: gy(n0.row + d[1] * 5) },
+  };
+});
 
 let game = null, snap = null, tokenEls = [], groundEls = {}, fxKey = '';
-let shapeId = 'e';   // ★ 默认三环网（裁决①）
 const UI = {
   unread: 0, lastMsgAt: 0, restSkips: 0, opens: 0,
   spectate: false, targetSel: null, selHandIdx: -1, giveMode: false,
@@ -1292,74 +1326,69 @@ const UI = {
 function buildBoard(){
   const svg = $('board');
   svg.innerHTML = '';
-  layout = computeLayout(shapeId);
-  const cells = layout.cells;
-  // 干道底路 + 分区色（每区 25 格）
-  for (let i = 0; i < MAIN; i++){
-    const a = cells[i], b = cells[(i + 1) % MAIN];
-    svg.appendChild(el('line', { x1:a.x, y1:a.y, x2:b.x, y2:b.y, stroke:'#cfd8dc', 'stroke-width':1.6 }));
-  }
-  for (let z = 0; z < 4; z++){
-    for (let i = z * 25; i < z * 25 + 24; i++){
-      const a = cells[i], b = cells[i + 1];
-      svg.appendChild(el('line', { x1:a.x, y1:a.y, x2:b.x, y2:b.y, stroke:ZONE_COLORS[z], 'stroke-width':13, opacity:.13, 'stroke-linecap':'round' }));
+  // 庄园内饰（地皮块占位，非走格）
+  for (const y of YARDS){
+    svg.appendChild(el('rect', { x: gx(y.c) - 10, y: gy(y.r) - 10, width: y.w * SVG_CELL, height: y.h * SVG_CELL,
+      rx: 8, fill: 'rgba(207,216,220,.09)', stroke: 'rgba(144,164,174,.4)', 'stroke-width': 1, 'stroke-dasharray': '5 4' }));
+    if (y.icon){
+      const t = el('text', { x: gx(y.c) - 10 + y.w * SVG_CELL / 2, y: gy(y.r) - 10 + y.h * SVG_CELL / 2 + 5, 'text-anchor': 'middle', 'font-size': 17, opacity: .9 });
+      t.textContent = y.icon;
+      svg.appendChild(t);
+    }
+    if (y.name){
+      const t = el('text', { x: gx(y.c) - 10 + y.w * SVG_CELL / 2, y: gy(y.r) - 10 + y.h * SVG_CELL / 2 + 21, 'text-anchor': 'middle', 'font-size': 8.5, fill: '#b0bec5' });
+      t.textContent = y.name;
+      svg.appendChild(t);
     }
   }
-  // 三环网：cell99 → cell0 画 wrap 友情提示虚线（跳回起点）
-  if (shapeId === 'e'){
-    const a = cells[MAIN - 1], b = cells[0];
-    svg.appendChild(el('path', { d:`M ${a.x} ${a.y} C ${a.x - 30} ${a.y + 40}, ${b.x - 44} ${b.y - 60}, ${b.x} ${b.y}`,
-      fill:'none', stroke:'#b0bec5', 'stroke-width':2, 'stroke-dasharray':'5 4', opacity:.8 }));
-    const mid = el('text', { x:(a.x + b.x) / 2 - 10, y:(a.y + b.y) / 2 + 4, 'text-anchor':'middle', 'font-size':13 });
-    mid.textContent = '↩ 通回家门';
-    svg.appendChild(mid);
-    // 换乘口标注（两段竖直连接段：找到 x≈330 的 cell 群）
-    let hopStart = -1;
-    for (let i = 0; i < MAIN; i++){
-      const onHop = Math.abs(cells[i].x - 330) < 1;
-      if (onHop && hopStart < 0) hopStart = i;
-      if (!onHop && hopStart >= 0 && i - hopStart >= 3){
-        const c = cells[hopStart + Math.floor((i - hopStart) / 2)];
-        const t = el('text', { x:c.x - 14, y:c.y + 4, 'text-anchor':'middle', 'font-size':11 });
-        t.textContent = '⇅';
-        svg.appendChild(t);
-        svg.appendChild(el('text', { x:c.x - 14, y:c.y - 10, 'text-anchor':'middle', 'font-size':8, fill:'#78909c' })).textContent = '换乘';
-        hopStart = -1;
+  // 路缘（相邻格连街）
+  for (const n of NODES) for (const l of n.links){
+    if (l < n.id) continue;
+    const b = NODES[l];
+    svg.appendChild(el('line', { x1:n.x, y1:n.y, x2:b.x, y2:b.y, stroke:'#546e7a', 'stroke-width':23, 'stroke-linecap':'round' }));
+  }
+  // 方砖（沿用类型砖色；环岛是大圆盘 ✛，出生格挂玩家色环）
+  for (const n of NODES){
+    if (n.street === 'J'){
+      svg.appendChild(el('circle', { cx:n.x, cy:n.y, r:12.5, fill:'#eceff1', stroke:'#607d8b', 'stroke-width':2 }));
+      svg.appendChild(el('text', { x:n.x, y:n.y + 4, 'text-anchor':'middle', 'font-size':10, fill:'#546e7a', 'font-weight':'800' })).textContent = '✛';
+    } else {
+      svg.appendChild(el('rect', { x:n.x - 10, y:n.y - 10, width:20, height:20, rx:5.5, fill:CELL_TYPE_FILL[n.type] || '#eceff1', stroke:'#78909c', 'stroke-width':.8 }));
+      if (n.type === 'E') svg.appendChild(el('text', { x:n.x, y:n.y + 4, 'text-anchor':'middle', 'font-size':11 })).textContent = '🃏';
+      else if (n.type === 'I') svg.appendChild(el('text', { x:n.x, y:n.y + 4, 'text-anchor':'middle', 'font-size':10 })).textContent = '🎁';
+      else if (n.type === 'T') svg.appendChild(el('text', { x:n.x, y:n.y + 4, 'text-anchor':'middle', 'font-size':10 })).textContent = '⚠️';
+      if (n.spawn >= 0){
+        svg.appendChild(el('circle', { cx:n.x, cy:n.y, r:8.5, fill:'none', stroke:P_COLORS[n.spawn], 'stroke-width':2 }));
+        svg.appendChild(el('text', { x:n.x, y:n.y + 3.5, 'text-anchor':'middle', 'font-size':8, fill:P_COLORS[n.spawn], 'font-weight':'900' })).textContent = '家';
       }
     }
   }
-  // 方向箭头（每 10 格一枚，顺行进方向）
-  for (let i = 4; i < MAIN; i += 10){
-    const c = cells[i];
-    const t = el('text', { x:c.x, y:c.y + 3, 'text-anchor':'middle', 'font-size':8, fill:'#b0bec5',
-      transform:`rotate(${(Math.atan2(c.nx, -c.ny) * 180 / Math.PI).toFixed(1)}, ${c.x}, ${c.y})` });
-    t.textContent = '▶';
-    svg.appendChild(t);
+  // 街名路牌
+  const tags = [
+    ['中横街', 4.5, 10, 0, -13], ['中竖街', 6, 15.5, 14, 0], ['西巷', 3, 13, -14, 0], ['东巷', 9, 13, 14, 0],
+    ['下横巷', 6, 16, 15, 0], ['外环', 6, 20, 0, 14], ['外环', 0, 4.5, -14, 0], ['外环', 12, 8, 14, 0],  ];
+  for (const [name, tc, tr, ox, oy] of tags){
+    svg.appendChild(el('text', { x:gx(tc) + ox, y:gy(tr) + oy + 3, 'text-anchor':'middle', 'font-size':8, fill:'#b0bec5' })).textContent = name;
   }
-  // 格号（每 10 格一枚，淡色，帮在 100 格里定位）
-  for (let i = 9; i < MAIN; i += 10){
-    const c = cells[i];
-    const t = el('text', { x:c.x + c.nx * 14, y:c.y + c.ny * 14 + 3, 'text-anchor':'middle', 'font-size':7, fill:'#90a4ae' });
-    t.textContent = i + 1;
-    svg.appendChild(t);
+  // 行进箭头（顺自家街向，隔点一枚）
+  let arrows = 0;
+  for (const n of NODES){
+    if (arrows > 18) break;
+    if (n.id % 9 !== 4 || n.street === 'J' || n.spawn >= 0) continue;
+    const b = n.links.map(id => NODES[id]).find(m => m.street === n.street) || NODES[n.links[0]];
+    const ang = Math.atan2(b.y - n.y, b.x - n.x) * 180 / Math.PI;
+    svg.appendChild(el('text', { x:n.x, y:n.y + 3, 'text-anchor':'middle', 'font-size':7, fill:'rgba(176,190,197,.6)',
+      transform:`rotate(${ang.toFixed(1)}, ${n.x}, ${n.y})` })).textContent = '▶';
+    arrows++;
   }
-  // 主干格（岔路口格已并入事件——不再有 F 格）
-  for (let i = 0; i < MAIN; i++){
-    const c = cells[i];
-    svg.appendChild(el('circle', { cx:c.x, cy:c.y, r:8, fill:CELL_TYPE_FILL[TYPES[i]], stroke:'#b0bec5', 'stroke-width':.8 }));
-  }
-  // 出生格环 + 终点支路尾 + 终点旗
+  // 出生格屋前小路 + 终点旗
   for (const s of SPAWNS){
-    const qi = SPAWNS.indexOf(s);
-    const c = cells[s];
-    svg.appendChild(el('circle', { cx:c.x, cy:c.y, r:9.5, fill:'none', stroke:P_COLORS[qi], 'stroke-width':2.2 }));
-    for (const t of layout.tails[s].cells){
-      svg.appendChild(el('circle', { cx:t.x, cy:t.y, r:6.5, fill:'#fff', stroke:P_COLORS[qi], 'stroke-width':1.4, 'stroke-dasharray':'2.5 2' }));
+    const qi = NODES[s].spawn, n0 = NODES[s], tail = TAILS[s];
+    svg.appendChild(el('line', { x1:n0.x, y1:n0.y, x2:tail.flag.x, y2:tail.flag.y, stroke:'#546e7a', 'stroke-width':21, 'stroke-linecap':'round' }));
+    for (const t of tail.cells){
+      svg.appendChild(el('rect', { x:t.x - 8.5, y:t.y - 8.5, width:17, height:17, rx:5, fill:'#fff', stroke:P_COLORS[qi], 'stroke-width':1.3, 'stroke-dasharray':'2.5 2' }));
     }
-    const f = layout.tails[s].cells[3];
-    const flag = el('text', { x:f.x + f.nx * 11 * layout.tails[s].sign, y:f.y + f.ny * 11 * layout.tails[s].sign + 5, 'text-anchor':'middle', 'font-size':14 });
-    flag.textContent = '🏁';
-    svg.appendChild(flag);
+    svg.appendChild(el('text', { x:tail.flag.x, y:tail.flag.y + 5, 'text-anchor':'middle', 'font-size':14 })).textContent = '🏁';
   }
   svg.appendChild(el('g', { id:'groundG' }));
   svg.appendChild(el('g', { id:'fxG' }));
@@ -1368,21 +1397,19 @@ function buildBoard(){
 
 // ---- 棋子定位 ----
 function cellPos(p){
-  if (p.zone === 'main'){
-    return layout.cells[p.pos];
-  }
+  if (p.zone === 'main' && NODES[p.pos]) return NODES[p.pos];
   if (p.zone === 'branch' || p.zone === 'done' || p.zone === 'dead'){
-    const t = layout.tails[p.spawn];
+    const t = TAILS[p.spawn];
     const bpos = Math.max(1, Math.min(BRANCH, p.bpos || 1));
     return t.cells[bpos - 1];
   }
-  return layout.cells[0];
+  return NODES[0];
 }
+const TOK_OFFS = [[-4, -4], [4, -4], [-4, 4], [4, 4]];
 function tokenPt(p){
   const c = cellPos(p);
-  const offs = [0, 7, -7, 13];
-  const o = offs[p.id];
-  return [c.x + c.nx * o, c.y + c.ny * o];
+  const o = TOK_OFFS[p.id];
+  return [c.x + o[0], c.y + o[1]];
 }
 function rebuildTokens(){
   const g = $('board').querySelector('#tokens');
@@ -1441,7 +1468,7 @@ function renderGround(){
   if (!g) return;
   g.innerHTML = '';
   for (const pos in snap.ground){
-    const c = layout.cells[+pos];
+    const c = NODES[+pos];
     const t = el('text', { x:c.x, y:c.y - 11, 'text-anchor':'middle', 'font-size':12 });
     t.textContent = '🍌';
     g.appendChild(t);
@@ -1456,26 +1483,26 @@ function renderFx(){
   for (const f of snap.maliceView){
     if (f.k === 'shadow'){
       for (const c of f.cells){
-        const cc = layout.cells[c];
+        const cc = NODES[c];
         g.appendChild(el('circle', { cx:cc.x, cy:cc.y, r:13, fill:'rgba(38,50,56,.28)', stroke:'#455a64', 'stroke-width':1.5, 'stroke-dasharray':'3 2' }));
       }
     } else if (f.k === 'wood'){
       for (const c of f.cells){
-        const cc = layout.cells[c];
+        const cc = NODES[c];
         const t = el('text', { x:cc.x, y:cc.y + 7, 'text-anchor':'middle', 'font-size':22 });
         t.textContent = '🪵';
         g.appendChild(t);
       }
     } else if (f.k === 'stone'){
       for (const c of f.cells){
-        const cc = layout.cells[c];
+        const cc = NODES[c];
         const t = el('text', { x:cc.x, y:cc.y + 7, 'text-anchor':'middle', 'font-size':20 });
         t.textContent = '🪨';
         g.appendChild(t);
       }
     } else if (f.k === 'crack'){
       for (const c of f.cells){
-        const cc = layout.cells[c];
+        const cc = NODES[c];
         g.appendChild(el('circle', { cx:cc.x, cy:cc.y, r:12, fill:'none', stroke:'#78909c', 'stroke-width':1.6, 'stroke-dasharray':'2 2.5' }));
         const t = el('text', { x:cc.x, y:cc.y - 11, 'text-anchor':'middle', 'font-size':9 });
         t.textContent = '⚠';
@@ -1483,7 +1510,7 @@ function renderFx(){
       }
     } else if (f.k === 'hole'){
       for (const c of f.cells){
-        const cc = layout.cells[c];
+        const cc = NODES[c];
         g.appendChild(el('circle', { cx:cc.x, cy:cc.y, r:10, fill:'#37474f', opacity:.85 }));
         const t = el('text', { x:cc.x, y:cc.y + 3.5, 'text-anchor':'middle', 'font-size':10 });
         t.textContent = '🕳';
@@ -1618,7 +1645,13 @@ function renderTasks(){
     const left = Math.max(0, (snap.choice.deadline - Date.now()) / 1000).toFixed(0);
     rows.push(`<div class="task"><b>🃏 ${card.t}</b><span class="st">需要你抉择</span><button class="go" onclick="UI.openChoice()">选 (${left}s)</button><button class="x" onclick="UI.closeChoiceTask()">✕</button></div>`);
   }
-  // 目标选择进行中
+  // 环岛选路任务条（★第三轮：岔口长在地图上，走到弹条点路）
+  if (snap.dirAsk && !UI.spectate){
+    const left = Math.max(0, Math.ceil((snap.dirAsk.deadline - Date.now()) / 1000));
+    const btns = snap.dirAsk.labels.map((l, i) =>
+      `<button class="go" style="margin-left:6px" onclick="UI.pickDir(${i})">${l}</button>`).join('');
+    rows.push(`<div class="task"><b>🧭 环岛选路</b><span class="st">${left}s 后自动直行</span>${btns}</div>`);
+  }
   if (UI.targetSel){
     rows.push(`<div class="task"><b>${UI.giveMode ? '⤴ 递给谁？' : '🎯 选定目标'}</b><span class="st">点棋盘上的对手棋子</span><button class="x" onclick="UI.cancelTarget()">✕</button></div>`);
   }
@@ -1658,6 +1691,10 @@ UI.pick = function(i){
   refresh();
 };
 UI.closeChoiceTask = function(){ UI.unread++; refresh(); };
+UI.pickDir = function(i){   // 环岛选路：点哪条走哪条
+  game.humanDir(i, Date.now());
+  refresh();
+};
 UI.cancelTarget = function(){
   UI.targetSel = null; UI.giveMode = false; UI.selHandIdx = -1;
   tokenEls.forEach(t => t.classList.remove('targetable'));
@@ -1671,7 +1708,7 @@ $('endAgain').onclick = () => { UI.close('endModal'); newRealGame(); };
 $('introGo').onclick = () => { UI.close('introModal'); };
 function fillCfg(){
   $('cfgFrozen').innerHTML =
-    `本局配置：${SHAPES[shapeId].name} · 100 格 ｜ 局长 ${game.cap} ｜ 血量 ${game.hpMax} ｜ 世界回合窗 ${game.turnMs / 1000}s ｜ 休息 ${game.restMs / 1000}s ｜ ` +
+    `本局配置：大富翁式庄园路网 · 100 格 · 7 环岛 ｜ 局长 ${game.cap} ｜ 血量 ${game.hpMax} ｜ 世界回合窗 ${game.turnMs / 1000}s ｜ 休息 ${game.restMs / 1000}s ｜ ` +
     `恶意每 ${game.maliceEvery || '—'} 回合·${game.maliceWild ? '猛' : '温和'} ｜ 最后一波 ${game.waveForm === 'a' ? 'A 各自过波' : 'B 合力大怪'}<br>` +
     `🔒 局中冻结——真实现里想改？等结算页「再来一局（可改配置）」。`;
 }
@@ -1722,12 +1759,6 @@ $('confirmBtn').onclick = () => {
 };
 
 // ---- 调参条 ----
-document.querySelectorAll('#dbg [data-shape]').forEach(b => b.onclick = () => {
-  shapeId = b.dataset.shape;
-  document.querySelectorAll('#dbg [data-shape]').forEach(x => x.classList.toggle('on', x === b));
-  fxKey = ''; buildBoard();
-  refresh();
-});
 document.querySelectorAll('#dbg [data-mev]').forEach(b => b.onclick = () => {
   game.maliceEvery = +b.dataset.mev;
   game.reschedMalice();
@@ -1831,15 +1862,22 @@ setInterval(() => {
   const evs = game.tick(now);
   if (evs.length) handle(evs);
   drainMessages();
-  const walking = game.players.some(p => p._walk);
-  const key = [game.phase, game.turnNo, walking, game.choice ? 1 : 0, game.wave ? game.wave.tick + '|' + game.wave.bossHp : '',
-    game.fx.length].join('|');
+  // 走步即时刷新：每枚棋子的 pos/剩余步/环岛选路都进 key（逐格动画靠它触发）
+  const walkState = game.players.map(p =>
+    p._walk ? `${p.id}:${p.pos}:${p._walk.remaining}:${p._walk.routeAsk ? p._walk.routeAsk.opts[0].id : 0}` : 'st').join('|');
+  const key = [game.phase, game.turnNo, game.choice ? 1 : 0, game.wave ? game.wave.tick + '|' + game.wave.bossHp : '',
+    game.fx.length, walkState].join('|');
   if (key !== lastKey){ lastKey = key; refresh(); }
   if (game.choice){
     if (!UI._choiceShown && !UI.spectate){ UI._choiceShown = true; UI.openChoice(); }
     const s = Math.ceil((game.choice.deadline - now) / 1000);
     if (s !== UI._lastChoiceSec){ UI._lastChoiceSec = s; renderTasks(); }
   } else UI._choiceShown = false;
+  const me = game.players[0];
+  if (me._walk && me._walk.routeAsk){
+    const s = Math.ceil((me._walk.routeAsk.deadline - now) / 1000);
+    if (s !== UI._lastAskSec){ UI._lastAskSec = s; renderTasks(); }
+  } else UI._lastAskSec = -1;
   renderCountdown(now);
 }, 100);
 
@@ -1862,16 +1900,16 @@ MaliceGame.prototype._endWave = function(res){
 function exportRecord(){
   if (!game) return;
   const lines = [
-    '【棋盘与世界恶意 stub · 体感记录·第 2 版】（贴回 issue #13）',
-    `参数：形状=${SHAPES[shapeId].name}(100格) 恶意=每${game.maliceEvery || '—'}回合·${game.maliceWild ? '猛' : '温和'} 最后一波=${game.waveForm === 'a' ? 'A各自过波' : 'B合力大怪'} 局长=${game.cap}`,
+    '【棋盘与世界恶意 stub · 体感记录·第 3 版】（贴回 issue #13）',
+    `参数：庄园路网(100格·7环岛) 恶意=每${game.maliceEvery || '—'}回合·${game.maliceWild ? '猛' : '温和'} 最后一波=${game.waveForm === 'a' ? 'A各自过波' : 'B合力大怪'} 局长=${game.cap}`,
     `恶意记录：`,
     ...game.maliceLog.map(s => '  · ' + s),
     `体感问答：`,
-    '1) 三环网读不读得清？换乘口晕不晕？（对比调过的单环形状：A 波浪环 / B 葫芦8字 / C 蛇形折返 / D 螺旋回环）',
-    '2) 恶意每 3 回合一波 + 范围加大（木头3格/滚石10格/塌陷6格），压迫感合适吗？三型哪种最有戏？',
-    '3) 岔路并进事件卡后，抽到「岔路口」想选吗？比原来的真实岔路口格手感如何？',
+    '1) 大富翁式庄园路网（方砖直街+✛环岛）对味吗？vs 上一版三环网？',
+    '2) 环岛选路（弹条点路/超时直行）频不频、烦不烦？街名路牌（外环/中横街/西巷…）读得清吗？',
+    '3) 恶意每 3 回合一波 + 范围加大（木头3格/滚石10格/塌陷6格），压迫感合适吗？三型哪种最有戏？',
     '4) B 合力年兽战完整打下来：砍血/反噬/递卡的节奏爽吗？',
-    '5) 100 格密度上棋子/血条/战报还看得清吗？满屏棋盘现在完整可见吗？',
+    '5) 砖格密度上棋子/血条/战报还看得清吗？内圈地块占位（🏰庄园主楼/羊圈…）需不需要真玩法？',
   ];
   const text = lines.join('\n');
   $('expTxt').value = text;
