@@ -26,6 +26,8 @@ class GameStore {
   lastFace = ref<number | null>(null);
   /** 错误提示（KernelError 等，短暂展示） */
   toast = ref<string | null>(null);
+  /** 道具卡目标选择中（T4a2）：chooseOther 打出即进入，棋盘点头像收口；null=未在选 */
+  targeting = ref<string | null>(null);
   private toastSeq = 0;
 
   private perfBase = 0;
@@ -70,6 +72,27 @@ class GameStore {
     }
   }
 
+  /** 进入 chooseOther 目标选择（T4a2）：棋盘头像收口；合法性由 itemLegalTargets 给 */
+  startTargeting(cardId: string): void {
+    this.targeting.value = cardId;
+  }
+
+  cancelTargeting(): void {
+    this.targeting.value = null;
+  }
+
+  /** 棋盘点头像提交目标（T4a2）：内核拒（非法/已锁）即抛——不发 itemPlayed 事实，选择态保留可供换点 */
+  pickTarget(target: number): void {
+    const cardId = this.targeting.value;
+    if (!cardId) return;
+    this.playItem(cardId, target);
+  }
+
+  /** 打道具卡单出口（kernel 拒绝即抛走 toast；打出成功由 itemPlayed 事实收账） */
+  playItem(cardId: string, target?: number): void {
+    this.apply(target == null ? { type: "playItem", pid: 0, cardId } : { type: "playItem", pid: 0, cardId, target });
+  }
+
   private showToast(text: string): void {
     this.toast.value = text;
     const seq = ++this.toastSeq;
@@ -104,6 +127,10 @@ class GameStore {
       switch (f.type) {
         case "roll":
           if (f.pid === 0) this.lastFace.value = f.d;
+          break;
+        case "itemPlayed":
+          // 打出成功的事实收账（T4a2）：目卡不在手=已出袋；targeting 属于目卡即退场（内核拒时不发此事实）
+          if (f.pid === 0 && this.targeting.value === f.cardId) this.cancelTargeting();
           break;
         case "pulse":
           this.pulses[f.pid] = {
@@ -140,8 +167,10 @@ export function maybeBootFastPath(): void {
   const params = new URLSearchParams(location.search);
   if (!params.has("fast")) return;
   const dev = params.has("dev");
+  // ?slow=1：60s 慢窗（壳层冒烟用——10s 快窗手速赛会与逐格走/替掷竞速）
+  const windowMs = params.has("slow") ? 60_000 : 10_000;
   gameStore.boot(
-    { allowDev: dev, windowMs: 10_000, restMs: 0, stepMs: 90, seed: (Math.random() * 2 ** 31) | 0 },
+    { allowDev: dev, windowMs, restMs: 0, stepMs: 90, seed: (Math.random() * 2 ** 31) | 0 },
     [
       { name: "你", isBot: false, roleId: "light" },
       { name: "小黄", isBot: true },
@@ -154,13 +183,14 @@ export function maybeBootFastPath(): void {
 }
 
 /** 调试卡牌通道（?dev=1）：window.__pzcard("e03", pid?) → dev.drawCard 强抽（抉择/效果/地区卡冒烟）；
- *  __pzgive(道具卡 id, pid?) 塞手牌；__pzplay(道具卡 id, target?) 打出手（T4a 打出链冒烟） */
+ *  __pzgive(道具卡 id, pid?) 塞手牌；__pzplay(道具卡 id, target?) 打出手（T4a 打出链冒烟）；
+ *  __pzdead(pid?) 出局占位（T4a2 淘汰观战态冒烟） */
 function bindDevChannels(): void {
   const w = window as unknown as Record<string, unknown>;
   w.__pzcard = (cardId: string, pid = 0) => gameStore.apply({ type: "dev.drawCard", pid, cardId });
   w.__pzgive = (cardId: string, pid = 0) => gameStore.apply({ type: "dev.giveItem", pid, cardId });
-  w.__pzplay = (cardId: string, target?: number) =>
-    gameStore.apply(target == null ? { type: "playItem", pid: 0, cardId } : { type: "playItem", pid: 0, cardId, target });
+  w.__pzplay = (cardId: string, target?: number) => gameStore.playItem(cardId, target);
+  w.__pzdead = (pid = 0) => gameStore.apply({ type: "dev.setDead", pid });
 }
 
 /** 开发期只读快照钩子（window.__pz()）：内核态随手可查 */

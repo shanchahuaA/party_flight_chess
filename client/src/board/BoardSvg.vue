@@ -5,7 +5,18 @@
  * - 棋子位置读内核玩家态；逐格动画 = CSS transform 过渡（内核 140ms 节拍的事实驱动）。
  */
 import { computed } from "vue";
-import { BOARD, BOARD_H, BOARD_W, STREET_TAGS, YARDS, branchTails, cellXY, type PlayerState } from "../../../kernel/src";
+import {
+  BOARD,
+  BOARD_H,
+  BOARD_W,
+  ITEM_CARD_BY_ID,
+  STREET_TAGS,
+  YARDS,
+  branchTails,
+  cellXY,
+  itemLegalTargets,
+  type PlayerState,
+} from "../../../kernel/src";
 import { gameStore } from "../game/store";
 
 const state = computed(() => {
@@ -94,6 +105,44 @@ const spawnOwnerColor = (cellId: number): string | null => {
   const o = ownerOfSpawn(cellId);
   return o === null ? null : TOKEN_COLORS[o % TOKEN_COLORS.length]!;
 };
+
+// ---------- 目标选择（T4a2 chooseOther）：合法亮/非法灰，点头像收口 ----------
+/** targeting 中的合法目标集合（null=未在选择）；口径=内核 itemLegalTargets 单一份 */
+const legalSet = computed<Set<number> | null>(() => {
+  const cardId = gameStore.targeting.value;
+  if (!cardId || !state.value) return null;
+  return new Set(itemLegalTargets(state.value, 0, cardId));
+});
+function tokenClass(id: number): string {
+  const s = legalSet.value;
+  if (!s) return "";
+  return s.has(id) ? "tg legal" : "tg dim";
+}
+/** 选中目标提交到内核：非法目标也照发（内核拒并播理由 toast，选择态保留可供换点） */
+function onTokenClick(id: number): void {
+  if (legalSet.value) gameStore.pickTarget(id);
+}
+
+// ---------- 场地型附着的角标（T4a ground）：踩上触发即消失；<title> 带归因提示 ----------
+// 图标映射=壳层呈现皮：本批 2 张场地卡（数值表 T4b 落数后在此补行）；兜底改警示符不静默
+const GROUND_ICON: Record<string, string> = { i03: "🍌", i17: "💣" };
+const groundViews = computed(() => {
+  const perCell = new Map<number, number>();
+  return (state.value?.ground ?? []).map((g) => {
+    // 同格多张横向错开一格径，免得叠死
+    const n = perCell.get(g.cell) ?? 0;
+    perCell.set(g.cell, n + 1);
+    const c = BOARD[g.cell]!;
+    const card = ITEM_CARD_BY_ID.get(g.cardId);
+    const owner = state.value!.players[g.owner];
+    return {
+      x: c.x - 7.5 - n * 10,
+      y: c.y - 7.5,
+      icon: GROUND_ICON[g.cardId] ?? "⚠",
+      title: `${card?.title ?? g.cardId} · ${g.owner === 0 ? "你" : (owner?.name ?? "?")} 布的`,
+    };
+  });
+});
 </script>
 
 <template>
@@ -224,19 +273,27 @@ const spawnOwnerColor = (cellId: number): string | null => {
       <text :x="t.tail.flag.x" :y="t.tail.flag.y + 5" text-anchor="middle" font-size="14">🏁</text>
     </g>
 
-    <!-- 棋子 -->
+    <!-- 棋子（targeting 期：合法亮/非法灰，点头像收口——非 targeting 不响应） -->
     <g
       v-for="tv in tokenViews"
       :key="`tk${tv.p.id}`"
       class="tk"
-      :class="{ glow: gameStore.isLit(tv.p.id) !== null }"
+      :class="[tokenClass(tv.p.id), { glow: gameStore.isLit(tv.p.id) !== null }]"
       :style="{ transform: `translate(${tv.x}px, ${tv.y}px)` }"
+      @click="onTokenClick(tv.p.id)"
     >
       <circle v-if="tv.p.id === 0" r="11" fill="none" stroke="#90cbd8" stroke-width="1.5" stroke-dasharray="3 2.5" />
       <circle class="tkMain" r="8.5" :fill="TOKEN_COLORS[tv.p.id]" stroke="#fff" stroke-width="2" />
       <text class="tokenLbl" y="3.2" text-anchor="middle" font-size="9">
         {{ tv.p.id === 0 ? "你" : tv.p.name.replace("小", "") }}
       </text>
+    </g>
+
+    <!-- 场地型角标：附着格右上角画皮（踩上触发即消失；同格多张横向错开） -->
+    <g v-for="(g, i) in groundViews" :key="`gm${i}`" class="gm">
+      <title>{{ g.title }}</title>
+      <circle :cx="g.x" :cy="g.y" r="6.2" fill="#fffde7" stroke="#ff8f00" stroke-width="1.5" />
+      <text :x="g.x" :y="g.y + 2.4" text-anchor="middle" font-size="6.4">{{ g.icon }}</text>
     </g>
   </svg>
 </template>
@@ -271,5 +328,29 @@ const spawnOwnerColor = (cellId: number): string | null => {
   font-weight: 800;
   fill: #fff;
   pointer-events: none;
+}
+/* targeting 期头像语义：合法可选（亮+呼吸圈）/非法置灰；非 targeting 无行为 */
+.tk.tg.legal {
+  cursor: pointer;
+}
+.tk.tg.legal .tkMain {
+  stroke: #ffd54f;
+  animation: tkCall 0.85s ease-in-out infinite;
+}
+@keyframes tkCall {
+  0%,
+  100% {
+    stroke-width: 2.5;
+  }
+  50% {
+    stroke-width: 6;
+  }
+}
+.tk.tg.dim {
+  opacity: 0.3;
+  filter: grayscale(0.65);
+}
+.gm {
+  pointer-events: auto;
 }
 </style>

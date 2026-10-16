@@ -6,6 +6,7 @@
 import { computed } from "vue";
 import type { PlayerState } from "../../../kernel/src";
 import { gameStore } from "../game/store";
+import HandDock from "./HandDock.vue";
 
 const state = computed(() => {
   return gameStore.state.value;
@@ -33,6 +34,8 @@ function confirm(): void {
 
 <template>
   <div class="dock">
+    <!-- 手牌横滑+抽屉+打牌（T4a2）：dock 固定钮上方的一排情境手牌（含 targeting 任务条） -->
+    <HandDock />
     <div id="btnRow">
       <button id="rollBtn" :disabled="!canRoll" :class="{ armed: canRoll }" @click="roll">
         <span v-if="face !== null && rolled">🎲 {{ face }}</span>
