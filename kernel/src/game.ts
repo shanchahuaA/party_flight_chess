@@ -1056,7 +1056,10 @@ export class GameKernel {
         { emphasis: res.grade === "crit" || res.grade === "critfail" ? "highlight" : "normal" },
       );
     } else {
-      this.msg("event", `${p.name} ${axisName}掷出 ${res.raw}${res.mods ? `（+${res.mods}）` : ""} —— ${res.raw}。`, p.id, {
+      // 前途骰（无 dc）：修正括注与 dc 分支同形；档位结果由 bands 分支的 move/back 播报自报，此处只报面
+      const mods =
+        res.mods === 0 ? "" : res.mods > 0 ? `（+${res.mods}）` : `（−${-res.mods}）`;
+      this.msg("event", `${p.name} ${axisName}掷出 ${res.raw}${mods}。`, p.id, {
         emphasis: "normal",
       });
     }
@@ -1066,6 +1069,7 @@ export class GameKernel {
     } else if (res.grade === "critfail") {
       parts = spec.onCritFail ?? spec.onFail; // 大失败当卡自带额外负面；缺省回落失败分支
     } else if (spec.bands) {
+      // 分档按判定用有效面 used（与 dc 判读同源）；命运之骰无轴无 mods 下 used=raw，与表二「掷 1d20」面值语义等价
       const band = spec.bands.find((b) => (b.min == null || res.used >= b.min) && (b.max == null || res.used <= b.max));
       parts = band?.parts;
     } else {

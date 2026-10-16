@@ -1,6 +1,6 @@
 /** 事件格抽卡闭环（#19 T3a）：单池洗匀守恒／抉择挂起与代选／纯效果自动结算／检定三态+极值／指认跳过淘汰者／罚停轮空／指认下回合生效 */
 import { describe, expect, it } from "vitest";
-import { GameKernel, KernelError, M1_EVENT_POOL, type GameConfig, type PlayerDef } from "../src";
+import { EVENT_CARDS, GameKernel, KernelError, M1_EVENT_POOL, type EventCard, type GameConfig, type PlayerDef } from "../src";
 import { boot, cell, dieOf, me, seedForFirstDie, walkOut } from "./helpers";
 
 /** 自定义 defs 开局（角色/人数测试用） */
@@ -14,6 +14,32 @@ function bootDefs(defs: PlayerDef[], over: Partial<GameConfig> = {}): GameKernel
 const PRE_PLAIN_E = () => ({ pos: cell(1, 0), from: cell(0, 0), net: 5 });
 /** (10,10) 西邻位：掷 1 东行踩 (11,10)=事件格（霜顶雪山生态） */
 const PRE_SNOW_E = () => ({ pos: cell(10, 10), from: cell(9, 10), net: 5 });
+
+/** 搜种子：dev.drawCard+chooseCard 后人间检定原始面命中 want（返回首个命中并断言非负）。
+ *  赌狗/断桥共用；兼容两种播报形态——dc 型「d20(X)」与前途骰（无 dc）「前途骰掷出 X」 */
+function seedForDrawCheck(cardId: string, want: (raw: number) => boolean): number {
+  const pat = /(?:d20\(|前途骰掷出 )(\d+)/;
+  for (let seed = 1; seed < 4000; seed++) {
+    const k = boot({ seed });
+    k.apply({ type: "dev.drawCard", pid: 0, cardId }, 0);
+    k.apply({ type: "chooseCard", pid: 0, option: 1 }, 0);
+    const m = k.state.messages
+      .slice()
+      .reverse()
+      .find((x) => x.who === 0 && pat.test(x.text));
+    const g = m && pat.exec(m.text);
+    if (g && want(parseInt(g[1]!, 10))) return seed;
+  }
+  throw new Error(`找不到 ${cardId} 检定原始面命中的种子`);
+}
+
+/** 直发卡+选第二项（即选项 B=检定项）的盘面（种子由 seedForDrawCheck 搜定）；赌狗/抉择检定分支对表共用 */
+function bootCardCheck(cardId: string, want: (raw: number) => boolean): GameKernel {
+  const k = boot({ seed: seedForDrawCheck(cardId, want) });
+  k.apply({ type: "dev.drawCard", pid: 0, cardId }, 0);
+  k.apply({ type: "chooseCard", pid: 0, option: 1 }, 0);
+  return k;
+}
 
 const POOL_IDS = M1_EVENT_POOL.map((c) => c.id);
 
@@ -176,6 +202,189 @@ describe("系统指认：跳过淘汰者（事件定案 §5.2）", () => {
   });
 });
 
+describe("赌狗时刻 · 命运之骰前途骰四分支（表二 e13；无 dc 走 bands）", () => {
+  it("骰 20 大成功 → 前进 6（当卡极值正面分支）", () => {
+    const k = bootCardCheck("e13", (raw) => raw === 20);
+    expect(me(k).walk?.remaining).toBe(6);
+  });
+
+  it("骰 1 大失败 → 回退 4（当卡极值负面分支）", () => {
+    const k = bootCardCheck("e13", (raw) => raw === 1);
+    expect(me(k).walk?.remaining).toBe(-4);
+  });
+
+  it("11..19 → 前进 4（bands 首条 min:11）", () => {
+    const k = bootCardCheck("e13", (raw) => raw >= 11 && raw <= 19);
+    expect(me(k).walk?.remaining).toBe(4);
+    expect(k.state.messages.some((m) => m.text.includes("前途骰掷出"))).toBe(true);
+  });
+
+  it("2..10 → 回退 3（bands 末条兜底=「≤10」表述）", () => {
+    const k = bootCardCheck("e13", (raw) => raw >= 2 && raw <= 10);
+    expect(me(k).walk?.remaining).toBe(-3);
+  });
+});
+
+describe("赌狗时刻 · 孤注一掷（表二 e14；赌运 DC16 高险高收益）", () => {
+  it("运检 DC16 通过（轻装运轴 +2，raw ≥14 即过）→ 前进 5 + 摸 1 道具", () => {
+    const k = bootCardCheck("e14", (raw) => raw >= 14 && raw < 20);
+    expect(me(k).walk?.remaining).toBe(5);
+    expect(me(k).hp).toBe(10);
+    expect(me(k).stun).toBe(0);
+    expect(k.state.messages.some((m) => m.kind === "item" && m.text.includes("摸到 1 张道具卡"))).toBe(true);
+    expect(k.state.messages.some((m) => m.text.includes("vs DC16"))).toBe(true);
+  });
+
+  it("DC16 失败 → 扣 2 血 + 罚停 1 回合（罚停标记开窗轮空）", () => {
+    const k = bootCardCheck("e14", (raw) => raw >= 2 && raw <= 13);
+    expect(me(k).walk).toBeNull();
+    expect(me(k).hp).toBe(8);
+    expect(me(k).stun).toBe(1);
+    expect(k.state.messages.some((m) => m.text.includes("被罚停 1 回合"))).toBe(true);
+  });
+});
+
+describe("表二 21 张逐张对表（T3b 收账）", () => {
+  it("编号 1..21 完整、id 唯一、kind 分布 = 14 抉择 + 6 纯效果 + 1 自由窗口", () => {
+    expect(EVENT_CARDS.length).toBe(21);
+    expect(EVENT_CARDS.map((c) => c.no).sort((a, b) => a - b)).toEqual(
+      Array.from({ length: 21 }, (_, i) => i + 1),
+    );
+    expect(new Set(EVENT_CARDS.map((c) => c.id)).size).toBe(21);
+    const by = (kind: EventCard["kind"]) => EVENT_CARDS.filter((c) => c.kind === kind).length;
+    expect(by("choice")).toBe(14);
+    expect(by("effect")).toBe(6);
+    expect(by("window")).toBe(1);
+  });
+
+  it("每张卡都有场景 flavor（叙事皮收账）", () => {
+    for (const c of EVENT_CARDS) expect(c.flavor.length).toBeGreaterThan(0);
+  });
+
+  it("生态特殊卡 3 张挂对生态（温泉房=平原 / 熔岩喷口=戈壁 / 冰面滑道=雪山）", () => {
+    expect(EVENT_CARDS.find((c) => c.title === "温泉房")?.region).toBe("plain");
+    expect(EVENT_CARDS.find((c) => c.title === "熔岩喷口")?.region).toBe("gobi");
+    expect(EVENT_CARDS.find((c) => c.title === "冰面滑道")?.region).toBe("snow");
+    expect(EVENT_CARDS.filter((c) => c.region).length).toBe(3);
+  });
+
+  it("赌狗 3 张全挂 gamble 标且都是抉择卡（表二显式卡牌类型兑现）", () => {
+    const gambles = EVENT_CARDS.filter((c) => c.gamble);
+    expect(gambles.map((c) => c.title)).toEqual(["猜拳机器人", "命运之骰", "孤注一掷"]);
+    expect(gambles.every((c) => c.kind === "choice")).toBe(true);
+  });
+
+  it("M1 牌池 = 20 张且排除 window 卡（黑市开张 T7 放行）", () => {
+    const w = EVENT_CARDS.find((c) => c.kind === "window");
+    expect(w?.title).toBe("黑市开张");
+    expect(M1_EVENT_POOL.length).toBe(20);
+    expect(M1_EVENT_POOL.includes(w!)).toBe(false);
+  });
+
+  it("抉择 14 张每张 ≥2 选项 + 合法默认项；纯效果 6 张每张有 effect", () => {
+    for (const c of EVENT_CARDS) {
+      if (c.kind === "choice") {
+        expect(c.options!.length).toBeGreaterThanOrEqual(2);
+        expect(c.defaultOption!).toBeGreaterThanOrEqual(0);
+        expect(c.defaultOption!).toBeLessThan(c.options!.length);
+      } else if (c.kind === "effect") {
+        expect(c.effect).toBeDefined();
+      }
+    }
+  });
+
+  it("全池 20 张逐张直发结算不炸（dev 通道；真实落格/region 洗回/弃牌堆路径另在上方两组收账）", () => {
+    const k = boot();
+    for (const card of M1_EVENT_POOL) {
+      k.apply({ type: "dev.drawCard", pid: 0, cardId: card.id }, 0);
+      if (me(k).cardPending?.cardId === card.id) {
+        k.apply({ type: "chooseCard", pid: 0, option: card.defaultOption ?? 0 }, 0);
+      }
+    }
+    const seen = k.state.messages.filter((m) => m.who === 0 && m.text.includes("踩上事件格，抽到「"));
+    expect(seen.length).toBe(M1_EVENT_POOL.length);
+    for (const c of M1_EVENT_POOL) {
+      expect(seen.some((m) => m.text.includes(`「${c.title}」`))).toBe(true);
+    }
+  });
+
+  it("window 卡 dev 直发走占位播报（查货窗 T7 接入）", () => {
+    const k = boot();
+    k.apply({ type: "dev.drawCard", pid: 0, cardId: "e21" }, 0);
+    expect(k.state.messages.some((m) => m.text.includes("查货窗暂缓开张"))).toBe(true);
+  });
+});
+
+describe("抉择卡逐张效果对表（AC1 运行时收账；非结构层）", () => {
+  it("e02 温泉房（region preserved 直发）：泡一下=回 2 血；泡个够=回 3 血+罚停 1", () => {
+    const k = boot();
+    k.apply({ type: "dev.setHp", pid: 0, hp: 1 }, 0);
+    k.apply({ type: "dev.drawCard", pid: 0, cardId: "e02" }, 0);
+    k.apply({ type: "chooseCard", pid: 0, option: 0 }, 0);
+    expect(me(k).hp).toBe(3);
+    expect(me(k).stun).toBe(0);
+
+    const k2 = boot();
+    k2.apply({ type: "dev.setHp", pid: 0, hp: 1 }, 0);
+    k2.apply({ type: "dev.drawCard", pid: 0, cardId: "e02" }, 0);
+    k2.apply({ type: "chooseCard", pid: 0, option: 1 }, 0);
+    expect(me(k2).hp).toBe(4);
+    expect(me(k2).stun).toBe(1);
+  });
+
+  it("e06 电梯还是楼梯：走楼梯（默认）=无事；乘电梯=前进 3+罚停 1", () => {
+    const k = boot();
+    k.apply({ type: "dev.drawCard", pid: 0, cardId: "e06" }, 0);
+    k.apply({ type: "chooseCard", pid: 0, option: 0 }, 0);
+    expect(me(k).walk).toBeNull();
+    expect(me(k).stun).toBe(0);
+
+    const k2 = boot();
+    k2.apply({ type: "dev.drawCard", pid: 0, cardId: "e06" }, 0);
+    k2.apply({ type: "chooseCard", pid: 0, option: 1 }, 0);
+    expect(me(k2).walk?.remaining).toBe(3);
+    expect(me(k2).stun).toBe(1);
+  });
+
+  it("e11 岔路口·宝箱与陷阱：险路（默认）=摸 1 道具+退 2；稳路=原地不动", () => {
+    const k = boot();
+    k.apply({ type: "dev.drawCard", pid: 0, cardId: "e11" }, 0);
+    k.apply({ type: "chooseCard", pid: 0, option: 0 }, 0);
+    expect(me(k).walk?.remaining).toBe(-2);
+    expect(k.state.messages.some((m) => m.kind === "item" && m.text.includes("摸到 1 张道具卡"))).toBe(true);
+
+    const k2 = boot();
+    k2.apply({ type: "dev.drawCard", pid: 0, cardId: "e11" }, 0);
+    k2.apply({ type: "chooseCard", pid: 0, option: 1 }, 0);
+    expect(me(k2).walk).toBeNull();
+  });
+
+  it("e09 熔岩喷口（region gobi）：踏岩而过=敏检 DC12——过=前进 3；败=扣 1 血停原地", () => {
+    const k = bootCardCheck("e09", (raw) => raw + 3 >= 12 && raw > 1 && raw < 20); // 轻装 agile3
+    expect(me(k).walk?.remaining).toBe(3);
+    expect(me(k).hp).toBe(10);
+    expect(k.state.messages.some((m) => m.text.includes("力检 d20") === false && m.text.includes("敏检 d20") && m.text.includes("vs DC12"))).toBe(true);
+
+    const k2 = bootCardCheck("e09", (raw) => raw + 3 < 12 && raw > 1);
+    expect(me(k2).walk).toBeNull();
+    expect(me(k2).hp).toBe(9);
+  });
+
+  it("e10 冰面滑道（region snow）：坐滑道=敏检 DC10——过=前进 4；败=滑倒退 2", () => {
+    const k = bootCardCheck("e10", (raw) => raw + 3 >= 10 && raw > 1 && raw < 20); // 轻装 agile3
+    expect(me(k).walk?.remaining).toBe(4);
+
+    const k2 = bootCardCheck("e10", (raw) => raw + 3 < 10 && raw > 1);
+    expect(me(k2).walk?.remaining).toBe(-2);
+  });
+
+  it("e08 猜拳机器人普通通过（非极值）=前进 3——与骰 20 献宝分支区分", () => {
+    const k = bootCardCheck("e08", (raw) => raw >= 8 && raw < 20); // 轻装 luck2 vs DC10
+    expect(me(k).walk?.remaining).toBe(3);
+    expect(k.state.messages.some((m) => m.who === 0 && m.text.includes("—— 大成功"))).toBe(false);
+  });
+});
+
 describe("血量/盾通道", () => {
   it("「岔路口·近路与远路」A 抄近路：前进 2 + 扣 1 血", () => {
     const k = boot();
@@ -208,22 +417,6 @@ describe("血量/盾通道", () => {
 });
 
 describe("检定三态（1d20+轴 vs 卡面 DC）与极值分支", () => {
-  /** 搜种子：dev.drawCard+chooseCard 后人间检定原始面命中 want（返回首个命中并断言非负） */
-  function seedForDrawCheck(cardId: string, want: (raw: number) => boolean): number {
-    for (let seed = 1; seed < 4000; seed++) {
-      const k = boot({ seed });
-      k.apply({ type: "dev.drawCard", pid: 0, cardId }, 0);
-      k.apply({ type: "chooseCard", pid: 0, option: 1 }, 0);
-      const m = k.state.messages
-        .slice()
-        .reverse()
-        .find((x) => x.who === 0 && /d20\((\d+)\)/.exec(x.text));
-      const g = m && /d20\((\d+)\)/.exec(m.text);
-      if (g && want(parseInt(g[1]!, 10))) return seed;
-    }
-    throw new Error(`找不到 ${cardId} 检定原始面命中的种子`);
-  }
-
   it("断桥跳桥力检 DC12：过=前进 3；败=扣 1 血停原地", () => {
     const passSeed = seedForDrawCheck("e03", (raw) => raw + 1 >= 12); // 轻装 might1
     const k = boot({ seed: passSeed });
