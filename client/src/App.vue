@@ -1,13 +1,15 @@
 <script setup lang="ts">
-/** 单机壳（M1 T2）：未开局=大厅简版页（配置+角色明选）；开局=游戏页（T1 满屏棋盘） */
+/** 单机壳（M1 T2）：未开局=大厅简版页（配置+角色明选）；开局=游戏页（满屏棋盘+战报让位带+抉择浮层） */
 import { computed, onBeforeUnmount, onMounted } from "vue";
 import { maybeBootFastPath } from "./game/store";
 import Lobby from "./ui/Lobby.vue";
 import BoardSvg from "./board/BoardSvg.vue";
 import Dock from "./ui/Dock.vue";
 import HudBar from "./ui/HudBar.vue";
+import WorldMessage from "./ui/WorldMessage.vue";
 import RouteBar from "./ui/RouteBar.vue";
 import SecretDraft from "./ui/SecretDraft.vue";
+import CardChoice from "./ui/CardChoice.vue";
 import { gameStore } from "./game/store";
 
 const started = computed(() => !!gameStore.kernel.value);
@@ -26,12 +28,14 @@ const toast = computed(() => gameStore.toast.value);
   <Lobby v-if="!started" />
   <div v-else class="gamePage">
     <HudBar />
+    <WorldMessage />
     <main class="boardWrap">
       <BoardSvg />
     </main>
     <RouteBar />
     <Dock />
     <SecretDraft />
+    <CardChoice />
     <div v-if="toast" class="toast">{{ toast }}</div>
   </div>
 </template>
@@ -62,7 +66,7 @@ const toast = computed(() => gameStore.toast.value);
   font-size: 12.5px;
   padding: 8px 14px;
   border-radius: 999px;
-  z-index: 60;
+  z-index: 200; /* 错误提示压过一切浮层（抉择卡/战报抽屉之上） */
   max-width: 82vw;
   white-space: nowrap;
   overflow: hidden;

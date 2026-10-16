@@ -6,7 +6,7 @@
  */
 import { reactive, ref, shallowRef } from "vue";
 import { GameKernel } from "../../../kernel/src";
-import type { Fact, GameConfig, GameState, Intent, MessageEntry, PlayerDef } from "../../../kernel/src";
+import type { Fact, GameConfig, GameState, Intent, PlayerDef } from "../../../kernel/src";
 
 export interface PulseLit {
   level: "normal" | "target" | "big";
@@ -22,8 +22,6 @@ class GameStore {
   state = shallowRef<GameState | null>(null); // reactive 代理
   /** 事实侧的瞬时演出：棋子脉冲（level 熄灭时间戳） */
   pulses = reactive<Record<number, PulseLit>>({});
-  /** 最近战报一条（T1 简版：单行常显，T3 起变战报流水） */
-  lastMessage = shallowRef<MessageEntry | null>(null);
   /** 最后一次掷面（dock 掷骰钮上显示） */
   lastFace = ref<number | null>(null);
   /** 错误提示（KernelError 等，短暂展示） */
@@ -117,11 +115,6 @@ class GameStore {
           break;
       }
     }
-    const msgs = this.kernel.value?.state.messages ?? [];
-    const last = msgs[msgs.length - 1];
-    if (last && (!this.lastMessage.value || last.id > this.lastMessage.value.id)) {
-      this.lastMessage.value = last;
-    }
   }
 
   /** 演出清理：过期的脉冲熄灭（读时算，无状态） */
@@ -140,12 +133,15 @@ class GameStore {
 
 export const gameStore = new GameStore();
 
-/** 调试冒烟通道（?fast=）：免大厅直达一局短窗局（10s 窗/无休息），暗牌自动代选 */
+/** 调试冒烟通道（?fast=）：免大厅直达一局短窗局（10s 窗/无休息），暗牌自动代选；
+ *  追加 ?dev=1 时开局 allowDev 局并挂 window.__pzcard（强抽指定事件卡，浮层冒烟用） */
 export function maybeBootFastPath(): void {
   if (gameStore.kernel.value) return;
-  if (!new URLSearchParams(location.search).has("fast")) return;
+  const params = new URLSearchParams(location.search);
+  if (!params.has("fast")) return;
+  const dev = params.has("dev");
   gameStore.boot(
-    { allowDev: false, windowMs: 10_000, restMs: 0, stepMs: 90, seed: (Math.random() * 2 ** 31) | 0 },
+    { allowDev: dev, windowMs: 10_000, restMs: 0, stepMs: 90, seed: (Math.random() * 2 ** 31) | 0 },
     [
       { name: "你", isBot: false, roleId: "light" },
       { name: "小黄", isBot: true },
@@ -153,7 +149,14 @@ export function maybeBootFastPath(): void {
     ],
   );
   gameStore.apply({ type: "chooseSecret", pid: 0, pick: 0 });
+  if (dev) bindDevChannels();
   bindDevSnapshot();
+}
+
+/** 调试卡牌通道（?dev=1）：window.__pzcard("e03", pid?) → dev.drawCard 强抽（抉择/效果/地区卡冒烟） */
+function bindDevChannels(): void {
+  (window as unknown as Record<string, unknown>).__pzcard = (cardId: string, pid = 0) =>
+    gameStore.apply({ type: "dev.drawCard", pid, cardId });
 }
 
 /** 开发期只读快照钩子（window.__pz()）：内核态随手可查 */

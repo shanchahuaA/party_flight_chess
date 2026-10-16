@@ -1,5 +1,5 @@
 <script setup lang="ts">
-/** HUD：回合进度 + 窗倒计时 / 休息计时（跳过）+ 🎯 我的暗牌弹层 + 最近战报一条（T1 简版） */
+/** HUD：回合进度 + 窗倒计时 / 休息计时（跳过）+ 🎯 我的暗牌弹层（战报叙事归 WorldMessage 让位带） */
 import { computed, ref } from "vue";
 import { BOARD, ECO_NAMES, secretGoal } from "../../../kernel/src";
 import { gameStore } from "../game/store";
@@ -8,7 +8,6 @@ import BaseSheet from "./BaseSheet.vue";
 const state = computed(() => {
   return gameStore.state.value;
 });
-const lastMessage = computed(() => gameStore.lastMessage.value);
 
 const turnLabel = computed(() => {
   const s = state.value;
@@ -70,9 +69,6 @@ const myGoal = computed(() => {
     </div>
     <div class="sp" />
     <button class="pill secret" type="button" @click="showSecret = true">🎯</button>
-    <div v-if="lastMessage" class="pill msg" :class="`k-${lastMessage.kind}`">
-      {{ lastMessage.text }}
-    </div>
 
     <!-- 我的暗牌（仅本人视角；浮层原则：查看类不切页） -->
     <BaseSheet v-if="showSecret" @close="showSecret = false">
@@ -121,19 +117,6 @@ const myGoal = computed(() => {
   background: rgba(38, 50, 56, 0.78);
   color: #e0f2f1;
   border-color: transparent;
-}
-.pill.msg {
-  max-width: 46vw;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  font-weight: 600;
-  color: #37474f;
-}
-.pill.k-system {
-  border-left: 3px solid #263238;
-}
-.pill.k-event {
-  border-left: 3px solid #ff7043;
 }
 .skip {
   margin-left: 6px;
@@ -196,10 +179,5 @@ const myGoal = computed(() => {
   padding: 10px;
   font-size: 13px;
   font-weight: 700;
-}
-@media (max-width: 420px) {
-  .pill.msg {
-    display: none;
-  }
 }
 </style>
