@@ -80,3 +80,36 @@ describe("掷骰通道 rollD20", () => {
     }
   });
 });
+
+describe("骰面修正四原语（#19 T3a：削面/升面/保底/加值）", () => {
+  it("面宽互抵：削面/升面先互相抵消再结算（同一次检定全量合账）", () => {
+    expect(netMods([{ face: -2 }]).face).toBe(-2); // 削面 2 → 1d18
+    expect(netMods([{ face: 1 }]).face).toBe(1); // 升面 1 → 1d21
+    expect(netMods([{ face: -2 }, { face: 1 }]).face).toBe(-1); // 升面抵削面
+    expect(netMods([{ face: -2 }, { face: 2 }]).face).toBe(0); // 恰好抵消
+    expect(netMods([{ face: -1 }, { face: 1 }, { bonus: 3 }, { floor: 10 }])).toMatchObject({
+      face: 0,
+      bonus: 3,
+      floor: 10,
+    });
+  });
+
+  it("升/削面改骰面数：1d19 上限 19（大成功自然不可达）；1d22 出 21/22 是大数不是极值", () => {
+    for (let seed = 1; seed <= 200; seed++) {
+      expect(rollD20(rngFrom(seed), { adv: 0, advCount: 0 }, 19)).toBeLessThanOrEqual(19);
+      expect(rollD20(rngFrom(seed, { s: seed + 300000 }), { adv: 0, advCount: 0 }, 22)).toBeLessThanOrEqual(22);
+    }
+    // 多颗（优势）同样尊重面数
+    const r1 = rngFrom(9);
+    const a = rollD20(r1, { adv: 1, advCount: 2 }, 19); // 掷 3 颗取最高
+    const r2 = rngFrom(9);
+    const faces = [0, 0, 0].map(() => Math.floor(r2.next() * 19) + 1);
+    expect(a).toBe(Math.max(...faces));
+  });
+
+  it("极值不随面宽翻动：极值只判原始面 20/1（resolveCheck 收口；升面骰出的 21+ 判过不算大成功）", () => {
+    expect(resolveCheck({ raw: 21, axisBonus: 0, dc: 18 }).grade).toBe("pass");
+    expect(resolveCheck({ raw: 20, axisBonus: 0, dc: 18 }).grade).toBe("crit");
+    expect(resolveCheck({ raw: 1, axisBonus: 0, dc: 18 }).grade).toBe("critfail");
+  });
+});

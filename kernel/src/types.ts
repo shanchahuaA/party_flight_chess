@@ -4,6 +4,7 @@
  * M2 时这批类型直接变成 WS 意图/事实协议（ADR 0001），形状不再变化。
  */
 import type { CellType, Eco, StreetKey } from "./board";
+import type { EffectPart } from "./data/events";
 import type { Axis, RoleId } from "./data/roles";
 
 // ---------- 战报（界面呈现定案 §三 MessageEntry，结构不动） ----------
@@ -52,7 +53,7 @@ export interface PlayerState {
   rolled: boolean;
   /** 本窗已确认（确认结束=进等待区） */
   confirmed: boolean;
-  /** 罚停（本票恒 0，T5 挂钩） */
+  /** 罚停余量：下个世界回合开始时逐个消耗并轮空（T3a 卡面效果挂点） */
   stun: number;
   /** 出局占位（T5 挂钩） */
   dead: boolean;
@@ -65,6 +66,12 @@ export interface PlayerState {
   /** 假人的窗口内日程（rollAt 到点自动掷；walk 结束后到点自动确认） */
   botSchedule: { rollAt: number; confirmAt: number };
   walk: WalkState | null;
+  /** 卡面效果排队的续走（正=前进负=沿栈退）：walk 被占用时入队，走完自动接（T3a 卡面连动） */
+  walkQueue: number[];
+  /** 抉择卡挂起：触发者本人应答（chooseCard），超时按卡面默认项代选并标「(代选)」（T3a2 壳消费） */
+  cardPending: { cardId: string; deadline: number } | null;
+  /** 本窗已触发抽卡次数（连抽上限，防卡面引走格无限连环） */
+  cardDraws: number;
 }
 
 export interface RouteOption {
@@ -85,6 +92,12 @@ export interface WalkState {
 
 export type GamePhase = "drafting" | "acting" | "rest" | "over";
 
+/** 指向他人的卡面效果挂账：下一世界回合开始时结算（openWindow 消费；M2 随协议下发） */
+export interface DeferredEffect {
+  pid: number;
+  parts: EffectPart[];
+}
+
 export interface GameState {
   turn: number;
   phase: GamePhase;
@@ -96,6 +109,11 @@ export interface GameState {
   /** 通关席名次（按踩进先后） */
   finishers: number[];
   messages: MessageEntry[];
+  /** 事件牌堆单池洗匀（抽完弃牌堆洗回——事件定案 §1.8；deck+discard 恒守恒） */
+  deck: string[];
+  discard: string[];
+  /** 指向他人的卡面效果（world·即时）：下一世界回合开始时结算（窗口 openWindow 消费） */
+  deferred: DeferredEffect[];
   /** 内部：战报 id 发号与 RNG 状态（随状态走，M2 快照恢复随机流） */
   seq: number;
   rngState: number;
@@ -130,9 +148,14 @@ export type Intent =
   | { type: "skipRest" }
   /** 开局暗牌抽 2 选 1（真人本人选；drafting 期唯一前置动作，假人由系统代抽） */
   | { type: "chooseSecret"; pid: number; pick: number }
+  /** 事件卡抉择应答：挂起本人点选项下标（超时未应答由系统按默认项代选，战报标 (代选)） */
+  | { type: "chooseCard"; pid: number; option: number }
   /** 测试/后接卡面效果专用的直调通道（allowDev=false 时拒绝） */
   | { type: "dev.back"; pid: number; steps: number }
-  | { type: "dev.setPos"; pid: number; pos: number; from: number | null; net: number };
+  | { type: "dev.setPos"; pid: number; pos: number; from: number | null; net: number }
+  | { type: "dev.setHp"; pid: number; hp: number }
+  | { type: "dev.setDead"; pid: number }
+  | { type: "dev.drawCard"; pid: number; cardId: string };
 
 // ---------- 事实（下行：客户端据此动起来） ----------
 
@@ -154,6 +177,9 @@ export type Fact =
   | { type: "finish"; pid: number }
   | { type: "routeAskOpen"; pid: number; options: RouteOption[]; deadline: number }
   | { type: "routeChosen"; pid: number; to: number; auto: boolean }
+  /** 事件卡：抽到（T3a2 中央抉择浮层挂卡面入口）／抉择落定（auto=代选） */
+  | { type: "cardDrawn"; pid: number; cardId: string }
+  | { type: "cardResolved"; pid: number; cardId: string; option: number; auto: boolean }
   /** 棋盘联动：说明性脉冲（界面呈现定案 §四 S1 描边） */
   | { type: "pulse"; pid: number; level: "normal" | "target" | "big" };
 

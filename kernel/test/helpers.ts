@@ -44,6 +44,59 @@ export function seedForScript(script: (k: GameKernel) => number[], targets: numb
   throw new Error(`找不到骰面流为 [${targets.join(",")}] 的种子（1..4999）`);
 }
 
+/**
+ * 会造成位移的事件卡清单（抽卡必先播「踩上事件格，抽到「卡名」」——按卡名探测）。
+ * 用途：机械走格测试搜种子时排除它们；其余卡抽到也不动位置（默认位=无事/摸道具/扣血/罚停）。
+ */
+export const DRAW_MOVE_TITLES: readonly string[] = [
+  "断桥",
+  "醉酒的守卫",
+  "岔路口·宝箱与陷阱",
+  "岔路口·近路与远路",
+  "一路顺风",
+  "全员拜年",
+  "全员大扫除",
+  "庄园鼠横行",
+];
+
+/**
+ * 搜种子：同 seedForScript，外加事件卡约束（T3a 起走停即抽）。
+ * banTitles 给出 → 允许安全卡，只排除位移卡（抽到也不会改停位——断言可保持机械语义）；
+ * 不给 → 全程零事件抽卡（最严档）。极值/检定路径另在 events.test 用 dev 通道精确驱动。
+ */
+export function seedForScriptNoDraws(
+  script: (k: GameKernel) => number[],
+  targets: number[],
+  banTitles?: readonly string[],
+): number {
+  for (let seed = 1; seed < 5000; seed++) {
+    try {
+      const k = boot({ seed });
+      const before = k.state.messages.length;
+      const faces = script(k);
+      const drewTitles = k.state.messages
+        .slice(before)
+        .map((m) => /踩上事件格，抽到「(.+?)」/.exec(m.text)?.[1])
+        .filter((t): t is string => !!t);
+      const okDraws = banTitles ? drewTitles.every((t) => !banTitles.includes(t)) : drewTitles.length === 0;
+      if (okDraws && faces.length === targets.length && faces.every((f, i) => f === targets[i])) return seed;
+    } catch {
+      // 该种子下脚本中断（含抽到卡后挂起闸拒绝原路径），换下一粒
+    }
+  }
+  throw new Error(`找不到骰面流为 [${targets.join(",")}] 且${banTitles ? "零位移卡" : "零事件抽卡"}的种子（1..4999）`);
+}
+
+/** 建"骰面流 = targets 且满足事件卡约束"的新盘（脚本按同样时序重放） */
+export function bootWithDiesPure(
+  script: (k: GameKernel) => number[],
+  targets: number[],
+  over: Partial<GameConfig> = {},
+  banTitles?: readonly string[],
+): GameKernel {
+  return boot({ ...over, seed: seedForScriptNoDraws(script, targets, banTitles) });
+}
+
 /** 建"人间首掷面 = target"的一局（含 setPos 回放） */
 export function bootWithDie(target: number, pre: { pos: number; from: number | null; net: number } | null = null, over: Partial<GameConfig> = {}): GameKernel {
   const k = boot({ ...over, seed: seedForFirstDie(target, pre) });

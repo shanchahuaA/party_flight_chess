@@ -6,9 +6,11 @@
  *   输入 now 由壳层（shell 时钟）提供，内核自身不读时钟——全部对时可由 t 系列单测驱动。
  *   #7 定案：全员同窗行动、掷完立刻逐格走、全员完成提前开窗、超时替掷并自动确认（不替打卡）。
  */
-import { BOARD, BRANCH_LEN, NET_GOAL, SPAWN_SLOTS, STREET_NAMES, cellAt, spawnMenu, type BoardCell } from "./board";
-import { ROLES, roleDef } from "./data/roles";
+import { BOARD, BRANCH_LEN, ECO_NAMES, NET_GOAL, SPAWN_SLOTS, STREET_NAMES, cellAt, spawnMenu, type BoardCell } from "./board";
+import { M1_EVENT_POOL, EVENT_CARD_BY_ID, type CardEffect, type CheckSpec, type EffectPart, type EventCard } from "./data/events";
+import { AXIS_NAMES, ROLES, roleDef } from "./data/roles";
 import { SECRET_GOALS } from "./data/goals";
+import { CHECK_FACES, netMods, resolveCheck, roleCheckMods, roleOneToCrit, rollD20, type CheckGrade, type CheckMods } from "./check";
 import { rngFrom, type Rng, type RngState } from "./rng";
 import type { WalkState } from "./types";
 import {
@@ -58,6 +60,12 @@ const PLAYER_DEFS: PlayerDef[] = [
 
 /** 走格骰面数（1d10） */
 const WALK_DIE = 10;
+
+/** 单名玩家单窗抽卡上限（卡面引走格→落格重触发抽卡的连环熔断） */
+const EVENT_CHAIN_CAP = 4;
+
+/** 卡面/指认造成续走占用时，假人掷骰日程的重试间隔（避让而非放弃） */
+const BOT_WALK_RETRY_MS = 700;
 
 export class GameKernel {
   readonly config: GameConfig;
@@ -117,10 +125,17 @@ export class GameKernel {
           secretPick: d.isBot ? this.rng.int(2) : null,
           botSchedule: { rollAt: now, confirmAt: 0 },
           walk: null,
+          walkQueue: [],
+          cardPending: null,
+          cardDraws: 0,
         };
       }),
       finishers: [],
       messages: [],
+      // 事件牌堆：单池洗匀（表二 20 张；'window' 卡 T7 放行——事件定案 §1.8 抽完即洗回弃牌堆）
+      deck: this.rng.shuffle(M1_EVENT_POOL.map((c) => c.id)),
+      discard: [],
+      deferred: [],
       seq: 0,
       rngState: this.rngHost.s,
     };
@@ -203,6 +218,11 @@ export class GameKernel {
     return v;
   }
 
+  /** 批量消耗后的一次性同步（走 rollD20/shuffle 等直接吃 rng 的路径用） */
+  private syncRng(): void {
+    this.state.rngState = this.rngHost.s;
+  }
+
   private drawDie(): number {
     return Math.floor(this.draw() * WALK_DIE) + 1;
   }
@@ -221,7 +241,22 @@ export class GameKernel {
         this.checkWindowAction(p);
         if (p.confirmed) throw new KernelError("已确认，本窗不能再操作");
         if (!p.rolled) throw new KernelError("先掷骰，再确认结束");
+        if (p.cardPending) throw new KernelError("事件卡抉择未应答（本人先选，或等超时代选）");
         this.doConfirm(p, now, "human");
+        break;
+      }
+      case "chooseCard": {
+        // 事件卡抉择应答：仅触发者本人可应答自己名下的挂起卡（一人一卡互不干扰）
+        const p = this.player(intent.pid);
+        if (this.state.phase !== "acting" && this.state.phase !== "rest") {
+          throw new KernelError("当前阶段无法应答事件卡");
+        }
+        if (!p.cardPending) throw new KernelError("没有待抉择的事件卡");
+        const card = this.eventCard(p.cardPending.cardId);
+        if (intent.option < 0 || intent.option >= (card.options?.length ?? 0)) {
+          throw new KernelError("卡面选项下标越界");
+        }
+        this.resolveChoice(p, p.cardPending.cardId, intent.option, now, false);
         break;
       }
       case "chooseRoute": {
@@ -253,6 +288,32 @@ export class GameKernel {
         this.queueBack(p, intent.steps, now);
         break;
       }
+      case "dev.setHp": {
+        if (!this.config.allowDev) throw new KernelError("dev 意图未开放");
+        const p = this.player(intent.pid);
+        if (intent.hp < 0 || intent.hp > this.config.maxHp) throw new KernelError("hp 越界");
+        p.hp = intent.hp;
+        break;
+      }
+      case "dev.setDead": {
+        if (!this.config.allowDev) throw new KernelError("dev 意图未开放");
+        const p = this.player(intent.pid);
+        p.dead = true;
+        p.hp = 0;
+        p.walk = null;
+        p.walkQueue = [];
+        p.cardPending = null;
+        this.msg("system", `${p.name} 出局（测试通道），进入观战——不再被指认。`, p.id, { emphasis: "big" });
+        break;
+      }
+      case "dev.drawCard": {
+        if (!this.config.allowDev) throw new KernelError("dev 意图未开放");
+        const p = this.player(intent.pid);
+        const card = this.eventCard(intent.cardId);
+        if (p.cardPending) throw new KernelError("该玩家已有挂起抉择");
+        this.drawEventFor(p, now, card);
+        break;
+      }
       case "dev.setPos": {
         if (!this.config.allowDev) throw new KernelError("dev 意图未开放");
         const p = this.player(intent.pid);
@@ -275,12 +336,13 @@ export class GameKernel {
     return this.drain();
   }
 
-  /** 时钟推进：窗截止替掷、步进、选路超时、休息到点。now 由壳层时钟提供。 */
+  /** 时钟推进：窗截止替掷、步进、选路超时、抉择代选超时、休息到点。now 由壳层时钟提供。 */
   tick(now: number): Fact[] {
     // 开局抽牌期不推进：真人选暗牌（chooseSecret）后才有窗口钟
     if (this.state.phase === "drafting") return this.drain();
     if (this.state.phase === "acting") {
       this.resolveAsks(now);
+      this.resolvePendingTimers(now);
       this.fireBots(now);
       this.advanceWalks(now);
       this.maybeCloseWindow(now);
@@ -289,6 +351,7 @@ export class GameKernel {
       }
     } else {
       this.resolveAsks(now);
+      this.resolvePendingTimers(now);
       this.advanceWalks(now);
     }
     if (this.state.phase === "rest" && now >= this.state.restUntil) {
@@ -325,7 +388,24 @@ export class GameKernel {
       if (p.dead || p.zone === "done") continue;
       p.rolled = false;
       p.confirmed = false;
+      p.cardDraws = 0; // 连抽上限按世界回合重计
       p.botSchedule = { rollAt: now, confirmAt: 0 };
+    }
+    // 指向他人的卡面效果：下一世界回合开始时结算（事件定案 §1.6——被整蛊者有预判窗口）
+    // 先于罚停标记：此刻结算出的罚停当窗生效（=被指认者的「下一回合」即本窗）
+    const due = this.state.deferred;
+    this.state.deferred = [];
+    for (const d of due) {
+      const p = this.player(d.pid);
+      this.applyParts(p, d.parts, now);
+    }
+    // 罚停：消耗并轮空（不掷不确认，不占窗；T3a 卡面挂点）
+    for (const p of this.state.players) {
+      if (p.dead || p.zone === "done" || p.stun <= 0) continue;
+      p.stun -= 1;
+      p.rolled = true;
+      p.confirmed = true;
+      this.msg("event", `${p.name} 罚停生效——本回合轮空。`, p.id, { emphasis: "normal" });
     }
     this.emit({ type: "windowStart", turn: this.state.turn, deadline: this.state.windowDeadline });
     this.reserveBots(now);
@@ -335,18 +415,40 @@ export class GameKernel {
     for (const p of this.state.players) {
       if (!p.isBot || p.dead || p.zone === "done") continue;
       if (!p.rolled && now >= p.botSchedule.rollAt) {
-        this.doRollChecked(p.id, now, "bot");
+        if (p.walk || p.walkQueue.length > 0) {
+          // 卡面/指认造成的续走在路上：稍候重试，不让掷骰撞 KernelError
+          p.botSchedule.rollAt = now + BOT_WALK_RETRY_MS;
+        } else {
+          this.doRollChecked(p.id, now, "bot");
+        }
       }
-      if (p.rolled && !p.confirmed && !p.walk && now >= p.botSchedule.confirmAt) {
+      if (p.rolled && !p.confirmed && !p.walk && p.cardPending == null && now >= p.botSchedule.confirmAt) {
         this.doConfirm(p, now, "bot");
       }
     }
   }
 
-  /** 超窗收口：替未掷者掷骰（walk 占用中者本轮顺延，绝不让替掷抛错）、替未确认者确认（不替打卡）；然后开下一窗 */
+  /** 窗内挂起抉择到点代选：超时未应答按卡面默认项结算并标注（事件定案 §1.7） */
+  private resolvePendingTimers(now: number): void {
+    for (const p of this.state.players) {
+      const pend = p.cardPending;
+      if (pend && now >= pend.deadline) {
+        this.resolveChoice(p, pend.cardId, this.eventCard(pend.cardId).defaultOption ?? 0, now, true);
+      }
+    }
+  }
+
+  /** 超窗收口：先按默认项代选仍挂起的抉择（代选），再替未掷者掷骰（walk 占用者顺延，绝不让替掷抛错）、替未确认者确认（不替打卡）；然后开下一窗 */
   private autoFillAndClose(now: number): void {
+    // 名下仍有挂起者按默认项代选（抉择截止晚于窗截止的兜底）
     for (const p of this.activePlayers()) {
-      if (!p.rolled && !p.walk) {
+      if (p.cardPending) {
+        const pend = p.cardPending;
+        this.resolveChoice(p, pend.cardId, this.eventCard(pend.cardId).defaultOption ?? 0, now, true);
+      }
+    }
+    for (const p of this.activePlayers()) {
+      if (!p.rolled && !p.walk && p.walkQueue.length === 0) {
         this.doRoll(p.id, now, "replacement"); // 替掷（walk 仍占用者本窗顺延，下一窗自然补掷）
       }
     }
@@ -637,15 +739,36 @@ export class GameKernel {
     if (w && w.bounced && p.zone === "branch" && p.bpos > 0) {
       this.msg("system", `${p.name} 撞旗反弹，停在支路第 ${p.bpos} 格`, p.id, { flavor: "尽头差一点就踩进。" });
     }
+    this.landOn(p, now); // 落格结算：事件格抽卡（走停即触发，双向一视同仁）
+    if (p.walkQueue.length > 0) {
+      // 卡面连动续走：接队首（不再调度确认——还在走；下一拍自然步进）
+      const next = p.walkQueue.shift()!;
+      p.walk = { remaining: next, nextStepAt: now + this.config.stepMs, ask: null, pendingTo: null, bounced: false };
+      return;
+    }
     if (p.isBot && !p.dead && p.zone !== "done") {
       // 假人：走完一小拍后自动确认（到点由 fireBots 消费）
       p.botSchedule.confirmAt = now + 500 + Math.floor(this.draw() * 400);
     }
   }
 
-  /** 无处可走/步数为零的清理（拓扑死角兜底） */
+  /** 无处可走/步数为零的清理（拓扑死角兜底；卡面续走照排） */
   private burnWalkEnd(p: PlayerState): void {
     p.walk = null;
+    if (p.walkQueue.length > 0) {
+      const next = p.walkQueue.shift()!;
+      p.walk = { remaining: next, nextStepAt: 0, ask: null, pendingTo: null, bounced: false };
+    }
+  }
+
+  /** 卡面/表效果发起的一次走格（正=前进负=沿来路栈退回）；walk 被占用则入队（T3a 卡面连动） */
+  private startWalk(p: PlayerState, steps: number, now: number): void {
+    if (p.dead || p.zone === "done" || steps === 0) return;
+    if (p.walk) {
+      p.walkQueue.push(steps);
+      return;
+    }
+    p.walk = { remaining: steps, nextStepAt: now + this.config.stepMs, ask: null, pendingTo: null, bounced: false };
   }
 
   private queueBack(p: PlayerState, steps: number, now: number): void {
@@ -681,5 +804,273 @@ export class GameKernel {
       this.emit({ type: "routeChosen", pid: p.id, to, auto: true });
       this.msg("system", `${p.name} 岔口超时，自动直行`, p.id, { emphasis: "normal" });
     }
+  }
+
+  // ---------- 事件格抽卡与卡面结算（#19 T3a；呈现=T3a2 中央抉择浮层+战报框） ----------
+
+  private eventCard(id: string): EventCard {
+    const c = EVENT_CARD_BY_ID.get(id);
+    if (!c) throw new KernelError(`事件卡 ${id} 不在表二`);
+    return c;
+  }
+
+  /** 落格结算：事件格抽卡（走停即触发，前进/退格一视同仁；终点支路与净底格不触发） */
+  private landOn(p: PlayerState, now: number): void {
+    if (p.dead || p.zone !== "main") return;
+    const c = this.cell(p.pos);
+    if (c.type !== "E") return;
+    this.drawEventFor(p, now);
+  }
+
+  /**
+   * 抽卡链路：单池洗匀抽一 → 抉择卡挂起供触发者本人应答（超时/假人按默认项代选并标「(代选)」）
+   * → 纯效果卡即时结算 → 指认他人的部分下一世界回合生效（world·即时口径）。
+   * tries/连抽上限都是防循环的保守熔断，正常对局不触发。
+   */
+  private drawEventFor(p: PlayerState, now: number, forced?: EventCard): void {
+    if (p.cardPending) return; // 挂起中的抉择不叠新卡
+    if (!forced) {
+      if (p.cardDraws >= EVENT_CHAIN_CAP) {
+        this.msg("event", `${p.name} 事件连抽过载——本回合暂歇。`, p.id);
+        return;
+      }
+      p.cardDraws += 1;
+    }
+    let card = forced ?? null;
+    if (!card) {
+      // 地区特殊卡：抽卡者不在该生态 → 直排洗回牌堆重抽（事件定案 §1.8——按「地区特殊卡即权重修正」实现）
+      for (let tries = 0; tries < 8 && !card; tries++) {
+        const drawn = this.popCard();
+        if (!drawn) return;
+        if (!drawn.region || this.cell(p.pos).zone === drawn.region) {
+          card = drawn;
+        } else {
+          this.msg("event", `「${drawn.title}」在${ECO_NAMES[this.cell(p.pos).zone]}不适用，洗回牌堆重抽。`, p.id);
+          const at = Math.floor(this.draw() * (this.state.deck.length + 1));
+          this.state.deck.splice(at, 0, drawn.id);
+        }
+      }
+      if (!card) {
+        // 理论不可达（池内非地区卡 ≥17 张）；兜底不吞卡
+        this.msg("event", `${p.name} 这一抽没摸到适用的地区卡——本格无事。`, p.id);
+        return;
+      }
+    }
+    this.emit({ type: "cardDrawn", pid: p.id, cardId: card.id });
+    // 单池守恒（事件定案 §1.8）：结算过的卡入弃牌堆，抽空即整堆洗回；挂起中的抉择卡也先入账（对局信息全公开）
+    if (!forced) {
+      this.state.discard.push(card.id);
+    }
+    this.msg("event", `${p.name} 踩上事件格，抽到「${card.title}」`, p.id, {
+      flavor: card.flavor,
+      emphasis: "highlight",
+    });
+    if (card.kind === "effect") {
+      this.applyCardEffect(p, card.effect!, now);
+    } else if (card.kind === "choice") {
+      if (p.isBot) {
+        this.resolveChoice(p, card.id, card.defaultOption ?? 0, now, true);
+      } else {
+        // 抉择挂起：卡面应答窗口沿用选路口径 10s（规格定死）；T3a2 中央浮层消费
+        p.cardPending = { cardId: card.id, deadline: now + this.config.routeAskMs };
+      }
+    } else {
+      // kind='window'（警长查货窗）：M1 牌池不含，仅 dev 强发路径能到
+      this.msg("system", `「${card.title}」查货窗暂缓开张（T7 起接入），本格无事。`, p.id);
+    }
+  }
+
+  /** 从牌堆顶抽一张（空则弃牌堆整堆洗回——单池守恒：deck+discard 恒等价于 M1_EVENT_POOL） */
+  private popCard(): EventCard | null {
+    if (this.state.deck.length === 0) {
+      this.state.deck = this.rng.shuffle([...this.state.discard]);
+      this.state.discard = [];
+    }
+    const id = this.state.deck.pop();
+    return id ? (EVENT_CARD_BY_ID.get(id) ?? null) : null;
+  }
+
+  /** 抉择落定（option 已由调用方验过界）：战报 + 效果结算。auto=超时/假人代选。
+   *  挂起路径传 pend.cardId（落定时顺带清除挂起）；假人/即时路径直接传卡 id。 */
+  private resolveChoice(p: PlayerState, cardId: string, option: number, now: number, auto: boolean): void {
+    const card = this.eventCard(cardId);
+    const opt = card.options?.[option];
+    if (!opt) throw new KernelError("卡面选项下标越界");
+    p.cardPending = null;
+    if (!auto) {
+      this.msg("event", `${p.name} 选择：「${opt.label}」`, p.id, { emphasis: "target" });
+    } else if (p.isBot) {
+      this.msg("event", `系统替 ${p.name} 代选：「${opt.label}」(代选)`, p.id);
+    } else {
+      this.msg("event", `${p.name} 超时未选，按默认项代选：「${opt.label}」(代选)`, p.id);
+    }
+    this.emit({ type: "cardResolved", pid: p.id, cardId: card.id, option, auto });
+    if (opt.effect) this.applyCardEffect(p, opt.effect, now);
+  }
+
+  /** 卡面效果：self 即时；others 系统指认后按计时模式分流（world=下回合生效挂 deferred） */
+  private applyCardEffect(p: PlayerState, eff: CardEffect, now: number): void {
+    if (eff.self?.length) this.applyParts(p, eff.self, now);
+    for (const t of eff.others ?? []) {
+      let targets = this.identifyTargets(p, t.target);
+      if (targets.length === 0) {
+        this.msg("event", `指认落空——没有可指认的目标，效果散去。`, p.id);
+        continue;
+      }
+      if (t.target === "all") {
+        // 「全员」含抽取者（表二口径）：本人即时，其余他人按下回合生效
+        this.applyParts(p, t.parts, now);
+        targets = targets.filter((q) => q.id !== p.id);
+        if (targets.length === 0) continue;
+      }
+      if (this.config.timerMode === "turn") {
+        // 轮班·限时：立刻生效（无同时行动，无竞态）；M1 未接线（T9），口径先立
+        for (const q of targets) this.applyParts(q, t.parts, now);
+      } else {
+        // world·即时：下一世界回合开始时结算（被整蛊者有预判窗口）
+        for (const q of targets) this.state.deferred.push({ pid: q.id, parts: t.parts });
+        this.msg("event", `下一世界回合开始时结算：${targets.map((q) => q.name).join("、")}。`, p.id, {
+          targets: targets.map((q) => q.id),
+        });
+      }
+    }
+  }
+
+  /** 系统指认：跳过淘汰者与通关席（事件定案 §5.2）；nearest/farthest 以净步为先、id 破平 */
+  private identifyTargets(drawer: PlayerState, target: "nearestToGoal" | "farthestFromGoal" | "previous" | "random" | "all"): PlayerState[] {
+    const act = this.state.players.filter((q) => !q.dead && q.zone !== "done");
+    if (act.length === 0) return [];
+    switch (target) {
+      case "all":
+        return act;
+      case "random":
+        return [act[Math.floor(this.draw() * act.length)]!];
+      case "nearestToGoal":
+        return [act.slice().sort((a, b) => b.net - a.net || a.id - b.id)[0]!];
+      case "farthestFromGoal":
+        return [act.slice().sort((a, b) => a.net - b.net || a.id - b.id)[0]!];
+      case "previous": {
+        const cand = this.player((drawer.id + this.state.players.length - 1) % this.state.players.length);
+        return !cand.dead && cand.zone !== "done" ? [cand] : [];
+      }
+    }
+  }
+
+  /** 原语结算：一类一个出口，血量/罚停/走格都走统一通道（T5 陷阱/T6 遭遇战复用） */
+  private applyParts(p: PlayerState, parts: EffectPart[], now: number): void {
+    if (p.dead || p.zone === "done") return;
+    for (const part of parts) {
+      switch (part.type) {
+        case "move":
+          if (part.v > 0) {
+            this.msg("event", `${p.name} 前进 ${part.v} 格。`, p.id);
+            this.startWalk(p, part.v, now);
+          }
+          break;
+        case "back":
+          if (part.v > 0) {
+            this.msg("event", `${p.name} 退 ${part.v} 格。`, p.id);
+            this.startWalk(p, -part.v, now);
+          }
+          break;
+        case "skip":
+          if (part.v > 0) {
+            p.stun += part.v;
+            this.msg("event", `${p.name} 被罚停 ${part.v} 回合。`, p.id, { emphasis: "target" });
+          }
+          break;
+        case "hp":
+          this.applyHpDelta(p, part.v);
+          break;
+        case "drawItem":
+          if (part.v > 0) {
+            this.msg("item", `${p.name} 摸到 ${part.v} 张道具卡（手牌 T4a 起入袋）。`, p.id);
+          }
+          break;
+        case "trial":
+          this.drawEventFor(p, now);
+          break;
+        case "check":
+          this.runCheck(p, part.spec, now);
+          break;
+        case "none":
+          break;
+      }
+    }
+  }
+
+  /** 血量通道：扣血先过盾（皮糙肉厚，T5 陷阱同款），回血封顶上限，归零只播报（淘汰流程 T5c） */
+  private applyHpDelta(p: PlayerState, delta: number): void {
+    if (delta === 0) return;
+    if (delta < 0 && p.shields > 0) {
+      p.shields -= 1;
+      this.msg("event", `${p.name} 皮糙肉厚被动：免疫这次扣血！`, p.id, { emphasis: "highlight" });
+      return;
+    }
+    p.hp = Math.max(0, Math.min(this.config.maxHp, p.hp + delta));
+    if (delta < 0) {
+      this.msg("event", `${p.name} 扣 ${-delta} 血（剩 ${p.hp}/${this.config.maxHp}）`, p.id, { emphasis: "target" });
+      if (p.hp === 0) {
+        this.msg("event", `${p.name} 血量归零——血尽=淘汰（观战；流程 T5c 起接入）。`, p.id, { emphasis: "big" });
+      }
+    } else {
+      this.msg("event", `${p.name} 回 ${delta} 血（剩 ${p.hp}/${this.config.maxHp}）`, p.id);
+    }
+  }
+
+  /**
+   * 检定三态（1d20+轴 vs 卡面 DC）：修正四原语与角色特长先全量互抵再掷再判；
+   * 极值挂原始面 20/1（升面骰出的 21+ 只算大数，不算大成功——保持「极值不随面宽翻动」口径）。
+   * 无 dc 的前途骰走 bands 分档（命运之骰：20/1 极值 → 余面按 min/max 首中，末条兜底）。
+   */
+  private runCheck(p: PlayerState, spec: CheckSpec, now: number): void {
+    const role = roleDef(p.roleId);
+    const mods: CheckMods[] = [
+      ...(spec.mods ?? []).map((m): CheckMods => {
+        if (m.mode === "cut") return { face: -m.v };
+        if (m.mode === "raise") return { face: m.v };
+        if (m.mode === "floor") return { floor: m.v };
+        return { bonus: m.v };
+      }),
+      // 轴系特长（蛮力/狡运）只跟有轴检定走；无轴前途骰（命运之骰）不吃特长
+      ...(spec.axis ? roleCheckMods(role, spec.axis) : []),
+    ];
+    const net = netMods(mods); // 互抵：先全量合账（D&D 原则）
+    const faces = Math.max(3, CHECK_FACES + net.face);
+    const raw = rollD20(this.rng, { adv: net.adv, advCount: net.advCount }, faces);
+    this.syncRng(); // 批量消耗后的状态回账（draw() 的逐粒同步在此批量化）
+    const res = resolveCheck({
+      raw,
+      axisBonus: spec.axis ? p.axes[spec.axis] : 0,
+      dc: spec.dc ?? 0,
+      mods,
+      oneToCrit: roleOneToCrit(role),
+    });
+    const gradeText: Record<CheckGrade, string> = { crit: "大成功", pass: "通过", fail: "失败", critfail: "大失败" };
+    const axisName = spec.axis ? AXIS_NAMES[spec.axis] : "前途骰";
+    if (spec.dc != null) {
+      this.msg(
+        "event",
+        `${p.name} ${axisName}检 d20(${res.raw})${res.mods >= 0 ? "+" : "−"}${Math.abs(res.mods)}=${res.used} vs DC${spec.dc} —— ${gradeText[res.grade]}！`,
+        p.id,
+        { emphasis: res.grade === "crit" || res.grade === "critfail" ? "highlight" : "normal" },
+      );
+    } else {
+      this.msg("event", `${p.name} ${axisName}掷出 ${res.raw}${res.mods ? `（+${res.mods}）` : ""} —— ${res.raw}。`, p.id, {
+        emphasis: "normal",
+      });
+    }
+    let parts: EffectPart[] | undefined;
+    if (res.grade === "crit") {
+      parts = spec.onCrit ?? spec.onPass; // 大成功当卡自带额外正面；缺省回落通过分支
+    } else if (res.grade === "critfail") {
+      parts = spec.onCritFail ?? spec.onFail; // 大失败当卡自带额外负面；缺省回落失败分支
+    } else if (spec.bands) {
+      const band = spec.bands.find((b) => (b.min == null || res.used >= b.min) && (b.max == null || res.used <= b.max));
+      parts = band?.parts;
+    } else {
+      parts = res.grade === "pass" ? spec.onPass : spec.onFail;
+    }
+    if (parts?.length) this.applyParts(p, parts, now);
   }
 }

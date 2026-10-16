@@ -1,7 +1,7 @@
 /** 世界回合窗：全员同窗、确认等待区、提前开窗、超窗替掷、休息期 */
 import { describe, expect, it } from "vitest";
-import { KernelError } from "../src";
-import { boot, bootWithDie, cell, me, walkOut } from "./helpers";
+import { KernelError, type GameKernel } from "../src";
+import { boot, bootWithDie, bootWithDiesPure, cell, dieOf, DRAW_MOVE_TITLES, me, walkOut } from "./helpers";
 
 describe("世界回合窗（世界·即时）", () => {
   it("开局即窗：turn1、默认窗 30s、全员待掷", () => {
@@ -15,8 +15,13 @@ describe("世界回合窗（世界·即时）", () => {
     }
   });
 
-  it("全员确认 → 提前开窗（不用等满窗）", () => {
-    const k = bootWithDie(3);
+  it("全员确认 → 提前开窗（不用等满窗；T3a 起零位移卡种子）", () => {
+    const firstRoll = (k: GameKernel): number[] => {
+      const fx = k.apply({ type: "roll", pid: 0 }, 0);
+      walkOut(k, 0);
+      return [dieOf(fx)];
+    };
+    const k = bootWithDiesPure(firstRoll, [3], {}, DRAW_MOVE_TITLES);
     k.apply({ type: "roll", pid: 0 }, 0);
     walkOut(k, 0);
     k.apply({ type: "confirm", pid: 0 }, 2_000);
@@ -68,8 +73,13 @@ describe("世界回合窗（世界·即时）", () => {
     expect(k.state.players[0]!.rolled).toBe(false);
   });
 
-  it("确认后进等待区：本窗不能再任何操作（roll/confirm 均拒）", () => {
-    const k = bootWithDie(3);
+  it("确认后进等待区：本窗不能再任何操作（roll/confirm 均拒；T3a 起零位移卡种子）", () => {
+    const firstRoll = (k: GameKernel): number[] => {
+      const fx = k.apply({ type: "roll", pid: 0 }, 0);
+      walkOut(k, 0);
+      return [dieOf(fx)];
+    };
+    const k = bootWithDiesPure(firstRoll, [3], {}, DRAW_MOVE_TITLES);
     // 硬规格 ①：掷骰与确认分离——没掷骰不能先确认（防静默吞骰）
     expect(() => k.apply({ type: "confirm", pid: 0 }, 0)).toThrow(KernelError);
     k.apply({ type: "roll", pid: 0 }, 0);

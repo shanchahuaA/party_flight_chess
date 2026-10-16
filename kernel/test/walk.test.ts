@@ -1,7 +1,7 @@
 /** 走格意图序列：掷骰→逐格走→完成（种子 RNG，无 IO） */
 import { describe, expect, it } from "vitest";
-import { KernelError } from "../src";
-import { boot, bootWithDie, cell, me, walkOut } from "./helpers";
+import { KernelError, type GameKernel } from "../src";
+import { boot, bootWithDie, bootWithDiesPure, cell, dieOf, me, walkOut } from "./helpers";
 
 describe("掷骰走格", () => {
   it("同种子确定性：两次 boot 同一骰面", () => {
@@ -34,12 +34,20 @@ describe("掷骰走格", () => {
     expect(me(k).pos).toBe(cell(1, 0));
   });
 
-  it("停格后下一掷继续，行进惯性无选路条（真实岔口才弹）", () => {
-    const k = bootWithDie(2, { pos: cell(7, 0), from: cell(8, 0), net: 0 });
+  it("停格后下一掷继续，行进惯性无选路条（真实岔口才弹；T3a 起零事件抽卡种子）", () => {
+    // 走停即抽卡（T3a）：预定位 (5,0) 从 (4,0) 向东掷 1 停出生格（S 净底），二掷向东沿 (7,0) 直行
+    const firstStep = (k: GameKernel): number[] => {
+      k.apply({ type: "dev.setPos", pid: 0, pos: cell(5, 0), from: cell(4, 0), net: 2 }, 0);
+      const fx = k.apply({ type: "roll", pid: 0 }, 0);
+      walkOut(k, 0);
+      return [dieOf(fx)];
+    };
+    const k = bootWithDiesPure(firstStep, [1]);
+    k.apply({ type: "dev.setPos", pid: 0, pos: cell(5, 0), from: cell(4, 0), net: 2 }, 0);
     k.apply({ type: "roll", pid: 0 }, 0);
     walkOut(k, 0);
-    expect(me(k).pos).toBe(cell(5, 0));
-    // 跨窗（30s 满 + 10s 休）：第二窗再掷，纯外环直格继续 → 不弹选路条；终点随掷面定
+    expect(me(k).pos).toBe(cell(6, 0));
+    // 跨窗（30s 满 + 10s 休）：第二窗再掷，来向排除后单向东行 → 不弹选路条；步数随掷面定
     k.tick(30_000);
     const t2 = 40_000;
     k.tick(t2);
@@ -48,9 +56,9 @@ describe("掷骰走格", () => {
     const d2 = r2 && r2.type === "roll" ? r2.d : 0;
     walkOut(k, t2);
     expect(fx.some((f) => f.type === "routeAskOpen")).toBe(false);
-    // 簿记：第二掷净步/来路栈累计正确（第二掷可能拐进 (0,1) 下行，不锁停在 row0）
-    expect(me(k).net).toBe(2 + d2);
-    expect(me(k).trail.length).toBe(2 + d2);
+    // 簿记：净步/来路栈累计正确（步数=两掷之和；净步起点 2）
+    expect(me(k).net).toBe(3 + d2);
+    expect(me(k).trail.length).toBe(1 + d2);
     expect(me(k).walk).toBeNull();
   });
 
