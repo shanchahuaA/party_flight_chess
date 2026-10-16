@@ -1,0 +1,14 @@
+{
+  "name": "party-flight-chess-kernel",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "devDependencies": {
+    "typescript": "~5.8.3",
+    "vitest": "^3.1.4"
+  }
+}

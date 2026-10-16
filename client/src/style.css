@@ -1,0 +1,24 @@
+/* 全局样式（M1 T1）：深色庄园底 + 手机竖屏 */
+* {
+  box-sizing: border-box;
+  -webkit-tap-highlight-color: transparent;
+}
+html,
+body {
+  margin: 0;
+  height: 100%;
+  overflow: hidden;
+}
+body {
+  background: #17222c;
+  color: #eceff1;
+  font: 15px/1.5 system-ui, -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif;
+}
+button {
+  font-family: inherit;
+  touch-action: manipulation;
+  cursor: pointer;
+}
+#app {
+  height: 100%;
+}
