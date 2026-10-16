@@ -20,14 +20,14 @@ describe("庄园路网 100 格", () => {
     }
   });
 
-  it("格型配额：事件 38／道具 18／陷阱 14／空格 19／环岛与出生 11（§5.6 全一致）", () => {
+  it("格型配额：事件 38／道具 18／陷阱 14／空格 15／环岛 7·出生 8（§5.6/§5.7 T2 扩槽后全一致）", () => {
     const types = countBy(BOARD, (c) => c.type);
     expect(types.E).toBe(38);
     expect(types.I).toBe(18);
     expect(types.T).toBe(14);
-    expect(types.B).toBe(19);
+    expect(types.B).toBe(15);
     expect(types.J).toBe(7);
-    expect(types.S).toBe(4);
+    expect(types.S).toBe(8);
     expect((types.B ?? 0) + (types.J ?? 0) + (types.S ?? 0)).toBe(30);
   });
 
@@ -68,14 +68,9 @@ describe("庄园路网 100 格", () => {
     expect(cellAt(3, 10)!.links.length).toBe(3);
   });
 
-  it("4 个出生格均布相望、均在环上、不与环岛重合", () => {
-    expect(SPAWN_CELLS.length).toBe(4);
+  it("8 个出生槽全在环上、均非环岛（互距离均布断言在 spawn.test）", () => {
+    expect(SPAWN_CELLS.length).toBe(8);
     const cells = SPAWN_CELLS.map((id) => BOARD[id]!);
-    const keys = new Set(cells.map((c) => `${c.col},${c.row}`));
-    expect(keys.has("6,0")).toBe(true);
-    expect(keys.has("12,4")).toBe(true);
-    expect(keys.has("0,17")).toBe(true);
-    expect(keys.has("12,17")).toBe(true);
     for (const c of cells) {
       expect(c.street).not.toBe("J");
       expect(c.type).not.toBe("J");
@@ -109,8 +104,8 @@ describe("庄园路网 100 格", () => {
     for (const k of Object.keys(STREET_NAMES)) expect(streets.has(k as keyof typeof STREET_NAMES)).toBe(true);
   });
 
-  it("终点支路：4 格小路 + 旗位，随出生位向园内伸出、不与主干格重合", () => {
-    expect(branchTails.length).toBe(4);
+  it("终点支路：4 格小路 + 旗位，随出生位向园内伸出、不与主干格重合（8 槽）", () => {
+    expect(branchTails.length).toBe(8);
     for (const tail of branchTails) {
       expect(tail.cells.length).toBe(BRANCH_LEN);
       const ids = new Set(BOARD.map((c) => `${c.x},${c.y}`));

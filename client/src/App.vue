@@ -1,14 +1,19 @@
 <script setup lang="ts">
-/** 游戏页（M1 T1）：满屏棋盘 + HUD + 选路条 + dock + toast */
+/** 单机壳（M1 T2）：未开局=大厅简版页（配置+角色明选）；开局=游戏页（T1 满屏棋盘） */
 import { computed, onBeforeUnmount, onMounted } from "vue";
+import { maybeBootFastPath } from "./game/store";
+import Lobby from "./ui/Lobby.vue";
 import BoardSvg from "./board/BoardSvg.vue";
 import Dock from "./ui/Dock.vue";
 import HudBar from "./ui/HudBar.vue";
 import RouteBar from "./ui/RouteBar.vue";
-import { ensureBooted, gameStore } from "./game/store";
+import SecretDraft from "./ui/SecretDraft.vue";
+import { gameStore } from "./game/store";
+
+const started = computed(() => !!gameStore.kernel.value);
 
 onMounted(() => {
-  ensureBooted();
+  maybeBootFastPath();
 });
 onBeforeUnmount(() => {
   gameStore.dispose();
@@ -18,13 +23,15 @@ const toast = computed(() => gameStore.toast.value);
 </script>
 
 <template>
-  <div class="gamePage">
+  <Lobby v-if="!started" />
+  <div v-else class="gamePage">
     <HudBar />
     <main class="boardWrap">
       <BoardSvg />
     </main>
     <RouteBar />
     <Dock />
+    <SecretDraft />
     <div v-if="toast" class="toast">{{ toast }}</div>
   </div>
 </template>

@@ -4,6 +4,7 @@
  * M2 时这批类型直接变成 WS 意图/事实协议（ADR 0001），形状不再变化。
  */
 import type { CellType, Eco, StreetKey } from "./board";
+import type { Axis, RoleId } from "./data/roles";
 
 // ---------- 战报（界面呈现定案 §三 MessageEntry，结构不动） ----------
 
@@ -28,6 +29,14 @@ export interface PlayerState {
   name: string;
   isBot: boolean;
   colorIndex: number;
+  /** 明选角色（表三；可重复选同一角色） */
+  roleId: RoleId;
+  /** 三轴 6 点：检定掷 1d20+对应轴加值（表三）；属性不常驻屏幕（壳层弹层纪律） */
+  axes: Record<Axis, number>;
+  /** 血量：开局满血，扣血/治疗密度按数值表 §5.3（T5 扣血管道消费） */
+  hp: number;
+  /** 皮糙肉厚的「免疫第一次扣血」剩余盾（开局 1，触发后清零；T5 消费） */
+  shields: number;
   /** 主网位置（zone==='main' 时即所站格 id；branch 时恒为出生格 id） */
   pos: number;
   /** 上一步来向：走格惯性、排除回头、超时直行都看它 */
@@ -47,8 +56,12 @@ export interface PlayerState {
   stun: number;
   /** 出局占位（T5 挂钩） */
   dead: boolean;
-  /** 自己的出生格（兼终点支路入口） */
+  /** 自己的出生格（兼终点支路入口；按人数菜单落座，各占一角相望） */
   spawnCell: number;
+  /** 暗牌：抽到的 2 条目标（表四 no）。M1 单机=战报保密口径（secret.test）；M2 联机下发时按玩家切片可见性（ADR 0001），他人不得收到 */
+  secretOptions: [number, number];
+  /** 选定下标（0|1）：真人选后落定；假人开局由系统代抽 */
+  secretPick: number | null;
   /** 假人的窗口内日程（rollAt 到点自动掷；walk 结束后到点自动确认） */
   botSchedule: { rollAt: number; confirmAt: number };
   walk: WalkState | null;
@@ -70,7 +83,7 @@ export interface WalkState {
   bounced: boolean;
 }
 
-export type GamePhase = "acting" | "rest" | "over";
+export type GamePhase = "drafting" | "acting" | "rest" | "over";
 
 export interface GameState {
   turn: number;
@@ -92,13 +105,17 @@ export interface GameState {
 
 export interface GameConfig {
   seed: number;
-  /** 局长：世界回合总数（默认 15） */
+  /** 局长：世界回合总数（5..30，默认 15；开局定死、局中冻结） */
   turnCap: number;
-  /** 世界回合窗毫秒（默认 30000） */
+  /** 血量上限（5..20，默认 10；开局定死、局中冻结；T5 扣血管道消费） */
+  maxHp: number;
+  /** 世界回合窗毫秒（10..90s 域、默认 30s；档位口径见一页纸规则 10/15/20/30/60/90） */
   windowMs: number;
-  /** 回合间休息毫秒（默认 10000，0=直接开下一窗） */
+  /** 回合间休息毫秒（0..20000 可调，默认 10000，0=直接开下一窗） */
   restMs: number;
-  /** 环岛选路等待毫秒（默认 10000） */
+  /** 计时模式：world=世界·即时（默认）；turn=轮班·限时（T9 完整接线，本票先收数据） */
+  timerMode: "world" | "turn";
+  /** 环岛选路等待毫秒（默认 10000，规格定死不可调） */
   routeAskMs: number;
   /** 逐格走格节拍毫秒（客户端动画节奏的事实事实锚，默认 140） */
   stepMs: number;
@@ -111,6 +128,8 @@ export type Intent =
   | { type: "confirm"; pid: number }
   | { type: "chooseRoute"; pid: number; option: number }
   | { type: "skipRest" }
+  /** 开局暗牌抽 2 选 1（真人本人选；drafting 期唯一前置动作，假人由系统代抽） */
+  | { type: "chooseSecret"; pid: number; pick: number }
   /** 测试/后接卡面效果专用的直调通道（allowDev=false 时拒绝） */
   | { type: "dev.back"; pid: number; steps: number }
   | { type: "dev.setPos"; pid: number; pos: number; from: number | null; net: number };
@@ -122,6 +141,7 @@ export type Fact =
   | { type: "windowEnd"; turn: number; auto: boolean }
   | { type: "restStart"; turn: number; until: number }
   | { type: "gameEnd" }
+  | { type: "secretPicked"; pid: number }
   | { type: "roll"; pid: number; d: number; auto: boolean }
   | { type: "confirm"; pid: number; auto: boolean }
   /** 主网逐格走（含退格步） */
@@ -140,6 +160,8 @@ export type Fact =
 export interface PlayerDef {
   name: string;
   isBot: boolean;
+  /** 明选角色（表三 RoleId；缺省：真人=轻装上阵，假人=系统随机） */
+  roleId?: RoleId;
 }
 
 /** 内核错误：意图非法/状态机拒绝。UI 捕获后静默或提示，永不崩局。 */

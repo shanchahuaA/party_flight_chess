@@ -18,7 +18,7 @@ const ZONE_FILL: Record<string, string> = {
   gobi: "#775e34",
 };
 const TYPE_ICON: Record<string, string> = { E: "🃏", I: "🎁", T: "⚠️" };
-const TOKEN_COLORS = ["#e53935", "#f9a825", "#43a047", "#1e88e5"];
+const TOKEN_COLORS = ["#e53935", "#f9a825", "#43a047", "#1e88e5", "#8e24aa", "#f4511e", "#d81b60", "#00897b"];
 
 const TOK_OFFS: Array<readonly [number, number]> = [
   [-4, -4],
@@ -72,6 +72,28 @@ const tokenViews = computed(() =>
     return { p, x: pt.x, y: pt.y };
   }),
 );
+
+// ---------- 出生位归属（T2 起按人数落座）：家环/门前小路只画本局出生位 ----------
+const ownerBySpawnCell = computed(() => {
+  const map = new Map<number, number>();
+  for (const p of state.value?.players ?? []) map.set(p.spawnCell, p.id);
+  return map;
+});
+
+/** 本局各家的屋前小路（按出生格所属槽取支路投影，染玩家色） */
+const activeTails = computed(() =>
+  (state.value?.players ?? []).map((p) => ({
+    tail: branchTails[BOARD[p.spawnCell]!.spawnIndex]!,
+    color: TOKEN_COLORS[p.id % TOKEN_COLORS.length]!,
+  })),
+);
+
+const ownerOfSpawn = (cellId: number): number | null => ownerBySpawnCell.value.get(cellId) ?? null;
+/** 本格出生位的玩家色（无人落座 → null） */
+const spawnOwnerColor = (cellId: number): string | null => {
+  const o = ownerOfSpawn(cellId);
+  return o === null ? null : TOKEN_COLORS[o % TOKEN_COLORS.length]!;
+};
 </script>
 
 <template>
@@ -145,24 +167,18 @@ const tokenViews = computed(() =>
           stroke-width="0.8"
         />
         <text v-if="TYPE_ICON[n.type]" :x="n.x" :y="n.y + 4" text-anchor="middle" font-size="10.5">{{ TYPE_ICON[n.type] }}</text>
-        <circle
-          v-if="n.spawnIndex >= 0"
-          :cx="n.x"
-          :cy="n.y"
-          r="8.5"
-          fill="none"
-          :stroke="TOKEN_COLORS[n.spawnIndex]"
-          stroke-width="2"
-        />
-        <text
-          v-if="n.spawnIndex >= 0"
-          :x="n.x"
-          :y="n.y + 3.5"
-          text-anchor="middle"
-          font-size="8"
-          font-weight="900"
-          :fill="TOKEN_COLORS[n.spawnIndex]"
-        >家</text>
+        <!-- 出生位家环：只画本局落座的家（玩家色）；未落座槽不留户牌 -->
+        <template v-if="spawnOwnerColor(n.id)">
+          <circle :cx="n.x" :cy="n.y" r="8.5" fill="none" :stroke="spawnOwnerColor(n.id)!" stroke-width="2" />
+          <text
+            :x="n.x"
+            :y="n.y + 3.5"
+            text-anchor="middle"
+            font-size="8"
+            font-weight="900"
+            :fill="spawnOwnerColor(n.id)!"
+          >家</text>
+        </template>
       </template>
     </g>
 
@@ -189,10 +205,10 @@ const tokenViews = computed(() =>
       :transform="`rotate(${a.ang.toFixed(1)}, ${a.x}, ${a.y})`"
     >▶</text>
 
-    <!-- 屋前小路 + 终点旗（终点支路渲染，不入走格图） -->
-    <g v-for="(tail, qi) in branchTails" :key="`tail${qi}`">
+    <!-- 屋前小路 + 终点旗：只画本局落座出生位（玩家色；T2 起按人数落座） -->
+    <g v-for="(t, qi) in activeTails" :key="`tail${qi}`">
       <rect
-        v-for="(c, ci) in tail.cells"
+        v-for="(c, ci) in t.tail.cells"
         :key="`t${qi}-${ci}`"
         :x="c.x - 8.5"
         :y="c.y - 8.5"
@@ -200,12 +216,12 @@ const tokenViews = computed(() =>
         height="17"
         rx="5"
         fill="#fff"
-        :stroke="TOKEN_COLORS[qi]"
+        :stroke="t.color"
         stroke-width="1.3"
         stroke-dasharray="2.5 2"
         opacity="0.92"
       />
-      <text :x="tail.flag.x" :y="tail.flag.y + 5" text-anchor="middle" font-size="14">🏁</text>
+      <text :x="t.tail.flag.x" :y="t.tail.flag.y + 5" text-anchor="middle" font-size="14">🏁</text>
     </g>
 
     <!-- 棋子 -->

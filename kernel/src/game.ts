@@ -6,7 +6,9 @@
  *   输入 now 由壳层（shell 时钟）提供，内核自身不读时钟——全部对时可由 t 系列单测驱动。
  *   #7 定案：全员同窗行动、掷完立刻逐格走、全员完成提前开窗、超时替掷并自动确认（不替打卡）。
  */
-import { BOARD, BRANCH_LEN, NET_GOAL, SPAWN_CELLS, STREET_NAMES, cellAt, type BoardCell } from "./board";
+import { BOARD, BRANCH_LEN, NET_GOAL, SPAWN_SLOTS, STREET_NAMES, cellAt, spawnMenu, type BoardCell } from "./board";
+import { ROLES, roleDef } from "./data/roles";
+import { SECRET_GOALS } from "./data/goals";
 import { rngFrom, type Rng, type RngState } from "./rng";
 import type { WalkState } from "./types";
 import {
@@ -17,6 +19,7 @@ import {
   type Intent,
   type MessageEntry,
   type MessageKind,
+  type PlayerDef,
   type PlayerState,
   type RouteOption,
 } from "./types";
@@ -29,21 +32,32 @@ function beatAfter(w: WalkState, now: number, stepMs: number): number {
 export const GAME_DEFAULTS: Required<Omit<GameConfig, "allowDev">> = {
   seed: 20261016,
   turnCap: 15,
+  maxHp: 10,
   windowMs: 30_000,
   restMs: 10_000,
+  timerMode: "world",
   routeAskMs: 10_000,
   stepMs: 140,
 };
 
-/** 走格骰面数（1d10） */
-const WALK_DIE = 10;
+/** 配置五项的合法域（#16 问题陈述 2：局长 5–30／血量 5–20／窗 10–90s／休息 0–20s）。
+ *  壳层表单（大厅滑条）直接消费这份常量，域改一处即全端生效。 */
+export const CONFIG_LIMITS = {
+  turnCap: [5, 30],
+  maxHp: [5, 20],
+  windowMs: [10_000, 90_000],
+  restMs: [0, 20_000],
+} as const;
 
-const PLAYER_DEFS: Array<{ name: string; isBot: boolean }> = [
+const PLAYER_DEFS: PlayerDef[] = [
   { name: "你", isBot: false },
   { name: "小黄", isBot: true },
   { name: "小绿", isBot: true },
   { name: "小蓝", isBot: true },
 ];
+
+/** 走格骰面数（1d10） */
+const WALK_DIE = 10;
 
 export class GameKernel {
   readonly config: GameConfig;
@@ -57,50 +71,96 @@ export class GameKernel {
   private rngHost: RngState;
   private rng: Rng;
 
-  private constructor(config: GameConfig, defs: Array<{ name: string; isBot: boolean }>, now: number) {
+  private constructor(config: GameConfig, defs: PlayerDef[], now: number) {
+    // 随机源先立：假人角色分派与暗牌抽取都消耗它（顺序固定=同种子全序流）
     this.config = config;
-    if (defs.length > SPAWN_CELLS.length) {
-      throw new Error(`出生位不足：最多 ${SPAWN_CELLS.length} 人（T2 起按人数均布）`);
-    }
+    this.rngHost = { s: config.seed >>> 0 };
+    this.rng = rngFrom(config.seed, this.rngHost);
+    // 人数域与落座菜单都在 create（2..8 校验+spawnMenu 档位）先行拦截，此处不再重复
+    const menu = spawnMenu(defs.length);
+    /** 暗牌逐人独立抽（10 条池内抽 2 且必不相同；不同玩家之间可同条——不互斥） */
+    const draftPair = (): [number, number] => {
+      const a = SECRET_GOALS[this.rng.int(SECRET_GOALS.length)]!.no;
+      let b = SECRET_GOALS[this.rng.int(SECRET_GOALS.length)]!.no;
+      while (b === a) b = SECRET_GOALS[this.rng.int(SECRET_GOALS.length)]!.no;
+      return [a, b];
+    };
     this.state = {
       turn: 1,
-      phase: "acting",
-      windowDeadline: now + config.windowMs,
+      // 开局暗牌抽 2 选 1 挂起（drafting）：真人选定后 openWindow 开第一窗
+      phase: "drafting",
+      windowDeadline: 0,
       restUntil: 0,
-      players: defs.map((d, i) => ({
-        id: i,
-        name: d.name,
-        isBot: d.isBot,
-        colorIndex: i,
-        pos: SPAWN_CELLS[i]!,
-        from: null,
-        trail: [],
-        net: 0,
-        zone: "main",
-        bpos: 0,
-        rolled: false,
-        confirmed: false,
-        stun: 0,
-        dead: false,
-        spawnCell: SPAWN_CELLS[i]!,
-        botSchedule: { rollAt: now, confirmAt: 0 },
-        walk: null,
-      })),
+      players: defs.map((d, i) => {
+        const rd = roleDef(d.roleId ?? (d.isBot ? ROLES[this.rng.int(ROLES.length)]!.id : "light"));
+        return {
+          id: i,
+          name: d.name,
+          isBot: d.isBot,
+          colorIndex: i,
+          roleId: rd.id,
+          axes: { ...rd.axes },
+          hp: config.maxHp,
+          shields: rd.flags.firstBloodShield ? 1 : 0,
+          pos: SPAWN_SLOTS[menu[i]!]!.cell,
+          from: null,
+          trail: [],
+          net: 0,
+          zone: "main",
+          bpos: 0,
+          rolled: false,
+          confirmed: false,
+          stun: 0,
+          dead: false,
+          spawnCell: SPAWN_SLOTS[menu[i]!]!.cell,
+          secretOptions: draftPair(),
+          secretPick: d.isBot ? this.rng.int(2) : null,
+          botSchedule: { rollAt: now, confirmAt: 0 },
+          walk: null,
+        };
+      }),
       finishers: [],
       messages: [],
       seq: 0,
-      rngState: config.seed >>> 0,
+      rngState: this.rngHost.s,
     };
-    this.rngHost = { s: config.seed >>> 0 };
-    this.rng = rngFrom(config.seed, this.rngHost);
-    this.msg("system", `开局。庄园路网 100 格 · 局长 ${config.turnCap} 世界回合 · 窗 ${Math.round(config.windowMs / 1000)}s`, undefined, { emphasis: "highlight" });
+    const bots = this.state.players.filter((p) => p.isBot);
+    this.msg(
+      "system",
+      `开局。庄园路网 100 格 · ${defs.length} 人局 · 局长 ${config.turnCap} 世界回合 · 窗 ${Math.round(config.windowMs / 1000)}s · 休息 ${Math.round(config.restMs / 1000)}s · 血量上限 ${config.maxHp}`,
+      undefined,
+      { emphasis: "highlight" },
+    );
+    this.msg("system", "开局抽暗牌目标：每人抽 2 选 1，对局内保密。", undefined, { emphasis: "normal" });
+    if (bots.length > 0) {
+      this.msg("system", "假人目标由系统代抽落定。", undefined, { emphasis: "normal" });
+    }
+    this.state.rngState = this.rngHost.s;
   }
 
-  static create(config: Partial<GameConfig> = {}, now = 0, defs = PLAYER_DEFS): { kernel: GameKernel; facts: Fact[] } {
-    if (defs.length < 2) throw new KernelError("至少 2 人开局（1 真人 + 假人由 T2 配置）");
-    const kernel = new GameKernel({ ...GAME_DEFAULTS, ...config }, defs, now);
-    kernel.openWindow(now);
-    kernel.reserveBots(now);
+  static create(
+    config: Partial<GameConfig> = {},
+    now = 0,
+    defs: PlayerDef[] = PLAYER_DEFS,
+  ): { kernel: GameKernel; facts: Fact[] } {
+    if (defs.length < 2) throw new KernelError("至少 2 人开局（1 真人 + 假人）");
+    if (defs.length > 8) throw new KernelError("开局最多 8 人（1 真人 + 7 假人）");
+    // 配置五项域校验（#16 问题陈述 2）：玩家配置出界即拒——壳层先验，内核兜底。
+    // dev 测试通道（allowDev）放行短窗/短局等模拟参数。
+    const merged = { ...GAME_DEFAULTS, ...config };
+    if (!merged.allowDev) {
+      for (const [key, [lo, hi]] of Object.entries(CONFIG_LIMITS)) {
+        const v = merged[key as keyof typeof CONFIG_LIMITS] as number;
+        if (typeof v !== "number" || !Number.isFinite(v) || v < lo || v > hi) {
+          throw new KernelError(`配置 ${key}=${v} 超出 ${lo}..${hi}`);
+        }
+      }
+    }
+    if (merged.timerMode !== "world" && merged.timerMode !== "turn") {
+      throw new KernelError("计时模式未知（world=世界·即时 / turn=轮班·限时）");
+    }
+    // 冻结：配置开局定死、局中不可改（局间配置=下一局新 kernel）
+    const kernel = new GameKernel(Object.freeze(merged) as GameConfig, defs, now);
     return { kernel, facts: kernel.drain() };
   }
 
@@ -173,6 +233,19 @@ export class GameKernel {
         this.state.restUntil = Math.min(this.state.restUntil, now);
         break;
       }
+      case "chooseSecret": {
+        // 开局暗牌抽 2 选 1：真人本人选（drafting 期唯一前置动作），假人已在 create 代抽
+        if (this.state.phase !== "drafting") throw new KernelError("非开局抽牌阶段");
+        const p = this.player(intent.pid);
+        if (p.isBot) throw new KernelError("假人目标由系统代抽，无需选择");
+        if (p.secretPick != null) throw new KernelError("已选定暗牌目标");
+        if (intent.pick !== 0 && intent.pick !== 1) throw new KernelError("暗牌选项下标越界");
+        p.secretPick = intent.pick;
+        this.emit({ type: "secretPicked", pid: p.id });
+        this.msg("system", `${p.name} 选定暗牌目标——第一窗开张！`, p.id, { emphasis: "highlight" });
+        this.openWindow(now);
+        break;
+      }
       case "dev.back": {
         if (!this.config.allowDev) throw new KernelError("dev 意图未开放");
         const p = this.player(intent.pid);
@@ -204,6 +277,8 @@ export class GameKernel {
 
   /** 时钟推进：窗截止替掷、步进、选路超时、休息到点。now 由壳层时钟提供。 */
   tick(now: number): Fact[] {
+    // 开局抽牌期不推进：真人选暗牌（chooseSecret）后才有窗口钟
+    if (this.state.phase === "drafting") return this.drain();
     if (this.state.phase === "acting") {
       this.resolveAsks(now);
       this.fireBots(now);

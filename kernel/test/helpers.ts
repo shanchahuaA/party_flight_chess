@@ -2,15 +2,23 @@ import { GAME_DEFAULTS, GameKernel } from "../src";
 import type { Fact, GameConfig, PlayerState } from "../src";
 import { cellAt } from "../src";
 
-/** 建一局（dev 通道开，时钟从 0 起） */
+/** 开局暗牌抽 2 选 1（boot 默认替真人选第 0 条；泛用） */
+export function openGame(k: GameKernel, pick = 0): void {
+  k.apply({ type: "chooseSecret", pid: 0, pick }, 0);
+}
+
+/** 建一局（dev 通道开，时钟从 0 起；自动完成开局抽牌进第一窗） */
 export function boot(over: Partial<GameConfig> = {}, now = 0): GameKernel {
-  return GameKernel.create({ allowDev: true, ...over }, now).kernel;
+  const { kernel } = GameKernel.create({ allowDev: true, ...over }, now);
+  openGame(kernel);
+  return kernel;
 }
 
 /** 搜种子：使人间（pid 0，可选先 setPos）首掷恰好为 target 面的种子 */
 export function seedForFirstDie(target: number, pre: { pos: number; from: number | null; net: number } | null = null): number {
   for (let seed = 1; seed < 5000; seed++) {
     const k = GameKernel.create({ seed, allowDev: true }, 0).kernel;
+    openGame(k);
     if (pre) k.apply({ type: "dev.setPos", pid: 0, pos: pre.pos, from: pre.from, net: pre.net }, 0);
     const fx = k.apply({ type: "roll", pid: 0 }, 0);
     const roll = fx.find((f) => f.type === "roll" && f.pid === 0);

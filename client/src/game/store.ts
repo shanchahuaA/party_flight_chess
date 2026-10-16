@@ -6,7 +6,7 @@
  */
 import { reactive, ref, shallowRef } from "vue";
 import { GameKernel } from "../../../kernel/src";
-import type { Fact, GameConfig, GameState, Intent, MessageEntry } from "../../../kernel/src";
+import type { Fact, GameConfig, GameState, Intent, MessageEntry, PlayerDef } from "../../../kernel/src";
 
 export interface PulseLit {
   level: "normal" | "target" | "big";
@@ -33,8 +33,12 @@ class GameStore {
   private perfBase = 0;
   private started = false;
 
-  boot(config: Partial<GameConfig> = {}): void {
-    const { kernel, facts } = GameKernel.create(config, 0);
+  /**
+   * 开局（T2 起由大厅页调用）：配置+ defs（真人在内）定谳 → 一次创建即 drafting：
+   * 真人暗牌选择由游戏页浮层驱动（chooseSecret），选完内核才开第一窗。
+   */
+  boot(config: Partial<GameConfig>, defs: PlayerDef[]): void {
+    const { kernel, facts } = GameKernel.create(config, 0, defs);
     // 重要：内核之后所有读写都走代理 → 模板里直接读代理的组件获得细粒度真响应
     kernel.attachStateProxy((s) => reactive(s) as GameState);
     this.kernel.value = kernel;
@@ -52,6 +56,11 @@ class GameStore {
 
   /** 心跳：纯时间读数（倒计时）用它声明依赖，每驱动拍+1 */
   beat = ref(0);
+
+  /** 真人（pid 0，M1 单机壳约定）；响应式（state 代理） */
+  get human() {
+    return this.state.value?.players[0] ?? null;
+  }
 
   apply(intent: Intent): void {
     const k = this.kernel.value;
@@ -131,15 +140,24 @@ class GameStore {
 
 export const gameStore = new GameStore();
 
-/** 惰性启动：App 挂载后调用（?fast=调试短窗：6s 窗/2s 休息，冒烟与演示用） */
-export function ensureBooted(): void {
+/** 调试冒烟通道（?fast=）：免大厅直达一局短窗局（10s 窗/无休息），暗牌自动代选 */
+export function maybeBootFastPath(): void {
   if (gameStore.kernel.value) return;
-  const fast = typeof location !== "undefined" && new URLSearchParams(location.search).has("fast");
-  const cfg: Partial<GameConfig> = fast
-    ? { allowDev: false, windowMs: 6_000, restMs: 2_000, routeAskMs: 6_000, stepMs: 90, seed: (Math.random() * 2 ** 31) | 0 }
-    : { allowDev: false, seed: (Math.random() * 2 ** 31) | 0 }; // 单机局默认换新种子（#16 故事 31 的精神；内核默认种子留给测试）
-  gameStore.boot(cfg);
-  // 开发期只读快照钩子（window.__pz()）
+  if (!new URLSearchParams(location.search).has("fast")) return;
+  gameStore.boot(
+    { allowDev: false, windowMs: 10_000, restMs: 0, stepMs: 90, seed: (Math.random() * 2 ** 31) | 0 },
+    [
+      { name: "你", isBot: false, roleId: "light" },
+      { name: "小黄", isBot: true },
+      { name: "小绿", isBot: true },
+    ],
+  );
+  gameStore.apply({ type: "chooseSecret", pid: 0, pick: 0 });
+  bindDevSnapshot();
+}
+
+/** 开发期只读快照钩子（window.__pz()）：内核态随手可查 */
+function bindDevSnapshot(): void {
   (window as unknown as Record<string, unknown>).__pz = () => {
     const k = gameStore.kernel.value;
     if (!k) return null;

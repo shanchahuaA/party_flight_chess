@@ -145,19 +145,25 @@ function buildTopology(): { cells: BoardCell[]; at: Map<string, BoardCell> } {
     if (n.links.length >= 3) n.street = "J";
   }
 
-  // 出生格：均布四向相望（stub 实玩版取点）
-  const spawns: Array<[number, number]> = [
+  // 出生格：庄园围一圈均布（槽号沿外环顺时针从正北起；4 人菜单恰落 stub 四角）
+  const SPAWNS: Array<readonly [number, number]> = [
     [6, 0],
+    [12, 1],
     [12, 4],
-    [0, 17],
+    [12, 9],
     [12, 17],
+    [0, 17],
+    [0, 9],
+    [0, 1],
   ];
-  spawns.forEach(([c, r], qi) => {
+  for (let i = 0; i < SPAWNS.length; i++) {
+    const [c, r] = SPAWNS[i]!;
     const n = at.get(key(c, r));
     if (!n) throw new Error(`出生格 (${c},${r}) 不在路网上`);
-    n.spawnIndex = qi;
+    if (n.links.length >= 3) throw new Error(`出生格 (${c},${r}) 不可落在环岛`);
+    n.spawnIndex = i;
     n.type = "S";
-  });
+  }
   for (const n of cells) {
     if (n.street === "J") n.type = "J";
   }
@@ -167,14 +173,14 @@ function buildTopology(): { cells: BoardCell[]; at: Map<string, BoardCell> } {
 }
 
 // ---- 类型灌装：确定性洗匀（固定种子，任何环境构建出同一张盘） ----
-// 各生态的格型配额（#17 棋盘重排落位，回填数值表 §5.7）：
+// 各生态的格型配额（#17 棋盘重排落位；T2 起出生槽 4→8，平原空格 4 个腾给出生位，回填数值表 §5.6/§5.7）：
 //   E 事件：平 28 / 雪 8 / 戈 2     —— 平原事件丰富
 //   I 道具：平 9 / 雪 2 / 戈 7     —— 戈壁宝物扎堆
 //   T 陷阱：平 4 / 雪 4 / 戈 6     —— §5.4 拍死
-//   B 空格：平 16 / 雪 2 / 戈 1     —— 余量（合计 19）
-// 配额和：平 57（64 − 3 环岛 − 4 出生）、雪 16（20 − 4 环岛）、戈 16（0 环岛 0 出生）
+//   B 空格：平 12 / 雪 2 / 戈 1     —— 余量（合计 15）
+// 配额和：平 53（64 − 3 环岛 − 8 出生）、雪 16（20 − 4 环岛）、戈 16（0 环岛 0 出生）
 const TYPE_QUOTA: Record<Eco, Record<CellType, number>> = {
-  plain: { E: 28, I: 9, T: 4, B: 16 },
+  plain: { E: 28, I: 9, T: 4, B: 12 },
   snow: { E: 8, I: 2, T: 4, B: 2 },
   gobi: { E: 2, I: 7, T: 6, B: 1 },
 };
@@ -216,34 +222,62 @@ export const SPAWN_CELLS: readonly number[] = Object.freeze(
   cells.filter((n) => n.spawnIndex >= 0).sort((a, b) => a.spawnIndex - b.spawnIndex).map((n) => n.id),
 );
 
-/** 出生位对应屋前小路的朝向（向园内伸，绝不与他人重叠——渲染用） */
+/** 出生位对应屋前小路的朝向（向园内伸，绝不与他人重叠——渲染用；槽序同出生位） */
 const SPAWN_DIRS: Array<readonly [number, number]> = [
   [0, 1],
   [-1, 0],
-  [1, 0],
   [-1, 0],
+  [-1, 0],
+  [-1, 0],
+  [1, 0],
+  [1, 0],
+  [1, 0],
 ];
 
 export interface BranchTail {
-  /** bpos 1..4 的渲染坐标（尽头即第 4 格） */
+  /** bpos 1..4 的支路格（col,row，玩法级占位：绝不与他人支路/主干格重叠） */
+  spots: Array<{ col: number; row: number }>;
+  /** bpos 1..4 的渲染坐标 */
   cells: Array<{ x: number; y: number }>;
   /** 🏁 旗位（不在走格图上） */
-  flag: { x: number; y: number };
+  flag: { x: number; y: number; col: number; row: number };
 }
 
 export const branchTails: readonly BranchTail[] = Object.freeze(
   SPAWN_CELLS.map((sid) => {
     const n0 = cells[sid]!;
     const d = SPAWN_DIRS[n0.spawnIndex]!;
+    const spots: BranchTail["spots"] = [];
     const cellsOut: BranchTail["cells"] = [];
     for (let k = 1; k <= BRANCH_LEN; k++) {
-      cellsOut.push(cellXY(n0.col + d[0] * k, n0.row + d[1] * k));
+      const col = n0.col + d[0] * k;
+      const row = n0.row + d[1] * k;
+      spots.push({ col, row });
+      cellsOut.push(cellXY(col, row));
     }
+    const fcol = n0.col + d[0] * (BRANCH_LEN + 1);
+    const frow = n0.row + d[1] * (BRANCH_LEN + 1);
+    const fp = cellXY(fcol, frow);
     return {
+      spots,
       cells: cellsOut,
-      flag: cellXY(n0.col + d[0] * (BRANCH_LEN + 1), n0.row + d[1] * (BRANCH_LEN + 1)),
+      flag: { x: fp.x, y: fp.y, col: fcol, row: frow },
     };
   }),
+);
+
+/** 出生槽 = 出生格 + 屋前小路朝向（8 位池；按人数从 spawnMenu 取档落座） */
+export interface SpawnSlot {
+  /** 槽号 0..7 */
+  index: number;
+  /** 出生格 id */
+  cell: number;
+  /** 屋前小路朝向（col/row 步进） */
+  dir: readonly [number, number];
+}
+
+export const SPAWN_SLOTS: readonly SpawnSlot[] = Object.freeze(
+  SPAWN_CELLS.map((cid, i) => ({ index: i, cell: cid, dir: SPAWN_DIRS[i]! })),
 );
 
 // ---- 渲染装饰数据（本票只渲染不触发）：内园地皮占位、街名路牌 ----
@@ -257,12 +291,30 @@ export interface Yard {
 }
 export const YARDS: readonly Yard[] = Object.freeze([
   { col: 1, row: 2, w: 4, h: 7, icon: "🏰", name: "庄园主楼" },
-  { col: 9, row: 6, w: 3, h: 4, icon: "🌳" },
-  { col: 4, row: 12, w: 2, h: 4, icon: "🌳" },
+  { col: 9, row: 5, w: 3, h: 3, icon: "🌳" }, // T2 让位：东带 (12,9) 支路横带 r9 + 东上支路 r4
+  { col: 4, row: 14, w: 2, h: 2, icon: "🌳" }, // T2 让位：西带 (0,9) 支路横带 r9（原 (4,12,2,4) 缩挪）
   { col: 10, row: 12, w: 2, h: 4, icon: "🐑" },
   { col: 1, row: 18, w: 2, h: 2, icon: "🌳" },
   { col: 10, row: 18, w: 2, h: 2, icon: "🌾" },
 ]);
+
+/** 按人数取哪些出生位（槽号表，2..8 人各一档）：
+ *  从 8 槽围圈槽位池中取互距最远的组合；4 人档即 stub 实玩四角（(6,0)/(12,4)/(0,17)/(12,17)）。 */
+const SPAWN_MENU: Record<number, readonly number[]> = {
+  2: [0, 4],
+  3: [0, 3, 5],
+  4: [0, 2, 5, 4],
+  5: [0, 2, 5, 4, 7],
+  6: [0, 2, 5, 4, 7, 3],
+  7: [0, 2, 5, 4, 7, 3, 6],
+  8: [0, 1, 2, 3, 4, 5, 6, 7],
+};
+
+export const spawnMenu = (players: number): readonly number[] => {
+  const line = SPAWN_MENU[players];
+  if (!line) throw new Error(`人数 ${players} 无出生槽档位（支票 2..8 人局）`);
+  return line;
+};
 
 /** 街名路牌位 [街名, col, row, ox, oy]（stub 校准值） */
 export const STREET_TAGS: ReadonlyArray<readonly [string, number, number, number, number]> = Object.freeze([
