@@ -12,7 +12,6 @@ describe("无死锁不变量（seed 扫描）", () => {
       const k = boot({ seed });
       // 驱动：以 1s 步进扫完整局（15 窗 ×(30s 行动+10s 休息)≈600s），中途完全不干预
       let t = 0;
-      const guards = new Map<number, number>(); // routeAsk 存活时间审计
       while (k.state.phase !== "over" && t <= 750_000) {
         t += 1_000;
         const fx = k.tick(t);
@@ -22,9 +21,6 @@ describe("无死锁不变量（seed 扫描）", () => {
             const left = p.walk.ask.deadline - t;
             expect(left).toBeGreaterThan(-1); // 待选条未到点仍在倒计时，不存在负直行授权
             expect(p.walk.ask.options.length).toBeGreaterThan(0);
-            guards.set(p.id, Math.max(guards.get(p.id) ?? 0, 0));
-          } else {
-            guards.delete(p.id);
           }
           // 位置/地带恒定有效
           if (p.zone === "main") {

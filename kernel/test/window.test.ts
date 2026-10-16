@@ -70,6 +70,8 @@ describe("世界回合窗（世界·即时）", () => {
 
   it("确认后进等待区：本窗不能再任何操作（roll/confirm 均拒）", () => {
     const k = bootWithDie(3);
+    // 硬规格 ①：掷骰与确认分离——没掷骰不能先确认（防静默吞骰）
+    expect(() => k.apply({ type: "confirm", pid: 0 }, 0)).toThrow(KernelError);
     k.apply({ type: "roll", pid: 0 }, 0);
     walkOut(k, 0);
     k.apply({ type: "confirm", pid: 0 }, 2_000);

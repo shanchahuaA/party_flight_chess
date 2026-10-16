@@ -5,7 +5,7 @@
  * - 棋子位置读内核玩家态；逐格动画 = CSS transform 过渡（内核 140ms 节拍的事实驱动）。
  */
 import { computed } from "vue";
-import { BOARD, BOARD_H, BOARD_W, branchTails, cellXY, type PlayerState } from "../../../kernel/src";
+import { BOARD, BOARD_H, BOARD_W, STREET_TAGS, YARDS, branchTails, cellXY, type PlayerState } from "../../../kernel/src";
 import { gameStore } from "../game/store";
 
 const state = computed(() => {
@@ -40,26 +40,11 @@ const arrowCells = BOARD.filter((n, i) => n.street !== "J" && n.spawnIndex < 0 &
   const next = n.links.map((id) => BOARD[id]!).find((m) => m.street === n.street) ?? BOARD[n.links[0]!]!;
   return { x: n.x, y: n.y, ang: (Math.atan2(next.y - n.y, next.x - n.x) * 180) / Math.PI };
 });
-const streetTags = [
-  { name: "中横街", p: cellXY(4.5, 10), ox: 0, oy: -13 },
-  { name: "中竖街", p: cellXY(6, 15.5), ox: 14, oy: 0 },
-  { name: "西巷", p: cellXY(3, 13), ox: -14, oy: 0 },
-  { name: "东巷", p: cellXY(9, 13), ox: 14, oy: 0 },
-  { name: "下横巷", p: cellXY(6, 16), ox: 15, oy: 0 },
-  { name: "外环", p: cellXY(6, 20), ox: 0, oy: 14 },
-  { name: "外环", p: cellXY(0, 4.5), ox: -14, oy: 0 },
-  { name: "外环", p: cellXY(12, 8), ox: 14, oy: 0 },
-];
-const yards = [
-  { col: 1, row: 2, w: 4, h: 7, icon: "🏰", name: "庄园主楼" },
-  { col: 9, row: 6, w: 3, h: 4, icon: "🌳", name: "" },
-  { col: 4, row: 12, w: 2, h: 4, icon: "🌳", name: "" },
-  { col: 10, row: 12, w: 2, h: 4, icon: "🐑", name: "" },
-  { col: 1, row: 18, w: 2, h: 2, icon: "🌳", name: "" },
-  { col: 10, row: 18, w: 2, h: 2, icon: "🌾", name: "" },
-].map((y) => {
+// 街名路牌与内园地皮占位：真源在内核 board.ts（#17 review：渲染端不再手工拷贝）
+const streetTags = STREET_TAGS.map(([name, c, r, ox, oy]) => ({ name, p: cellXY(c, r), ox, oy }));
+const yards = YARDS.map((y) => {
   const c = cellXY(y.col, y.row);
-  return { ...y, left: c.x - 10, top: c.y - 10, pw: y.w * 22, ph: y.h * 22 };
+  return { icon: y.icon ?? null, name: y.name ?? null, left: c.x - 10, top: c.y - 10, pw: y.w * 22, ph: y.h * 22 };
 });
 
 // ---------- 动态层 ----------
@@ -71,7 +56,13 @@ function tokenPoint(p: PlayerState): { x: number; y: number } {
   }
   const tail = branchTails[BOARD[p.spawnCell]!.spawnIndex]!;
   if (p.zone === "done") return { x: tail.flag.x, y: tail.flag.y };
-  const bpos = Math.max(1, Math.min(4, p.bpos || 1));
+  if (p.bpos <= 0) {
+    // 支路门口 = 出生格本体
+    const c = BOARD[p.spawnCell]!;
+    const o = TOK_OFFS[p.id % TOK_OFFS.length]!;
+    return { x: c.x + o[0], y: c.y + o[1] };
+  }
+  const bpos = Math.min(4, p.bpos);
   return tail.cells[bpos - 1]!;
 }
 

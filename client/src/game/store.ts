@@ -136,8 +136,8 @@ export function ensureBooted(): void {
   if (gameStore.kernel.value) return;
   const fast = typeof location !== "undefined" && new URLSearchParams(location.search).has("fast");
   const cfg: Partial<GameConfig> = fast
-    ? { allowDev: false, windowMs: 6_000, restMs: 2_000, routeAskMs: 6_000, stepMs: 90 }
-    : { allowDev: false };
+    ? { allowDev: false, windowMs: 6_000, restMs: 2_000, routeAskMs: 6_000, stepMs: 90, seed: (Math.random() * 2 ** 31) | 0 }
+    : { allowDev: false, seed: (Math.random() * 2 ** 31) | 0 }; // 单机局默认换新种子（#16 故事 31 的精神；内核默认种子留给测试）
   gameStore.boot(cfg);
   // 开发期只读快照钩子（window.__pz()）
   (window as unknown as Record<string, unknown>).__pz = () => {

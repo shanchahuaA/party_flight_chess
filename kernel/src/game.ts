@@ -160,6 +160,7 @@ export class GameKernel {
         const p = this.player(intent.pid);
         this.checkWindowAction(p);
         if (p.confirmed) throw new KernelError("已确认，本窗不能再操作");
+        if (!p.rolled) throw new KernelError("先掷骰，再确认结束");
         this.doConfirm(p, now, "human");
         break;
       }
@@ -453,9 +454,10 @@ export class GameKernel {
 
   private botPickAtJunction(p: PlayerState, opts: number[]): number {
     const straight = this.straightId(p.pos, p.from);
-    const pick = straight !== null && opts.includes(straight) && this.draw() < 0.6 ? straight : this.rng.pick(opts);
-    this.state.rngState = this.rngHost.s;
-    return pick;
+    if (straight !== null && opts.includes(straight) && this.draw() < 0.6) {
+      return straight; // 顺直行偏好（六成概率）
+    }
+    return opts[Math.floor(this.draw() * opts.length)]!;
   }
 
   /** 主网前进一步 */
@@ -505,7 +507,7 @@ export class GameKernel {
         w.nextStepAt = beatAfter(w, now, this.config.stepMs);
         this.emit({ type: "bounce", pid: p.id });
       } else {
-        this.finishAtSeat(p, now);
+        this.finishAtSeat(p);
       }
       return;
     }
@@ -540,7 +542,7 @@ export class GameKernel {
     else w.nextStepAt = beatAfter(w, now, this.config.stepMs);
   }
 
-  private finishAtSeat(p: PlayerState, now: number): void {
+  private finishAtSeat(p: PlayerState): void {
     p.zone = "done";
     p.walk = null;
     p.confirmed = true; // 通关席不占确认
@@ -552,7 +554,6 @@ export class GameKernel {
     });
     this.emit({ type: "finish", pid: p.id });
     this.emit({ type: "pulse", pid: p.id, level: "big" });
-    void now;
   }
 
   private endWalk(p: PlayerState, now: number): void {
