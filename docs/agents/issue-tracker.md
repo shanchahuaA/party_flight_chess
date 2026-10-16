@@ -25,6 +25,25 @@ When set to `yes`, PRs run through the same labels and states as issues, using t
 
 GitHub shares one number space across issues and PRs, so a bare `#42` may be either: resolve with `gh pr view 42` and fall back to `gh issue view 42`.
 
+## Ticket blocking and the frontier (spec tickets)
+
+Issues have no "parked/unstarted" state: a ticket stays **open** until its work is accepted — close at acceptance, never to park gated work. Blocking lives in GitHub **native issue dependencies** (same mechanics as the wayfinding section below), mirrored by a `Blocked by` section in the body that `/to-tickets` writes.
+
+- **Gating = native dependency edges, not issue state.** Per-ticket gate: `gh api repos/<owner>/<repo>/issues/<n> --jq .issue_dependencies_summary.blocked_by` (>0 = open blockers remain). Add an edge with `gh api --method POST repos/<owner>/<repo>/issues/<child>/dependencies/blocked_by -F issue_id=<blocker-db-id>` (db id = `gh api repos/<owner>/<repo>/issues/<n> --jq .id`).
+- **`ready-for-agent` = unblocked.** Gated tickets carry no label. A ticket already being worked may keep the label until close; the claim signal is the assignee — always filter it out when grabbing. Frontier query:
+  ```bash
+  gh issue list --state open --label ready-for-agent --json number,title,assignees \
+    --jq '.[] | select(.assignees | length == 0) | "\(.number)\t\(.title)"'
+  ```
+- **After closing a ticket, sweep the frontier**: its open dependents are `GET /issues/<n>/dependencies/blocking`; re-apply `ready-for-agent` to each whose own blockers are now all closed:
+  ```bash
+  for ch in $(gh api repos/<owner>/<repo>/issues/<n>/dependencies/blocking --jq '.[].number'); do
+    [ "$(gh api repos/<owner>/<repo>/issues/$ch/dependencies/blocked_by --jq '[.[] | select(.state != "closed")] | length')" = "0" ] \
+      && gh issue edit $ch --add-label "ready-for-agent"
+  done
+  ```
+- **Publishing via `/to-tickets`**: wire the dependency edges at create time; only unblocked tickets get `ready-for-agent`, the rest publish unlabeled.
+
 ## When a skill says "publish to the issue tracker"
 
 Create a GitHub issue.
