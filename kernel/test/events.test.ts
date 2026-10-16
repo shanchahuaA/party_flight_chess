@@ -156,7 +156,7 @@ describe("纯效果卡自动结算进战报流", () => {
     k.apply({ type: "dev.setPos", pid: 1, pos: k.state.players[1]!.pos, from: null, net: 5 }, 0);
     k.apply({ type: "dev.drawCard", pid: 0, cardId: "e20" }, 0);
     // 窗 1：只标记（deferred），被指认者照常行动
-    expect(k.state.deferred).toEqual([{ pid: 1, parts: [{ type: "skip", v: 1 }] }]);
+    expect(k.state.deferred).toEqual([{ pid: 1, parts: [{ type: "skip", v: 1 }], kind: "event", srcPid: 0 }]);
     expect(k.state.players[1]!.stun).toBe(0);
     // 窗 2 开窗：deferred 罚停即结算即消耗 → 本窗轮空（不掷不确认）
     void k.tick(200);
@@ -189,7 +189,7 @@ describe("系统指认：跳过淘汰者（事件定案 §5.2）", () => {
     k.apply({ type: "dev.setDead", pid: 2 }, 0); // 净步最高者被淘汰
     k.apply({ type: "dev.drawCard", pid: 0, cardId: "e20" }, 0);
     // 指认池=[0,1,3]（净步全 0，id 序破平 → 0）；2 已出局所以整轮不被指认
-    expect(k.state.deferred).toEqual([{ pid: 0, parts: [{ type: "skip", v: 1 }] }]);
+    expect(k.state.deferred).toEqual([{ pid: 0, parts: [{ type: "skip", v: 1 }], kind: "event", srcPid: 0 }]);
     expect(k.state.players[0]!.stun).toBe(0);
     void k.tick(30_000); // now≥deadline → 替掷收口 + rest（restUntil=40k）
     void k.tick(40_000); // rest 到点 → 开窗 2：deferral 罚停结算即消耗 → 你本窗轮空

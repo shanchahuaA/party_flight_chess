@@ -38,6 +38,10 @@ export interface PlayerState {
   hp: number;
   /** 皮糙肉厚的「免疫第一次扣血」剩余盾（开局 1，触发后清零；T5 消费） */
   shields: number;
+  /** 护身符（表一 #14 T4b1）：免疫下一次任何伤害，触发即消耗；1=盾亮着 */
+  talisman: number;
+  /** 小圆盾（表一 #9 T4b1）：免疫「他人卡牌效果」的世界回合号（打出时设为 turn+1=下回合；随窗自然失效） */
+  cardGuard: number;
   /** 主网位置（zone==='main' 时即所站格 id；branch 时恒为出生格 id） */
   pos: number;
   /** 上一步来向：走格惯性、排除回头、超时直行都看它 */
@@ -96,14 +100,25 @@ export interface WalkState {
   ask: { options: RouteOption[]; deadline: number } | null;
   pendingTo: number | null;
   bounced: boolean;
+  /** true=本窗走格骰发团的走（重掷只对付它）；false=卡面/off 效果发的走（重掷不管） */
+  dice: boolean;
+  /** 本骰总步数（掷出时的有效面；已走步数=total−remaining，时光怀表重掷对照，T4b1） */
+  total: number;
+  /** 本骰吃到的修正批（一次性消费后随骰带走；重掷沿用同批——时光怀表 T4b1） */
+  mods?: DiceMod[];
 }
 
 export type GamePhase = "drafting" | "acting" | "rest" | "over";
 
-/** 指向他人的卡面效果挂账：下一世界回合开始时结算（openWindow 消费；M2 随协议下发） */
+/** 指向他人的卡面效果挂账：下一世界回合开始时结算（openWindow 消费；M2 随协议下发）。
+ *  kind/srcPid 记效果来源（道具卡/事件卡 + 打出者）——小圆盾「免疫他人卡牌效果」的拦截判据（T4b1）。 */
 export interface DeferredEffect {
   pid: number;
   parts: EffectPart[];
+  /** 效果来源通道（T4b1 起必带；客户端/M2 视为协议字段） */
+  kind: "item" | "event";
+  /** 打出者/触发者 pid（小圆盾拦截同源不拦） */
+  srcPid: number;
 }
 
 /** 场地型附着（香蕉皮/地雷……T4a）：打出即钉在格上，下一踩上者（含铺设者本人）触发判定后消失 */
@@ -182,7 +197,9 @@ export type Intent =
   | { type: "dev.setDead"; pid: number }
   | { type: "dev.drawCard"; pid: number; cardId: string }
   /** 从牌堆/弃牌堆取指定道具卡塞进手牌（道具链冒烟/测试用） */
-  | { type: "dev.giveItem"; pid: number; cardId: string };
+  | { type: "dev.giveItem"; pid: number; cardId: string }
+  /** 直接吃 dmg 点伤害（走 applyHpDelta 完整通道：护身符/盾照拦；伤害链单测不绕弯路） */
+  | { type: "dev.hit"; pid: number; dmg: number };
 
 // ---------- 事实（下行：客户端据此动起来） ----------
 

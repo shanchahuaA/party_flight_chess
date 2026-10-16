@@ -1,10 +1,11 @@
 <script setup lang="ts">
 /**
- * 手牌横滑 + 半屏抽屉大卡（#31 T4a2）：dock 上方一排可横滑缩略小卡，点开抽屉看大卡/打牌。
+ * 手牌横滑 + 半屏抽屉大卡（#31 T4a2 + #22 T4b1）：dock 上方一排可横滑缩略小卡，点开抽屉看大卡/打牌。
  * 全部事实驱动：手牌读内核 hand；打牌钮按 itemPlayGate 口径出没——已确认/罚停轮空一律
  * 只给 reason 不出钮（入口隐藏），淘汰观战整条隐藏（界面呈现定案 §六），通关席见 playDirect 注。
  * chooseOther 两段式：抽屉「去棋盘点目标」→ store.targeting 进入选择，BoardSvg 头像收口
- * （打出成功由 itemPlayed 事实收账、内核拒保持待选）；self/ground 一步直打。
+ * （打出成功由 itemPlayed 事实收账、内核拒保持待选）；self/auto 系统直打、ground 一步直打；
+ * 占位卡（tbd；狗笛=T6b）照 chooseOther 两段式走，打出即晒牌。
  * 违禁卡带视觉标识（只落在本人手牌视图，M2 按玩家切片下发时保持本人视图）。
  */
 import { computed, ref, watchEffect } from "vue";
@@ -59,7 +60,7 @@ function closeDrawer(): void {
   drawerCard.value = null;
 }
 /** 打牌入口的隐藏粒度：等待区/罚停轮空/淘汰不出手；通关席按一页纸「仍可打卡整蛊」与内核
- *  itemPlayGate 同口径——self/ground 两类入口隐藏（gate 拒），chooseOther 整蛊卡保留出钮（口子不锁）。 */
+ *  itemPlayGate 同口径——self/ground 两类入口隐藏（gate 拒），chooseOther/auto 两类整蛊卡保留出钮（口子不锁，T4b1 扩）。 */
 function playDirect(): void {
   if (!drawerCard.value || !gate.value?.ok) return;
   gameStore.playItem(drawerCard.value);
@@ -73,7 +74,12 @@ function goTargeting(): void {
 }
 
 // ---------- 卡面文字（原语 DSL → 机械真话；文案皮留战报 flavor） ----------
-const ROUTE_TXT: Record<ItemRoute, string> = { self: "自用", chooseOther: "指向他人", ground: "场地 · 搁脚下" };
+const ROUTE_TXT: Record<ItemRoute, string> = {
+  self: "自用",
+  chooseOther: "指向他人",
+  auto: "自动指认",
+  ground: "场地 · 搁脚下",
+};
 
 function modText(mods: DiceMod[]): string {
   const segs = mods.map((m) => {
@@ -99,6 +105,16 @@ function partText(p: EffectPart): string {
       return modText(p.mods);
     case "check":
       return checkText(p.spec);
+    case "reroll":
+      return "重掷本次走格骰（须已在路上）";
+    case "swap":
+      return "与指定玩家互换位置（双双须在主干道）";
+    case "talisman":
+      return "免疫下一次任何伤害（触发即消耗）";
+    case "roundShield":
+      return "下一回合免疫他人卡牌效果";
+    case "clearGround":
+      return `清掉当前格起前方 ${p.v} 格内的香蕉皮/地雷`;
     default:
       return "无效果";
   }
@@ -114,6 +130,7 @@ const drawerLines = computed<string[]>(() => {
   const c = drawerItem.value;
   if (!c) return [];
   if (c.route === "ground") return c.ground ? [checkText(c.ground.check)] : [];
+  if (c.tbd) return [`效果挂后线：${c.tbd} 起接入（打出即晒牌，眼前先无结算）`];
   return (c.parts ?? []).map(partText);
 });
 </script>
@@ -155,6 +172,7 @@ const drawerLines = computed<string[]>(() => {
         <li v-for="(l, i) in drawerLines" :key="i">{{ l }}</li>
       </ul>
       <p v-if="drawerItem!.route === 'chooseOther'" class="hint">打出后指向对方；世界·即时：下一世界回合开始时结算。</p>
+      <p v-if="drawerItem!.route === 'auto'" class="hint">不用选目标——系统按卡面规则自动指认（淘汰者/通关席跳过）；时机与他人卡同口径。</p>
       <p v-if="drawerItem!.route === 'ground'" class="hint">搁在脚下这格；下一踩上的人（含自己）触发判定，触发即消失。</p>
 
       <!-- 打牌入口：gate 不给过就不出钮（reason 落字） -->

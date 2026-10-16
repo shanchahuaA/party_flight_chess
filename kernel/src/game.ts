@@ -8,7 +8,7 @@
  */
 import { BOARD, BRANCH_LEN, ECO_NAMES, NET_GOAL, SPAWN_SLOTS, STREET_NAMES, cellAt, spawnMenu, type BoardCell } from "./board";
 import { M1_EVENT_POOL, EVENT_CARD_BY_ID, type CardEffect, type CheckSpec, type DiceMod, type EffectPart, type EventCard } from "./data/events";
-import { ITEM_CARD_BY_ID, M1_ITEM_POOL, itemCard } from "./data/items";
+import { ITEM_CARD_BY_ID, M1_ITEM_POOL, itemCard, itemHasPart } from "./data/items";
 import { AXIS_NAMES, ROLES, roleDef } from "./data/roles";
 import { SECRET_GOALS } from "./data/goals";
 import { CHECK_FACES, effectiveValue, netMods, resolveCheck, roleCheckMods, roleOneToCrit, rollD20, rollDice, type CheckGrade, type CheckMods } from "./check";
@@ -56,6 +56,9 @@ export const GAME_DEFAULTS: Required<Omit<GameConfig, "allowDev">> = {
   routeAskMs: 10_000,
   stepMs: 140,
 };
+
+/** 卡牌效果来源上下文（T4b1）：kind=道具卡/事件卡通道、srcPid=打出者——小圆盾「免疫他人卡牌效果」的拦截判据 */
+type GuardCtx = { kind: "item" | "event"; srcPid: number };
 
 /** 配置五项的合法域（#16 问题陈述 2：局长 5–30／血量 5–20／窗 10–90s／休息 0–20s）。
  *  壳层表单（大厅滑条）直接消费这份常量，域改一处即全端生效。 */
@@ -125,6 +128,8 @@ export class GameKernel {
           axes: { ...rd.axes },
           hp: config.maxHp,
           shields: rd.flags.firstBloodShield ? 1 : 0,
+          talisman: 0,
+          cardGuard: 0,
           pos: SPAWN_SLOTS[menu[i]!]!.cell,
           from: null,
           trail: [],
@@ -368,6 +373,12 @@ export class GameKernel {
         this.emit({ type: "itemDrawn", pid: p.id, cardId: card.id });
         break;
       }
+      case "dev.hit": {
+        if (!this.config.allowDev) throw new KernelError("dev 意图未开放");
+        if (intent.dmg <= 0) throw new KernelError("伤害数应为正");
+        this.applyHpDelta(this.player(intent.pid), -intent.dmg);
+        break;
+      }
       case "dev.setPos": {
         if (!this.config.allowDev) throw new KernelError("dev 意图未开放");
         const p = this.player(intent.pid);
@@ -452,7 +463,14 @@ export class GameKernel {
     this.state.deferred = [];
     for (const d of due) {
       const p = this.player(d.pid);
-      this.applyParts(p, d.parts, now);
+      if (p.dead || p.zone === "done") {
+        // 挂账一回合后目标已不在对局（淘汰/入席）——整蛊落空要出声，不静默吞
+        this.msg(d.kind, `挂账的${d.kind === "item" ? "道具卡" : "事件卡"}效果散去——${p.name} 已不在对局。`, d.srcPid, {
+          targets: [d.pid],
+        });
+        continue;
+      }
+      this.applyParts(p, d.parts, now, { kind: d.kind, srcPid: d.srcPid });
     }
     // 罚停：消耗并轮空（不掷不确认，不占窗；T3a 卡面挂点）
     for (const p of this.state.players) {
@@ -561,19 +579,33 @@ export class GameKernel {
     this.doRoll(pid, now, mode);
   }
 
+  /** 走格骰一次掷出（修正四原语互抵→面数±→掷→有效值）：doRoll 首掷与 doReroll 重掷共用一段（T4a/T4b1） */
+  private tossWalkRoll(mods: DiceMod[]): { raw: number; d: number } {
+    const net = netMods(toCheckMods(mods));
+    // 脚镣削面：1d10→1d9（cut 1）；加倍骰升面：1d10→1d12（raise 2，T4b1 落卡）——面数通道同一出口
+    const faces = Math.max(2, WALK_DIE + net.face);
+    const raw = rollDice(this.rng, net, faces);
+    this.syncRng();
+    return { raw, d: effectiveValue(raw, net.bonus, net.floor) }; // 顺风靴 +3 → 幸运骰保底 ≥6
+  }
+
   private doRoll(pid: number, now: number, mode: "human" | "bot" | "replacement"): void {
     const p = this.player(pid);
     p.rolled = true;
     // 走格骰修正（T4a 道具）：积压的修正一次性消费，四原语先全量互抵再掷再判（与检定同口径）
     const mods = p.rollMods;
     p.rollMods = [];
-    const net = netMods(toCheckMods(mods));
-    // 脚镣削面：1d10→1d9（cut 1）；加倍骰升面 T4b1 落卡时按 GLOSSARY「1d10→1d12」取 raise 2
-    const faces = Math.max(2, WALK_DIE + net.face);
-    const raw = rollDice(this.rng, net, faces);
-    this.syncRng();
-    const d = effectiveValue(raw, net.bonus, net.floor); // 顺风靴 +3 → 幸运骰保底 ≥6
-    p.walk = { remaining: d, nextStepAt: now + this.config.stepMs, ask: null, pendingTo: null, bounced: false };
+    const { raw, d } = this.tossWalkRoll(mods);
+    p.walk = {
+      remaining: d,
+      total: d, // 本骰总步数（时光怀表重掷的「已走步数」对照基准，T4b1）
+      dice: true, // 走格骰发团的走——重掷只对付它
+      nextStepAt: now + this.config.stepMs,
+      ask: null,
+      pendingTo: null,
+      bounced: false,
+      ...(mods.length > 0 ? { mods } : {}),
+    };
     this.emit({ type: "roll", pid, d, auto: mode !== "human", ...(mods.length > 0 ? { mods } : {}) });
     const calc = mods.length > 0 ? `${raw}（${modDetail(mods)}）= ${d}` : `${d}`;
     if (mode === "replacement") {
@@ -810,9 +842,9 @@ export class GameKernel {
     }
     this.landOn(p, now); // 落格结算：事件格抽卡（走停即触发，双向一视同仁）
     if (p.walkQueue.length > 0) {
-      // 卡面连动续走：接队首（不再调度确认——还在走；下一拍自然步进）
+      // 卡面连动续走：接队首（不再调度确认——还在走；下一拍自然步进）。效果轨（dice=false）
       const next = p.walkQueue.shift()!;
-      p.walk = { remaining: next, nextStepAt: now + this.config.stepMs, ask: null, pendingTo: null, bounced: false };
+      p.walk = { remaining: next, total: next, dice: false, nextStepAt: now + this.config.stepMs, ask: null, pendingTo: null, bounced: false };
       return;
     }
     if (p.isBot && !p.dead && p.zone !== "done") {
@@ -821,27 +853,27 @@ export class GameKernel {
     }
   }
 
-  /** 无处可走/步数为零的清理（拓扑死角兜底；卡面续走照排） */
+  /** 无处可走/步数为零的清理（拓扑死角兜底；卡面续走照排）。效果轨接队（dice=false） */
   private burnWalkEnd(p: PlayerState): void {
     p.walk = null;
     if (p.walkQueue.length > 0) {
       const next = p.walkQueue.shift()!;
-      p.walk = { remaining: next, nextStepAt: 0, ask: null, pendingTo: null, bounced: false };
+      p.walk = { remaining: next, total: next, dice: false, nextStepAt: 0, ask: null, pendingTo: null, bounced: false };
     }
   }
 
-  /** 卡面/表效果发起的一次走格（正=前进负=沿来路栈退回）；walk 被占用则入队（T3a 卡面连动） */
+  /** 卡面/表效果发起的一次走格（正=前进负=沿来路栈退回）；walk 被占用则入队（T3a 卡面连动）。非骰走（dice=false）——重掷不管 */
   private startWalk(p: PlayerState, steps: number, now: number): void {
     if (p.dead || p.zone === "done" || steps === 0) return;
     if (p.walk) {
       p.walkQueue.push(steps);
       return;
     }
-    p.walk = { remaining: steps, nextStepAt: now + this.config.stepMs, ask: null, pendingTo: null, bounced: false };
+    p.walk = { remaining: steps, total: steps, dice: false, nextStepAt: now + this.config.stepMs, ask: null, pendingTo: null, bounced: false };
   }
 
   private queueBack(p: PlayerState, steps: number, now: number): void {
-    p.walk = { remaining: -steps, nextStepAt: now + this.config.stepMs, ask: null, pendingTo: null, bounced: false };
+    p.walk = { remaining: -steps, total: -steps, dice: false, nextStepAt: now + this.config.stepMs, ask: null, pendingTo: null, bounced: false };
   }
 
   // ---------- 环岛选路 ----------
@@ -983,7 +1015,20 @@ export class GameKernel {
     if (opt.effect) this.applyCardEffect(p, opt.effect, now);
   }
 
-  /** 卡面效果：self 即时；others 系统指认后按计时模式分流（world=下回合生效挂 deferred） */
+  /** 指认/指向他人的卡面效果统一按计时模式出发（#22 T4b1 收口）：轮班·限时=立刻生效（无同时行动，无竞态；M1 未接线 T9，口径先立）；world·即时=挂账下一窗开窗结算（被整蛊者有预判窗口）。 */
+  private dispatchToOthers(targets: PlayerState[], parts: EffectPart[], now: number, ctx: GuardCtx): void {
+    if (this.config.timerMode === "turn") {
+      for (const q of targets) this.applyParts(q, parts, now, ctx);
+      return;
+    }
+    for (const q of targets) this.state.deferred.push({ pid: q.id, parts, kind: ctx.kind, srcPid: ctx.srcPid });
+    this.msg(ctx.kind, `下一世界回合开始时结算：${targets.map((q) => q.name).join("、")}。`, ctx.srcPid, {
+      targets: targets.map((q) => q.id),
+    });
+  }
+
+  /** 卡面效果：self 即时；others 系统指认后按计时模式分流（world=下回合生效挂 deferred）。
+   *  指认通路带 GuardCtx（kind/srcPid）——小圆盾「免疫他人卡牌效果」按打出者判他我（T4b1）。 */
   private applyCardEffect(p: PlayerState, eff: CardEffect, now: number): void {
     if (eff.self?.length) this.applyParts(p, eff.self, now);
     for (const t of eff.others ?? []) {
@@ -998,16 +1043,7 @@ export class GameKernel {
         targets = targets.filter((q) => q.id !== p.id);
         if (targets.length === 0) continue;
       }
-      if (this.config.timerMode === "turn") {
-        // 轮班·限时：立刻生效（无同时行动，无竞态）；M1 未接线（T9），口径先立
-        for (const q of targets) this.applyParts(q, t.parts, now);
-      } else {
-        // world·即时：下一世界回合开始时结算（被整蛊者有预判窗口）
-        for (const q of targets) this.state.deferred.push({ pid: q.id, parts: t.parts });
-        this.msg("event", `下一世界回合开始时结算：${targets.map((q) => q.name).join("、")}。`, p.id, {
-          targets: targets.map((q) => q.id),
-        });
-      }
+      this.dispatchToOthers(targets, t.parts, now, { kind: "event", srcPid: p.id });
     }
   }
 
@@ -1031,9 +1067,21 @@ export class GameKernel {
     }
   }
 
-  /** 原语结算：一类一个出口，血量/罚停/走格/摸卡/走格骰修正都走统一通道（T5 陷阱/T6 遭遇战复用） */
-  private applyParts(p: PlayerState, parts: EffectPart[], now: number): void {
+  /**
+   * 原语结算：一类一个出口，血量/罚停/走格/摸卡/走格骰修正都走统一通道（T5 陷阱/T6 遭遇战复用）。
+   * ctx=卡牌效果来源（kind/srcPid，T4b1）：小圆盾按它拦「他人卡牌效果」；恶意/陷阱/野怪等非卡通路不传。
+   */
+  private applyParts(p: PlayerState, parts: EffectPart[], now: number, ctx?: GuardCtx): void {
     if (p.dead || p.zone === "done") return;
+    if (ctx && p.cardGuard === this.state.turn && ctx.srcPid !== p.id) {
+      // 小圆盾（表一 #9）：下一世界回合免疫他人卡牌效果——整批效果拦下（触发者自己的卡牌不拦）
+      const src = this.player(ctx.srcPid);
+      this.msg(ctx.kind, `${p.name} 「小圆盾」挡下 ${src.name} 的${ctx.kind === "item" ? "道具卡" : "事件卡"}效果！`, p.id, {
+        targets: [ctx.srcPid],
+        emphasis: "highlight",
+      });
+      return;
+    }
     for (const part of parts) {
       switch (part.type) {
         case "move":
@@ -1067,17 +1115,51 @@ export class GameKernel {
           this.drawEventFor(p, now);
           break;
         case "check":
-          this.runCheck(p, part.spec, now);
+          this.runCheck(p, part.spec, now, ctx);
           break;
+        case "reroll":
+          // 时光怀表（表一 #2）：重掷本次走格骰（骰走在路上才可重掷——gate 前置校验，此为数据兜底）
+          this.doReroll(p, now);
+          break;
+        case "swap":
+          this.doSwap(p, ctx);
+          break;
+        case "talisman":
+          p.talisman += 1;
+          this.msg("item", `${p.name} 带上护身符——下一次任何伤害被挡下（触发即消耗）。`, p.id, { emphasis: "highlight" });
+          break;
+        case "roundShield": {
+          // 下回合免疫他人卡牌效果：记失效线=turn+1，随窗自然过期（turn 比较即判）
+          p.cardGuard = this.state.turn + 1;
+          this.msg("item", `${p.name} 举起小圆盾——下一世界回合，他人卡牌效果对他无效。`, p.id, { emphasis: "highlight" });
+          break;
+        }
+        case "clearGround": {
+          if (!(part.v > 0)) break;
+          const n = this.clearGroundForward(p, part.v);
+          if (n === 0) {
+            this.msg("item", `${p.name} 烧开一道清障符——前方 ${part.v} 格干干净净，无事发生。`, p.id);
+          } else {
+            this.msg("item", `${p.name} 烧开一道清障符——前方 ${part.v} 格里的 ${n} 张场地卡收走入弃牌堆。`, p.id, {
+              emphasis: "highlight",
+            });
+          }
+          break;
+        }
         case "none":
           break;
       }
     }
   }
 
-  /** 血量通道：扣血先过盾（皮糙肉厚，T5 陷阱同款），回血封顶上限，归零只播报（淘汰流程 T5c） */
+  /** 血量通道：扣血先过护身符（表一 #14，触发即消耗）再过盾（皮糙肉厚，T5 陷阱同款），回血封顶上限，归零只播报（淘汰流程 T5c） */
   private applyHpDelta(p: PlayerState, delta: number): void {
     if (delta === 0) return;
+    if (delta < 0 && p.talisman > 0) {
+      p.talisman -= 1;
+      this.msg("item", `${p.name} 护身符闪金光——免疫这次伤害！（触发即消耗）`, p.id, { emphasis: "highlight" });
+      return;
+    }
     if (delta < 0 && p.shields > 0) {
       p.shields -= 1;
       this.msg("event", `${p.name} 皮糙肉厚被动：免疫这次扣血！`, p.id, { emphasis: "highlight" });
@@ -1098,8 +1180,9 @@ export class GameKernel {
    * 检定三态（1d20+轴 vs 卡面 DC）：修正四原语与角色特长先全量互抵再掷再判；
    * 极值挂原始面 20/1（升面骰出的 21+ 只算大数，不算大成功——保持「极值不随面宽翻动」口径）。
    * 无 dc 的前途骰走 bands 分档（命运之骰：20/1 极值 → 余面按 min/max 首中，末条兜底）。
+   * ctx 透传给分支原语（小圆盾判「他人卡牌效果」的依据，T4b1）。
    */
-  private runCheck(p: PlayerState, spec: CheckSpec, now: number): void {
+  private runCheck(p: PlayerState, spec: CheckSpec, now: number, ctx?: GuardCtx): void {
     const role = roleDef(p.roleId);
     const mods: CheckMods[] = [
       ...toCheckMods(spec.mods ?? []),
@@ -1146,10 +1229,10 @@ export class GameKernel {
     } else {
       parts = res.grade === "pass" ? spec.onPass : spec.onFail;
     }
-    if (parts?.length) this.applyParts(p, parts, now);
+    if (parts?.length) this.applyParts(p, parts, now, ctx);
   }
 
-  // ---------- 道具卡打出链（#21 T4a：手牌+时机锁+三类路由+场地附着） ----------
+  // ---------- 道具卡打出链（#21 T4a：手牌+时机锁+三类路由+场地附着；#22 T4b1：auto 指认+新原语+两模式语境） ----------
 
   /** 打出一张道具卡：时机锁/手牌/目标合法性全过才落账（拒绝即抛，不产生半截状态变更） */
   private doPlayItem(pid: number, cardId: string, target: number | undefined, now: number): void {
@@ -1157,16 +1240,23 @@ export class GameKernel {
     if (!gate.ok) throw new KernelError(gate.reason);
     const p = this.player(pid);
     const card = itemCard(cardId);
-    // 目标校验先行：chooseOther 必带合法目标；其余路由不得带目标
+    const isSwap = itemHasPart(card, "swap");
+    // 目标校验先行：chooseOther 必带合法目标；auto/self 路由不得带目标（auto 由卡面规则系统指认）
     let q: PlayerState | null = null;
     if (card.route === "chooseOther") {
       if (target == null) throw new KernelError(`「${card.title}」要先选一个目标`);
       q = this.player(target);
       if (!itemLegalTargets(this.state, pid, cardId).includes(q.id)) {
-        throw new KernelError(`${q.name} 不可选（本人/已淘汰/通关席）`);
+        throw new KernelError(`${q.name} 不可选（本人/已淘汰/通关席${isSwap ? "/不在主干道" : ""}）`);
       }
+    } else if (card.route === "auto") {
+      if (target != null) throw new KernelError(`「${card.title}」是系统指认——不用带目标`);
     } else if (target != null) {
       throw new KernelError(`「${card.title}」不需要目标`);
+    }
+    // 偷天换日双向主干道：打出者也不能在支路/通关席（通关席已被 gate 拦；这里拦支路）
+    if (isSwap && p.zone !== "main") {
+      throw new KernelError(`「${card.title}」要和目标都在主干道上才能换位`);
     }
     // —— 校验全过：出袋落账（单池守恒：离手即入弃牌堆；场地卡离池挂在格上，触发才入账） ——
     p.hand.splice(p.hand.indexOf(cardId), 1);
@@ -1179,14 +1269,38 @@ export class GameKernel {
         flavor: card.flavor,
         emphasis: "target",
       });
+      // 效果挂后续票的占位卡（狗笛=T6b 野狗生成）：晒牌照常入池，效果先扣住
+      if (card.tbd) {
+        this.msg("item", `「${card.title}」的效果要等 ${card.tbd} 起接入——${q!.name} 的相邻格届时生成，本张先记账。`, pid, {
+          targets: [q!.id],
+        });
+        return;
+      }
       if (this.config.timerMode === "turn") {
         // 轮班·限时：立刻生效（无同时行动，无竞态）
-        this.applyParts(q!, card.parts!, now);
+        this.applyParts(q!, card.parts!, now, { kind: "item", srcPid: pid });
       } else {
         // world·即时：下一世界回合开始时结算（被整蛊者有预判窗口——与事件卡同口径）
-        this.state.deferred.push({ pid: q!.id, parts: card.parts! });
+        this.state.deferred.push({ pid: q!.id, parts: card.parts!, kind: "item", srcPid: pid });
         this.msg("item", `下一世界回合开始时结算：${q!.name}。`, pid, { targets: [q!.id] });
       }
+      return;
+    }
+    if (card.route === "auto") {
+      // 卡面写死指认规则：系统自动选目标（identifyTargets 跳过淘汰者/通关席），无目标=落空散去
+      this.state.itemDiscard.push(cardId);
+      const targets = this.identifyTargets(p, card.autoRule!);
+      const names = targets.map((t) => t.name).join("、");
+      this.msg("item", `${p.name} 打出「${card.title}」（系统指认）${targets.length > 0 ? `→ ${names}` : "——落空"}`, pid, {
+        ...(targets.length > 0 ? { targets: targets.map((t) => t.id) } : {}),
+        flavor: card.flavor,
+        emphasis: "target",
+      });
+      if (targets.length === 0) {
+        this.msg("item", "指认落空——没有可指认的目标，效果散去。", pid);
+        return;
+      }
+      this.dispatchToOthers(targets, card.parts!, now, { kind: "item", srcPid: pid });
       return;
     }
     if (card.route === "self") {
@@ -1219,7 +1333,8 @@ export class GameKernel {
         ...(g.owner === p.id ? {} : { targets: [g.owner] }),
       });
       this.state.itemDiscard.push(g.cardId); // 触发即消耗：卡片回池（弃牌堆）
-      this.runCheck(p, card.ground!.check, now);
+      // 踩上判定=他人卡牌效果（小圆盾拦；自铺不拦——srcPid=owner 同源不拦）
+      this.runCheck(p, card.ground!.check, now, { kind: "item", srcPid: g.owner });
     }
   }
 
@@ -1269,6 +1384,83 @@ export class GameKernel {
       }
     }
   }
+
+  // ---------- T4b1 新原语执行（重掷/换位/清障） ----------
+
+  /** 时光怀表（表一 #2）：重掷本次走格骰——沿用本骰修正批重抛，新面替换余步（先走步数照算；
+   *  新面小于已走时余步为负=沿来路栈倒回补差，走格机制天然吸收） */
+  private doReroll(p: PlayerState, now: number): void {
+    const w = p.walk;
+    if (!w || !w.dice || w.remaining <= 0) {
+      // itemPlayGate 已前置校验；此处兜底不打断状态（数据坏账也不炸局）
+      this.msg("item", `${p.name} 的重掷落了空——本次走格骰不在路上。`, p.id);
+      return;
+    }
+    const mods = w.mods ?? [];
+    const { raw, d } = this.tossWalkRoll(mods);
+    const walked = w.total - w.remaining; // 先走步数照算
+    const old = w.total;
+    w.total = d;
+    w.remaining = d - walked;
+    this.emit({ type: "roll", pid: p.id, d, auto: false, ...(mods.length > 0 ? { mods } : {}) });
+    const calc = mods.length > 0 ? `${raw}（${modDetail(mods)}）= ${d}` : `${d}`;
+    this.msg("item", `${p.name} 「时光怀表」倒转——走格骰重掷 ${calc}（原 ${old} 点）：先走 ${walked} 步照算，余 ${w.remaining} 步。`, p.id, {
+      emphasis: "highlight",
+    });
+  }
+
+  /** 偷天换日（表一 #8）：与打出者互换位置——双方须在主干道（执行时复校：挂账一回合后状态可能已变）；
+   *  来向/来路栈清空（退格从零重审），净步（行进进度）各保留。 */
+  private doSwap(p: PlayerState, ctx: GuardCtx | undefined): void {
+    const kindOf = ctx?.kind ?? "item";
+    if (!ctx) {
+      this.msg(kindOf, `${p.name} 的换位落空——没有换位对象，效果散去。`, p.id);
+      return;
+    }
+    const src = this.player(ctx.srcPid);
+    const ok = (r: PlayerState) => !r.dead && r.zone === "main";
+    if (!ok(p) || !ok(src)) {
+      this.msg(kindOf, `${src.name} 与 ${p.name} 的换位落空（有人不在主干道上），效果散去。`, p.id);
+      return;
+    }
+    const a = p.pos;
+    p.pos = src.pos;
+    src.pos = a;
+    for (const r of [p, src]) {
+      r.from = null;
+      r.trail = [];
+    }
+    this.msg(kindOf, `${src.name} 与 ${p.name} 换了个位置——天地对调！（净步各保留）`, p.id, {
+      ...(p.id === ctx.srcPid ? {} : { targets: [src.id] }),
+      emphasis: "big",
+    });
+  }
+
+  /** 清障符（表一 #18）：清除当前格起前方 v 格内全部场地型卡（含当前格；来路格作「前方」的后界——
+   *  只挡扩张、不清除）。收走同踩中即消的口径回池（弃牌堆），防弃牌堆洗回抽双。返回收走张数。 */
+  private clearGroundForward(p: PlayerState, depth: number): number {
+    const swept = new Set<number>([p.pos]); // 清除范围
+    const visited = new Set<number>([p.pos, ...(p.from != null ? [p.from] : [])]); // 防重访（来路是背后——不扩张也不清）
+    let frontier = [p.pos];
+    for (let d = 0; d < depth; d++) {
+      const next: number[] = [];
+      for (const id of frontier) {
+        for (const link of this.cell(id).links) {
+          if (visited.has(link)) continue;
+          visited.add(link);
+          swept.add(link);
+          next.push(link);
+        }
+      }
+      frontier = next;
+    }
+    const hit = this.state.ground.filter((g) => swept.has(g.cell));
+    if (hit.length > 0) {
+      this.state.ground = this.state.ground.filter((g) => !swept.has(g.cell));
+      for (const g of hit) this.state.itemDiscard.push(g.cardId);
+    }
+    return hit.length;
+  }
 }
 
 // ---------- 道具打出闸与合法目标（内核执行 + 壳层 T4a2 置灰共用一份口径） ----------
@@ -1277,8 +1469,9 @@ export class GameKernel {
 export type PlayGate = { ok: true } | { ok: false; reason: string };
 
 /** 打出时机锁：确认结束之前的窗内任意时刻（含未掷/走格中）、张数不限。
- *  淘汰=观战不出手；罚停轮空窗不出手；通关席按一页纸/GLOSSARY「仍可打卡整蛊」留 chooseOther 口子
- *  （自用类对通关席无意义、场地卡会搁在其出生格——两者一并收紧，T4a2 壳层亦隐藏入口）。 */
+ *  淘汰=观战不出手；罚停轮空窗不出手；通关席按一页纸/GLOSSARY「仍可打卡整蛊」留 chooseOther/auto 两个口子
+ *  （auto=系统指认的整蛊通道，T4b1 扩口；自用类对通关席无意义、场地卡会搁在其出生格——两者一并收紧，
+ *  T4a2 壳层亦隐藏入口）。重掷类（时光怀表）：走格骰发团的走在路上才可打。 */
 export function itemPlayGate(state: GameState, pid: number, cardId: string): PlayGate {
   const p = state.players[pid];
   if (!p) return { ok: false, reason: `玩家 ${pid} 不存在` };
@@ -1289,18 +1482,32 @@ export function itemPlayGate(state: GameState, pid: number, cardId: string): Pla
   if (!p.hand.includes(cardId)) return { ok: false, reason: "这张卡不在你的手牌里" };
   if (p.skipped) return { ok: false, reason: "本回合罚停轮空——不能出手" };
   if (p.zone === "done") {
-    if (card.route !== "chooseOther") {
-      return { ok: false, reason: "通关席不再行动——只留指认他人的整蛊卡出手" };
+    if (card.route === "chooseOther" || card.route === "auto") {
+      return { ok: true };
     }
-    return { ok: true };
+    return { ok: false, reason: "通关席不再行动——只留指认他人的整蛊卡出手" };
   }
   if (p.confirmed) return { ok: false, reason: "已确认结束（等待区），本窗不能再打" };
+  if (itemHasPart(card, "reroll")) {
+    // 时光怀表：重掷说的是「本次走格骰」——骰发团的走在路上才可打
+    if (!p.walk) {
+      if (p.rolled) return { ok: false, reason: "本次走格骰已走完——重掷窗口已过" };
+      return { ok: false, reason: "走格骰还没掷出或不在路上——重掷无从说起" };
+    }
+    if (!p.walk.dice) return { ok: false, reason: "本次走在效果轨上——重掷无从说起" };
+    if (p.walk.remaining <= 0) return { ok: false, reason: "本次走格骰已走完——重掷窗口已过" };
+  }
   return { ok: true };
 }
 
-/** 合法目标集合（chooseOther 类；其余路由空数组）：未淘汰、未通关席、非本人（T4a2 目标选择器消费） */
+/** 合法目标集合（chooseOther 类；其余路由空数组）：未淘汰、未通关席、非本人（T4a2 目标选择器消费）；
+ *  偷天换日（swap）额外要求目标在主干道——支路/通关席态不能换位（T4b1）。 */
 export function itemLegalTargets(state: GameState, pid: number, cardId: string): number[] {
   const card = ITEM_CARD_BY_ID.get(cardId);
   if (!card || card.route !== "chooseOther") return [];
-  return state.players.filter((q) => !q.dead && q.zone !== "done" && q.id !== pid).map((q) => q.id);
+  const swap = itemHasPart(card, "swap");
+  return state.players
+    .filter((q) => !q.dead && q.zone !== "done" && q.id !== pid)
+    .filter((q) => !swap || q.zone === "main")
+    .map((q) => q.id);
 }

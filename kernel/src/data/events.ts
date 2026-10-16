@@ -62,6 +62,16 @@ export type EffectPart =
   | { type: "check"; spec: CheckSpec }
   /** 走格骰修正（下次掷骰一次性消费；T4a 顺风靴 +3／脚镣削面／幸运骰保底——多张先互抵） */
   | { type: "rollMod"; mods: DiceMod[] }
+  /** 重掷本次走格骰（表一 #2 时光怀表，T4b1）：需走在路上（骰走发团），用本骰修正批重掷、新面替换余步 */
+  | { type: "reroll" }
+  /** 与打出者互换位置（表一 #8 偷天换日，T4b1）：作用于指认目标；双方须在主干道（执行时校验） */
+  | { type: "swap" }
+  /** 免疫下一次任何伤害（表一 #14 护身符，T4b1）：触发即消耗（applyHpDelta 拦一道） */
+  | { type: "talisman" }
+  /** 下回合免疫他人卡牌效果（表一 #9 小圆盾，T4b1）：cardGuard=turn+1，applyParts 入口按 ctx 判据拦截 */
+  | { type: "roundShield" }
+  /** 清除当前格起前方 v 格内全部场地型卡（表一 #18 清障符，T4b1）：BFS 前向（来路作后界），收走上限深度 */
+  | { type: "clearGround"; v: number }
   | { type: "none" };
 
 export interface TargetedEffect {
