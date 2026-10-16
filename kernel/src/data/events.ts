@@ -8,10 +8,11 @@
  * - gamble 标签：赌狗时刻 3 张（表二显式卡牌类型兑现），T8 暗牌「赌狗」计数走战报流。
  * - 地区特殊卡：region 挂生态——抽卡者不在该生态时洗牌堆重抽（事件定案 §1.8）。
  * - kind='window'（黑市开张/警长查货窗）：M1 牌池不含，T7 起接入。
- * 目标五类/道具卡（ItemCard）等 T4a 扩展在道具表落地时并入本 DSL。
+ * 目标六类/道具卡表（ItemCard）T4a 起落在 data/items.ts，共用本文件的 EffectPart/DiceMod 原语。
  */
 import type { Eco } from "../board";
 import type { Axis } from "./roles";
+import { back, drawItem, hp, move, noEffect, skip } from "./primitives";
 
 export type { Axis } from "./roles";
 
@@ -19,10 +20,14 @@ export type { Axis } from "./roles";
 export const DC_TIERS = { easy: 8, mid: 12, hard: 16 } as const;
 export type DCTier = keyof typeof DC_TIERS;
 
-/** 骰面修正四原语：同一次检定先互抵再结算（check.ts netMods 消费） */
+/** 骰面修正四原语：同一次检定先互抵再结算（check.ts netMods 消费）；T4a 起走格骰复用同型 */
 export interface DiceMod {
   mode: "cut" | "raise" | "floor" | "flat";
   v: number;
+  /** 来源卡名（走格骰战报括注「顺风靴 +3」） */
+  src?: string;
+  /** 穿戴类负面（脚镣/削面）·T4a：轻装上阵被动「减半（2 层并 1）」按它识别落账 */
+  wear?: true;
 }
 
 export interface CheckSpec {
@@ -55,6 +60,8 @@ export type EffectPart =
   /** 再抽 1 张事件卡（时来运转类；内核串行结算，可再挂起新抉择） */
   | { type: "trial" }
   | { type: "check"; spec: CheckSpec }
+  /** 走格骰修正（下次掷骰一次性消费；T4a 顺风靴 +3／脚镣削面／幸运骰保底——多张先互抵） */
+  | { type: "rollMod"; mods: DiceMod[] }
   | { type: "none" };
 
 export interface TargetedEffect {
@@ -96,13 +103,8 @@ export interface EventCard {
   effect?: CardEffect;
 }
 
-// ---- 原语速写（数据表用） ----
-const move = (v: number): EffectPart => ({ type: "move", v });
-const back = (v: number): EffectPart => ({ type: "back", v });
-const skip = (v: number): EffectPart => ({ type: "skip", v });
-const hp = (v: number): EffectPart => ({ type: "hp", v });
-const drawItem = (v: number): EffectPart => ({ type: "drawItem", v });
-const noEffect: EffectPart = { type: "none" };
+// ---- 原语速写见 data/primitives.ts（两张数据表同一份构造器） ----
+
 const selfFx = (parts: EffectPart[]): CardEffect => ({ self: parts });
 
 export const EVENT_CARDS: readonly EventCard[] = [

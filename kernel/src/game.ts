@@ -7,10 +7,11 @@
  *   #7 定案：全员同窗行动、掷完立刻逐格走、全员完成提前开窗、超时替掷并自动确认（不替打卡）。
  */
 import { BOARD, BRANCH_LEN, ECO_NAMES, NET_GOAL, SPAWN_SLOTS, STREET_NAMES, cellAt, spawnMenu, type BoardCell } from "./board";
-import { M1_EVENT_POOL, EVENT_CARD_BY_ID, type CardEffect, type CheckSpec, type EffectPart, type EventCard } from "./data/events";
+import { M1_EVENT_POOL, EVENT_CARD_BY_ID, type CardEffect, type CheckSpec, type DiceMod, type EffectPart, type EventCard } from "./data/events";
+import { ITEM_CARD_BY_ID, M1_ITEM_POOL, itemCard } from "./data/items";
 import { AXIS_NAMES, ROLES, roleDef } from "./data/roles";
 import { SECRET_GOALS } from "./data/goals";
-import { CHECK_FACES, netMods, resolveCheck, roleCheckMods, roleOneToCrit, rollD20, type CheckGrade, type CheckMods } from "./check";
+import { CHECK_FACES, effectiveValue, netMods, resolveCheck, roleCheckMods, roleOneToCrit, rollD20, rollDice, type CheckGrade, type CheckMods } from "./check";
 import { rngFrom, type Rng, type RngState } from "./rng";
 import type { WalkState } from "./types";
 import {
@@ -29,6 +30,20 @@ import {
 /** 步进排拍：正常步子按“当下+步长”排；掉队补拍沿内核旧拍节奏追赶（终点仍落在当前时间轴上） */
 function beatAfter(w: WalkState, now: number, stepMs: number): number {
   return (w.nextStepAt <= now ? w.nextStepAt : now) + stepMs;
+}
+
+/** 骰面修正四原语 → 检定修正通道（检定骰与走格骰共用一份互抵口径：#19 卡面 DSL） */
+function toCheckMods(mods: DiceMod[]): CheckMods[] {
+  return mods.map((m) =>
+    m.mode === "cut" ? { face: -m.v } : m.mode === "raise" ? { face: m.v } : m.mode === "floor" ? { floor: m.v } : { bonus: m.v },
+  );
+}
+
+/** 走格骰修正的战报括注（「顺风靴 +3」「脚镣 削面 1」） */
+function modDetail(mods: DiceMod[]): string {
+  const txt = (m: DiceMod): string =>
+    m.mode === "flat" ? (m.v >= 0 ? `+${m.v}` : `${m.v}`) : m.mode === "cut" ? `削面 ${m.v}` : m.mode === "raise" ? `升面 ${m.v}` : `保底 ${m.v}`;
+  return mods.map((m) => (m.src ? `${m.src} ${txt(m)}` : txt(m))).join("、");
 }
 
 export const GAME_DEFAULTS: Required<Omit<GameConfig, "allowDev">> = {
@@ -119,6 +134,7 @@ export class GameKernel {
           rolled: false,
           confirmed: false,
           stun: 0,
+          skipped: false,
           dead: false,
           spawnCell: SPAWN_SLOTS[menu[i]!]!.cell,
           secretOptions: draftPair(),
@@ -128,6 +144,9 @@ export class GameKernel {
           walkQueue: [],
           cardPending: null,
           cardDraws: 0,
+          hand: [],
+          rollMods: [],
+          wearHalves: 0,
         };
       }),
       finishers: [],
@@ -135,6 +154,10 @@ export class GameKernel {
       // 事件牌堆：单池洗匀（表二 20 张；'window' 卡 T7 放行——事件定案 §1.8 抽完即洗回弃牌堆）
       deck: this.rng.shuffle(M1_EVENT_POOL.map((c) => c.id)),
       discard: [],
+      // 道具牌堆：单池洗匀（T4a 首批 10 张；T4b 追加至 20——事件定案 §1.8 同口径）
+      itemDeck: this.rng.shuffle(M1_ITEM_POOL.map((c) => c.id)),
+      itemDiscard: [],
+      ground: [],
       deferred: [],
       seq: 0,
       rngState: this.rngHost.s,
@@ -149,6 +172,20 @@ export class GameKernel {
     this.msg("system", "开局抽暗牌目标：每人抽 2 选 1，对局内保密。", undefined, { emphasis: "normal" });
     if (bots.length > 0) {
       this.msg("system", "假人目标由系统代抽落定。", undefined, { emphasis: "normal" });
+    }
+    // 轻装上阵被动「开局手牌 +1」：逐人补进手牌（T4a 摸牌链首家消费者）
+    for (const p of this.state.players) {
+      const plus = roleDef(p.roleId).flags.handPlus ?? 0;
+      if (plus <= 0) continue;
+      let got = 0;
+      for (let i = 0; i < plus; i++) {
+        const id = this.popItem();
+        if (!id) break;
+        p.hand.push(id);
+        this.emit({ type: "itemDrawn", pid: p.id, cardId: id });
+        got += 1;
+      }
+      if (got > 0) this.msg("system", `${p.name} 轻装上阵被动：开局手牌 +${got}。`, p.id);
     }
     this.state.rngState = this.rngHost.s;
   }
@@ -223,10 +260,6 @@ export class GameKernel {
     this.state.rngState = this.rngHost.s;
   }
 
-  private drawDie(): number {
-    return Math.floor(this.draw() * WALK_DIE) + 1;
-  }
-
   // ---------- 公开 API ----------
 
   /** 受理一个意图；拒绝即抛 KernelError（不产生半截状态变更） */
@@ -257,6 +290,10 @@ export class GameKernel {
           throw new KernelError("卡面选项下标越界");
         }
         this.resolveChoice(p, p.cardPending.cardId, intent.option, now, false);
+        break;
+      }
+      case "playItem": {
+        this.doPlayItem(intent.pid, intent.cardId, intent.target, now);
         break;
       }
       case "chooseRoute": {
@@ -312,6 +349,23 @@ export class GameKernel {
         const card = this.eventCard(intent.cardId);
         if (p.cardPending) throw new KernelError("该玩家已有挂起抉择");
         this.drawEventFor(p, now, card);
+        break;
+      }
+      case "dev.giveItem": {
+        if (!this.config.allowDev) throw new KernelError("dev 意图未开放");
+        const p = this.player(intent.pid);
+        const card = itemCard(intent.cardId);
+        // 从牌堆/弃牌堆取出（单池守恒：手牌多一张，牌堆就少一张）
+        const inDeck = this.state.itemDeck.indexOf(card.id);
+        if (inDeck >= 0) {
+          this.state.itemDeck.splice(inDeck, 1);
+        } else {
+          const inDiscard = this.state.itemDiscard.indexOf(card.id);
+          if (inDiscard < 0) throw new KernelError(`「${card.title}」不在牌堆/弃牌堆（已在手牌或场上）`);
+          this.state.itemDiscard.splice(inDiscard, 1);
+        }
+        p.hand.push(card.id);
+        this.emit({ type: "itemDrawn", pid: p.id, cardId: card.id });
         break;
       }
       case "dev.setPos": {
@@ -388,6 +442,7 @@ export class GameKernel {
       if (p.dead || p.zone === "done") continue;
       p.rolled = false;
       p.confirmed = false;
+      p.skipped = false;
       p.cardDraws = 0; // 连抽上限按世界回合重计
       p.botSchedule = { rollAt: now, confirmAt: 0 };
     }
@@ -405,6 +460,7 @@ export class GameKernel {
       p.stun -= 1;
       p.rolled = true;
       p.confirmed = true;
+      p.skipped = true;
       this.msg("event", `${p.name} 罚停生效——本回合轮空。`, p.id, { emphasis: "normal" });
     }
     this.emit({ type: "windowStart", turn: this.state.turn, deadline: this.state.windowDeadline });
@@ -508,11 +564,22 @@ export class GameKernel {
   private doRoll(pid: number, now: number, mode: "human" | "bot" | "replacement"): void {
     const p = this.player(pid);
     p.rolled = true;
-    const d = this.drawDie();
+    // 走格骰修正（T4a 道具）：积压的修正一次性消费，四原语先全量互抵再掷再判（与检定同口径）
+    const mods = p.rollMods;
+    p.rollMods = [];
+    const net = netMods(toCheckMods(mods));
+    // 脚镣削面：1d10→1d9（cut 1）；加倍骰升面 T4b1 落卡时按 GLOSSARY「1d10→1d12」取 raise 2
+    const faces = Math.max(2, WALK_DIE + net.face);
+    const raw = rollDice(this.rng, net, faces);
+    this.syncRng();
+    const d = effectiveValue(raw, net.bonus, net.floor); // 顺风靴 +3 → 幸运骰保底 ≥6
     p.walk = { remaining: d, nextStepAt: now + this.config.stepMs, ask: null, pendingTo: null, bounced: false };
-    this.emit({ type: "roll", pid, d, auto: mode !== "human" });
+    this.emit({ type: "roll", pid, d, auto: mode !== "human", ...(mods.length > 0 ? { mods } : {}) });
+    const calc = mods.length > 0 ? `${raw}（${modDetail(mods)}）= ${d}` : `${d}`;
     if (mode === "replacement") {
-      this.msg("system", `系统替 ${p.name} 掷骰：${d} 点`, pid, { emphasis: "highlight" });
+      this.msg("system", `系统替 ${p.name} 掷骰：${calc} 点`, pid, { emphasis: "highlight" });
+    } else if (mods.length > 0) {
+      this.msg("item", `${p.name} 走格骰 ${calc} 步`, pid, { emphasis: "highlight" });
     }
   }
 
@@ -619,6 +686,8 @@ export class GameKernel {
           p.from = p.pos;
           this.stepMainBack(p, came, now);
         } else {
+          // 来路空空（出生未动/被传送）：退步落空，报一声再收（弹弓/鼠横行指认新人的边角）
+          this.msg("event", `${p.name} 身后来路空空，退步落了空。`, p.id);
           this.burnWalkEnd(p);
         }
       } else {
@@ -814,12 +883,17 @@ export class GameKernel {
     return c;
   }
 
-  /** 落格结算：事件格抽卡（走停即触发，前进/退格一视同仁；终点支路与净底格不触发） */
+  /** 落格结算（走停即触发，前进/退格一视同仁；终点支路与净底格不触发）：
+   *  场地型附着先判（踩上即踩上），再按格型——道具格摸卡／事件格抽卡。 */
   private landOn(p: PlayerState, now: number): void {
     if (p.dead || p.zone !== "main") return;
     const c = this.cell(p.pos);
-    if (c.type !== "E") return;
-    this.drawEventFor(p, now);
+    this.triggerGround(p, now);
+    if (c.type === "I") {
+      this.drawItems(p, 1, "踩上道具格");
+    } else if (c.type === "E") {
+      this.drawEventFor(p, now);
+    }
   }
 
   /**
@@ -885,6 +959,7 @@ export class GameKernel {
     if (this.state.deck.length === 0) {
       this.state.deck = this.rng.shuffle([...this.state.discard]);
       this.state.discard = [];
+      this.syncRng();
     }
     const id = this.state.deck.pop();
     return id ? (EVENT_CARD_BY_ID.get(id) ?? null) : null;
@@ -956,7 +1031,7 @@ export class GameKernel {
     }
   }
 
-  /** 原语结算：一类一个出口，血量/罚停/走格都走统一通道（T5 陷阱/T6 遭遇战复用） */
+  /** 原语结算：一类一个出口，血量/罚停/走格/摸卡/走格骰修正都走统一通道（T5 陷阱/T6 遭遇战复用） */
   private applyParts(p: PlayerState, parts: EffectPart[], now: number): void {
     if (p.dead || p.zone === "done") return;
     for (const part of parts) {
@@ -983,9 +1058,10 @@ export class GameKernel {
           this.applyHpDelta(p, part.v);
           break;
         case "drawItem":
-          if (part.v > 0) {
-            this.msg("item", `${p.name} 摸到 ${part.v} 张道具卡（手牌 T4a 起入袋）。`, p.id);
-          }
+          if (part.v > 0) this.drawItems(p, part.v);
+          break;
+        case "rollMod":
+          this.addWalkMods(p, part.mods);
           break;
         case "trial":
           this.drawEventFor(p, now);
@@ -1026,12 +1102,7 @@ export class GameKernel {
   private runCheck(p: PlayerState, spec: CheckSpec, now: number): void {
     const role = roleDef(p.roleId);
     const mods: CheckMods[] = [
-      ...(spec.mods ?? []).map((m): CheckMods => {
-        if (m.mode === "cut") return { face: -m.v };
-        if (m.mode === "raise") return { face: m.v };
-        if (m.mode === "floor") return { floor: m.v };
-        return { bonus: m.v };
-      }),
+      ...toCheckMods(spec.mods ?? []),
       // 轴系特长（蛮力/狡运）只跟有轴检定走；无轴前途骰（命运之骰）不吃特长
       ...(spec.axis ? roleCheckMods(role, spec.axis) : []),
     ];
@@ -1077,4 +1148,159 @@ export class GameKernel {
     }
     if (parts?.length) this.applyParts(p, parts, now);
   }
+
+  // ---------- 道具卡打出链（#21 T4a：手牌+时机锁+三类路由+场地附着） ----------
+
+  /** 打出一张道具卡：时机锁/手牌/目标合法性全过才落账（拒绝即抛，不产生半截状态变更） */
+  private doPlayItem(pid: number, cardId: string, target: number | undefined, now: number): void {
+    const gate = itemPlayGate(this.state, pid, cardId);
+    if (!gate.ok) throw new KernelError(gate.reason);
+    const p = this.player(pid);
+    const card = itemCard(cardId);
+    // 目标校验先行：chooseOther 必带合法目标；其余路由不得带目标
+    let q: PlayerState | null = null;
+    if (card.route === "chooseOther") {
+      if (target == null) throw new KernelError(`「${card.title}」要先选一个目标`);
+      q = this.player(target);
+      if (!itemLegalTargets(this.state, pid, cardId).includes(q.id)) {
+        throw new KernelError(`${q.name} 不可选（本人/已淘汰/通关席）`);
+      }
+    } else if (target != null) {
+      throw new KernelError(`「${card.title}」不需要目标`);
+    }
+    // —— 校验全过：出袋落账（单池守恒：离手即入弃牌堆；场地卡离池挂在格上，触发才入账） ——
+    p.hand.splice(p.hand.indexOf(cardId), 1);
+    this.emit({ type: "itemPlayed", pid, cardId, ...(q ? { target: q.id } : {}) });
+    if (card.route === "chooseOther") {
+      this.state.itemDiscard.push(cardId);
+      // 目标自选=公开信息：打出与指认都进战报
+      this.msg("item", `${p.name} 打出「${card.title}」→ 指向 ${q!.name}`, pid, {
+        targets: [q!.id],
+        flavor: card.flavor,
+        emphasis: "target",
+      });
+      if (this.config.timerMode === "turn") {
+        // 轮班·限时：立刻生效（无同时行动，无竞态）
+        this.applyParts(q!, card.parts!, now);
+      } else {
+        // world·即时：下一世界回合开始时结算（被整蛊者有预判窗口——与事件卡同口径）
+        this.state.deferred.push({ pid: q!.id, parts: card.parts! });
+        this.msg("item", `下一世界回合开始时结算：${q!.name}。`, pid, { targets: [q!.id] });
+      }
+      return;
+    }
+    if (card.route === "self") {
+      this.state.itemDiscard.push(cardId);
+      this.msg("item", `${p.name} 打出「${card.title}」`, pid, { flavor: card.flavor, emphasis: "highlight" });
+      this.applyParts(p, card.parts!, now);
+      return;
+    }
+    // ground：附着当前格；下一踩上者（含铺设者本人）触发判定后消失。
+    // 附着期间卡片离池不入弃牌堆（否则弃牌堆洗回会抽出第二张同卡，与场上的那张重复）
+    this.state.ground.push({ cell: p.pos, cardId, owner: pid });
+    this.msg("item", `${p.name} 把「${card.title}」搁在脚下——下一踩上的人要吃苦头了。`, pid, {
+      flavor: card.flavor,
+      emphasis: "highlight",
+    });
+  }
+
+  /** 场地型附着触发（走停即踩上）：判定前先摘牌（结算引走格不回触），判定后消失；含铺设者本人 */
+  private triggerGround(p: PlayerState, now: number): void {
+    const hits = this.state.ground.filter((g) => g.cell === p.pos);
+    if (hits.length === 0) return;
+    this.state.ground = this.state.ground.filter((g) => g.cell !== p.pos);
+    for (const g of hits) {
+      const card = itemCard(g.cardId);
+      const owner = this.player(g.owner);
+      const by = g.owner === p.id ? "自己布的" : `${owner.name} 布的`;
+      this.msg("item", `${p.name} 一脚踩上「${card.title}」（${by}）——判定！`, p.id, {
+        flavor: card.flavor,
+        emphasis: "target",
+        ...(g.owner === p.id ? {} : { targets: [g.owner] }),
+      });
+      this.state.itemDiscard.push(g.cardId); // 触发即消耗：卡片回池（弃牌堆）
+      this.runCheck(p, card.ground!.check, now);
+    }
+  }
+
+  /** 摸道具卡（踩道具格/卡面/双倍惊喜共用）：单池抽卡入袋，抽空即弃牌堆洗回 */
+  private drawItems(p: PlayerState, count: number, why?: string): void {
+    let got = 0;
+    for (let i = 0; i < count; i++) {
+      const id = this.popItem();
+      if (!id) break;
+      p.hand.push(id);
+      this.emit({ type: "itemDrawn", pid: p.id, cardId: id });
+      got += 1;
+    }
+    if (got > 0) {
+      this.msg("item", `${p.name} ${why ? `${why}，` : ""}摸到 ${got} 张道具卡，收入手牌。`, p.id);
+    }
+    if (got < count) {
+      this.msg("item", `道具牌堆见空——${p.name} 少摸了 ${count - got} 张。`, p.id);
+    }
+  }
+
+  /** 从道具牌堆顶抽一张（空则弃牌堆整堆洗回——单池守恒：deck+discard+手牌 恒等于 M1 池） */
+  private popItem(): string | null {
+    if (this.state.itemDeck.length === 0) {
+      this.state.itemDeck = this.rng.shuffle([...this.state.itemDiscard]);
+      this.state.itemDiscard = [];
+      this.syncRng();
+    }
+    return this.state.itemDeck.pop() ?? null;
+  }
+
+  /** 走格骰修正落账：穿戴类负面（脚镣/削面）遇轻装上阵被动「减半（2 层并 1）」——半分账满 2 折 1 */
+  private addWalkMods(p: PlayerState, mods: DiceMod[]): void {
+    const halved = roleDef(p.roleId).flags.wearHalved === true;
+    for (const m of mods) {
+      if (!halved || !m.wear) {
+        p.rollMods.push(m);
+        continue;
+      }
+      p.wearHalves += 1;
+      if (p.wearHalves >= 2) {
+        p.wearHalves -= 2;
+        p.rollMods.push(m);
+        this.msg("item", `${p.name} 轻装上阵被动：两层并一层，「${m.src ?? "穿戴负面"}」照实结算。`, p.id);
+      } else {
+        this.msg("item", `${p.name} 轻装上阵被动：穿戴类负面减半——「${m.src ?? "穿戴负面"}」只算半层（1/2）。`, p.id);
+      }
+    }
+  }
+}
+
+// ---------- 道具打出闸与合法目标（内核执行 + 壳层 T4a2 置灰共用一份口径） ----------
+
+/** 打出闸结果：拒绝时带玩家向原因（壳层 toast/置灰提示） */
+export type PlayGate = { ok: true } | { ok: false; reason: string };
+
+/** 打出时机锁：确认结束之前的窗内任意时刻（含未掷/走格中）、张数不限。
+ *  淘汰=观战不出手；罚停轮空窗不出手；通关席按一页纸/GLOSSARY「仍可打卡整蛊」留 chooseOther 口子
+ *  （自用类对通关席无意义、场地卡会搁在其出生格——两者一并收紧，T4a2 壳层亦隐藏入口）。 */
+export function itemPlayGate(state: GameState, pid: number, cardId: string): PlayGate {
+  const p = state.players[pid];
+  if (!p) return { ok: false, reason: `玩家 ${pid} 不存在` };
+  if (state.phase !== "acting") return { ok: false, reason: "只有世界回合窗内可以打道具卡" };
+  if (p.dead) return { ok: false, reason: "已淘汰观战，不能再出手" };
+  const card = ITEM_CARD_BY_ID.get(cardId);
+  if (!card) return { ok: false, reason: `道具卡 ${cardId} 不在表一` };
+  if (!p.hand.includes(cardId)) return { ok: false, reason: "这张卡不在你的手牌里" };
+  if (p.skipped) return { ok: false, reason: "本回合罚停轮空——不能出手" };
+  if (p.zone === "done") {
+    if (card.route !== "chooseOther") {
+      return { ok: false, reason: "通关席不再行动——只留指认他人的整蛊卡出手" };
+    }
+    return { ok: true };
+  }
+  if (p.confirmed) return { ok: false, reason: "已确认结束（等待区），本窗不能再打" };
+  return { ok: true };
+}
+
+/** 合法目标集合（chooseOther 类；其余路由空数组）：未淘汰、未通关席、非本人（T4a2 目标选择器消费） */
+export function itemLegalTargets(state: GameState, pid: number, cardId: string): number[] {
+  const card = ITEM_CARD_BY_ID.get(cardId);
+  if (!card || card.route !== "chooseOther") return [];
+  return state.players.filter((q) => !q.dead && q.zone !== "done" && q.id !== pid).map((q) => q.id);
 }

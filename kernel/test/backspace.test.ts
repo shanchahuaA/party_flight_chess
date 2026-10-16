@@ -1,11 +1,13 @@
 /** 来路栈退格：沿原路退回、穿环岛不重弹选路条 */
 import { describe, expect, it } from "vitest";
-import { bootWithDie, cell, me, walkOut } from "./helpers";
+import { DRAW_MOVE_TITLES, boot, bootWithDie, cell, dieOf, me, seedForScriptNoDraws, walkOut } from "./helpers";
+import type { GameKernel } from "../src";
 
-/** 先沿中横街西行 6 步（两次过环岛都选「← 中横街」直行），停在 (5,10) */
-function setupWest6() {
-  const k = bootWithDie(6, { pos: cell(11, 10), from: cell(12, 10), net: 2 });
-  k.apply({ type: "roll", pid: 0 }, 0);
+/** 沿中横街西行 6 步（两次过环岛都选「← 中横街」直行），停在 (5,10)；
+ *  种子搜定：骰面 6 且全程不抽位移卡（穿格不触，落点抽到也不改停位） */
+function runWest6(k: GameKernel): number[] {
+  k.apply({ type: "dev.setPos", pid: 0, pos: cell(11, 10), from: cell(12, 10), net: 2 }, 0);
+  const fx = k.apply({ type: "roll", pid: 0 }, 0);
   let t = 0;
   while (true) {
     const walk = me(k).walk;
@@ -20,6 +22,22 @@ function setupWest6() {
       k.tick(t);
     }
   }
+  return [dieOf(fx)];
+}
+
+/** 搜种子用的整流程：西行 6 步 + 退整条栈 6 步（退格落在 (11,10) 事件格，落点抽卡也不许位移）
+ *  ——两段合起来搜，退 4 步那条（后段更浅）自动被覆盖 */
+function runWest6Full(k: GameKernel): number[] {
+  const faces = runWest6(k);
+  k.apply({ type: "dev.back", pid: 0, steps: 6 }, 7_000);
+  walkOut(k, 7_000);
+  return faces;
+}
+
+/** 先沿中横街西行 6 步的盘面（脚本按同种子重放；整流程零位移卡） */
+function setupWest6() {
+  const k = boot({ seed: seedForScriptNoDraws(runWest6Full, [6], DRAW_MOVE_TITLES) });
+  runWest6(k);
   expect(me(k).pos).toBe(cell(5, 10)); // 6 步西侧标准位
   expect(me(k).trail.length).toBe(6);
   expect(me(k).net).toBe(8); // 起点 2 + 6

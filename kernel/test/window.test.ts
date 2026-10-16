@@ -16,25 +16,28 @@ describe("世界回合窗（世界·即时）", () => {
   });
 
   it("全员确认 → 提前开窗（不用等满窗；T3a 起零位移卡种子）", () => {
+    // 预定位 (7,0) 面向 (8,0)：掷 3 西行停在 (4,0)=道具格（穿 S/E 皆不停，零事件挂起）
     const firstRoll = (k: GameKernel): number[] => {
+      k.apply({ type: "dev.setPos", pid: 0, pos: cell(7, 0), from: cell(8, 0), net: 0 }, 0);
       const fx = k.apply({ type: "roll", pid: 0 }, 0);
       walkOut(k, 0);
       return [dieOf(fx)];
     };
     const k = bootWithDiesPure(firstRoll, [3], {}, DRAW_MOVE_TITLES);
-    k.apply({ type: "roll", pid: 0 }, 0);
-    walkOut(k, 0);
+    firstRoll(k);
     k.apply({ type: "confirm", pid: 0 }, 2_000);
     // 假人按日程 ~1-3s 掷 + 走完 + 0.5s 拍确认——推到全员确认触发提前开窗
-    let t = 8_000;
-    while (k.state.phase === "acting" && t <= 20_000) {
+    let t = 3_000;
+    while (k.state.phase === "acting" && t <= 30_000) {
       k.tick(t);
       t += 500;
     }
     expect(k.state.phase).toBe("rest");
     expect(k.state.turn).toBe(2);
-    // rest 默认 10s：rest 结束开窗 2
-    k.tick(20_000);
+    // 提前收口证据：收口点在满窗（30s）之前——restUntil 早于「满窗+休息」
+    expect(k.state.restUntil).toBeLessThan(30_000 + k.config.restMs);
+    // rest 默认 10s：过了 restUntil 开窗 2
+    k.tick(k.state.restUntil + 1);
     expect(k.state.turn).toBe(2);
     expect(k.state.phase).toBe("acting");
   });
@@ -74,7 +77,9 @@ describe("世界回合窗（世界·即时）", () => {
   });
 
   it("确认后进等待区：本窗不能再任何操作（roll/confirm 均拒；T3a 起零位移卡种子）", () => {
+    // 预定位 (7,0) 面向 (8,0)：掷 3 西行停在 (4,0)=道具格（穿 S/E 皆不停，零事件挂起）
     const firstRoll = (k: GameKernel): number[] => {
+      k.apply({ type: "dev.setPos", pid: 0, pos: cell(7, 0), from: cell(8, 0), net: 0 }, 0);
       const fx = k.apply({ type: "roll", pid: 0 }, 0);
       walkOut(k, 0);
       return [dieOf(fx)];
@@ -82,8 +87,7 @@ describe("世界回合窗（世界·即时）", () => {
     const k = bootWithDiesPure(firstRoll, [3], {}, DRAW_MOVE_TITLES);
     // 硬规格 ①：掷骰与确认分离——没掷骰不能先确认（防静默吞骰）
     expect(() => k.apply({ type: "confirm", pid: 0 }, 0)).toThrow(KernelError);
-    k.apply({ type: "roll", pid: 0 }, 0);
-    walkOut(k, 0);
+    firstRoll(k);
     k.apply({ type: "confirm", pid: 0 }, 2_000);
     expect(() => k.apply({ type: "roll", pid: 0 }, 3_000)).toThrow(KernelError);
     expect(() => k.apply({ type: "confirm", pid: 0 }, 3_000)).toThrow(KernelError);

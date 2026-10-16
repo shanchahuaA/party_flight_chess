@@ -58,8 +58,9 @@ export function netMods(mods: CheckMods[]): {
   return { adv: Math.sign(adv) as 1 | 0 | -1, advCount: Math.abs(adv), bonus, floor, face };
 }
 
-/** 掷检定骰：净值优势/劣势后掷 1+残差 颗取高/低（无修正=单颗）；faces=骰面数（升/削面改变它） */
-export function rollD20(rng: Rng, net: { adv: 1 | 0 | -1; advCount: number }, faces = 20): number {
+/** 通用掷骰：净值优势/劣势后掷 1+残差 颗取高/低（无修正=单颗）；faces=骰面数（升/削面改变它）。
+ *  检定骰 1d20 与走格骰 1d10（±面数）共用本通道——T4a 起走格骰吃削面/升面。 */
+export function rollDice(rng: Rng, net: { adv: 1 | 0 | -1; advCount: number }, faces: number): number {
   const n = 1 + net.advCount;
   let best = 0;
   let worst = faces + 1;
@@ -69,6 +70,17 @@ export function rollD20(rng: Rng, net: { adv: 1 | 0 | -1; advCount: number }, fa
     if (d < worst) worst = d;
   }
   return net.adv > 0 ? best : net.adv < 0 ? worst : best;
+}
+
+/** 检定骰（1d20）：rollDice 的 20 面特例（保留旧名，检定点位全走它） */
+export const rollD20 = (rng: Rng, net: { adv: 1 | 0 | -1; advCount: number }, faces = 20): number =>
+  rollDice(rng, net, faces);
+
+/** 判定用有效值尾段：加值 → 至少 1 → 保底抬升（检定骰与走格骰共用同口径，#21 起） */
+export function effectiveValue(raw: number, bonus: number, floor: number | null): number {
+  let v = Math.max(1, raw + bonus);
+  if (floor != null && v < floor) v = floor;
+  return v;
 }
 
 /** 判读一次检定（已掷原始面 + 修正通道 → 四档）。
@@ -82,8 +94,7 @@ export function resolveCheck(opts: {
 }): CheckResolve {
   const { raw, axisBonus, dc } = opts;
   const net = netMods(opts.mods ?? []);
-  let used = Math.max(1, raw + axisBonus + net.bonus);
-  if (net.floor != null && used < net.floor) used = net.floor;
+  const used = effectiveValue(raw, axisBonus + net.bonus, net.floor);
   let grade: CheckGrade;
   if (raw === 20) grade = "crit";
   else if (raw === 1) grade = opts.oneToCrit ? "crit" : "critfail";

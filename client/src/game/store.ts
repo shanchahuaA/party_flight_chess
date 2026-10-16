@@ -153,10 +153,14 @@ export function maybeBootFastPath(): void {
   bindDevSnapshot();
 }
 
-/** 调试卡牌通道（?dev=1）：window.__pzcard("e03", pid?) → dev.drawCard 强抽（抉择/效果/地区卡冒烟） */
+/** 调试卡牌通道（?dev=1）：window.__pzcard("e03", pid?) → dev.drawCard 强抽（抉择/效果/地区卡冒烟）；
+ *  __pzgive(道具卡 id, pid?) 塞手牌；__pzplay(道具卡 id, target?) 打出手（T4a 打出链冒烟） */
 function bindDevChannels(): void {
-  (window as unknown as Record<string, unknown>).__pzcard = (cardId: string, pid = 0) =>
-    gameStore.apply({ type: "dev.drawCard", pid, cardId });
+  const w = window as unknown as Record<string, unknown>;
+  w.__pzcard = (cardId: string, pid = 0) => gameStore.apply({ type: "dev.drawCard", pid, cardId });
+  w.__pzgive = (cardId: string, pid = 0) => gameStore.apply({ type: "dev.giveItem", pid, cardId });
+  w.__pzplay = (cardId: string, target?: number) =>
+    gameStore.apply(target == null ? { type: "playItem", pid: 0, cardId } : { type: "playItem", pid: 0, cardId, target });
 }
 
 /** 开发期只读快照钩子（window.__pz()）：内核态随手可查 */
@@ -173,6 +177,9 @@ function bindDevSnapshot(): void {
       me: `${me.pos}${me.zone[0]} net${me.net}${me.rolled ? "R" : ""}${me.confirmed ? "C" : ""} trail${me.trail.length}${me.walk ? ` w${me.walk.remaining}${me.walk.ask ? " ❓选路" : ""}${me.walk.pendingTo != null ? " ▶" : ""}` : ""}`,
       bots: s.players.slice(1).map((p) => `${p.pos}${p.zone[0]}${p.rolled ? "R" : ""}${p.confirmed ? "C" : ""}${p.walk ? "w" : ""}`).join(" "),
       finishers: s.finishers,
+      hand: me.hand.join(","),
+      ground: s.ground.map((g) => `${g.cell}:${g.cardId}`).join(" "),
+      items: `堆${s.itemDeck.length}/弃${s.itemDiscard.length}`,
       msgs: s.messages.slice(-2).map((m) => m.text),
     };
   };

@@ -4,7 +4,7 @@
  * M2 时这批类型直接变成 WS 意图/事实协议（ADR 0001），形状不再变化。
  */
 import type { CellType, Eco, StreetKey } from "./board";
-import type { EffectPart } from "./data/events";
+import type { DiceMod, EffectPart } from "./data/events";
 import type { Axis, RoleId } from "./data/roles";
 
 // ---------- 战报（界面呈现定案 §三 MessageEntry，结构不动） ----------
@@ -55,6 +55,8 @@ export interface PlayerState {
   confirmed: boolean;
   /** 罚停余量：下个世界回合开始时逐个消耗并轮空（T3a 卡面效果挂点） */
   stun: number;
+  /** 本窗罚停轮空标记（openWindow 消耗罚停时点亮、随窗重置；柜面拒因/T4a2 隐藏入口用） */
+  skipped: boolean;
   /** 出局占位（T5 挂钩） */
   dead: boolean;
   /** 自己的出生格（兼终点支路入口；按人数菜单落座，各占一角相望） */
@@ -72,6 +74,12 @@ export interface PlayerState {
   cardPending: { cardId: string; deadline: number } | null;
   /** 本窗已触发抽卡次数（连抽上限，防卡面引走格无限连环） */
   cardDraws: number;
+  /** 手牌（道具卡 id 列表，**无上限**；本人可见——他人视图 M2 按玩家切片下发，T7 谎报机制前置） */
+  hand: string[];
+  /** 积压的走格骰修正（T4a：顺风靴/脚镣/幸运骰……下次掷骰一次性消费，多张先互抵） */
+  rollMods: DiceMod[];
+  /** 轻装上阵被动「穿戴类负面减半（2 层并 1）」的半分账（每次穿戴类负面 +1，满 2 折合 1 层真效果） */
+  wearHalves: number;
 }
 
 export interface RouteOption {
@@ -98,6 +106,16 @@ export interface DeferredEffect {
   parts: EffectPart[];
 }
 
+/** 场地型附着（香蕉皮/地雷……T4a）：打出即钉在格上，下一踩上者（含铺设者本人）触发判定后消失 */
+export interface GroundMark {
+  /** 附着格 id */
+  cell: number;
+  /** 道具卡 id */
+  cardId: string;
+  /** 铺设者（战报归因 + T4a2 角标提示） */
+  owner: number;
+}
+
 export interface GameState {
   turn: number;
   phase: GamePhase;
@@ -112,6 +130,11 @@ export interface GameState {
   /** 事件牌堆单池洗匀（抽完弃牌堆洗回——事件定案 §1.8；deck+discard 恒守恒） */
   deck: string[];
   discard: string[];
+  /** 道具牌堆单池洗匀（同上守恒：itemDeck+itemDiscard+各人手牌 恒等于 M1 池） */
+  itemDeck: string[];
+  itemDiscard: string[];
+  /** 场上的场地型附着（踩上触发后消失；T4a2 棋盘角标渲染数据） */
+  ground: GroundMark[];
   /** 指向他人的卡面效果（world·即时）：下一世界回合开始时结算（窗口 openWindow 消费） */
   deferred: DeferredEffect[];
   /** 内部：战报 id 发号与 RNG 状态（随状态走，M2 快照恢复随机流） */
@@ -150,12 +173,16 @@ export type Intent =
   | { type: "chooseSecret"; pid: number; pick: number }
   /** 事件卡抉择应答：挂起本人点选项下标（超时未应答由系统按默认项代选，战报标 (代选)） */
   | { type: "chooseCard"; pid: number; option: number }
+  /** 打道具卡（T4a）：确认结束之前的窗内任意时刻、张数不限；target 仅 chooseOther 类需要 */
+  | { type: "playItem"; pid: number; cardId: string; target?: number }
   /** 测试/后接卡面效果专用的直调通道（allowDev=false 时拒绝） */
   | { type: "dev.back"; pid: number; steps: number }
   | { type: "dev.setPos"; pid: number; pos: number; from: number | null; net: number }
   | { type: "dev.setHp"; pid: number; hp: number }
   | { type: "dev.setDead"; pid: number }
-  | { type: "dev.drawCard"; pid: number; cardId: string };
+  | { type: "dev.drawCard"; pid: number; cardId: string }
+  /** 从牌堆/弃牌堆取指定道具卡塞进手牌（道具链冒烟/测试用） */
+  | { type: "dev.giveItem"; pid: number; cardId: string };
 
 // ---------- 事实（下行：客户端据此动起来） ----------
 
@@ -165,7 +192,7 @@ export type Fact =
   | { type: "restStart"; turn: number; until: number }
   | { type: "gameEnd" }
   | { type: "secretPicked"; pid: number }
-  | { type: "roll"; pid: number; d: number; auto: boolean }
+  | { type: "roll"; pid: number; d: number; auto: boolean; mods?: DiceMod[] }
   | { type: "confirm"; pid: number; auto: boolean }
   /** 主网逐格走（含退格步） */
   | { type: "step"; pid: number; from: number; to: number; dir: 1 | -1 }
@@ -180,6 +207,9 @@ export type Fact =
   /** 事件卡：抽到（T3a2 中央抉择浮层挂卡面入口）／抉择落定（auto=代选） */
   | { type: "cardDrawn"; pid: number; cardId: string }
   | { type: "cardResolved"; pid: number; cardId: string; option: number; auto: boolean }
+  /** 道具卡：摸入（踩道具格/卡面/双倍惊喜；id 供本人壳层亮牌）／打出（T4a2 壳层演出） */
+  | { type: "itemDrawn"; pid: number; cardId: string }
+  | { type: "itemPlayed"; pid: number; cardId: string; target?: number }
   /** 棋盘联动：说明性脉冲（界面呈现定案 §四 S1 描边） */
   | { type: "pulse"; pid: number; level: "normal" | "target" | "big" };
 
