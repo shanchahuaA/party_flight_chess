@@ -153,6 +153,17 @@ export function toNextWindow(k: GameKernel, now: number, windowMs: number, restM
 
 export const me = (k: GameKernel): PlayerState => k.state.players[0]!;
 
+/** 条件注入道具（给不进时返回 false——开局手牌+1 可能把目标卡先摸走了；hp.test/traps.test 共用，不耗随机流） */
+export const tryGiveItem = (k: GameKernel, pid: number, cardId: string, now: number): boolean => {
+  if (k.state.players[pid]!.hand.includes(cardId)) return true;
+  try {
+    k.apply({ type: "dev.giveItem", pid, cardId }, now);
+    return true;
+  } catch {
+    return false;
+  }
+};
+
 /** 常用格 id 助记 */
 export const cell = (c: number, r: number) => {
   const n = cellAt(c, r);

@@ -12,7 +12,7 @@ import { describe, expect, it } from "vitest";
 import type { GameConfig, PlayerDef } from "../src";
 import { BOARD, DC_TIERS, GameKernel } from "../src";
 import { TRAP_DEFS, TRAP_PLANS } from "../src/data/traps";
-import { dieOf, me, toNextWindow, walkOut } from "./helpers";
+import { dieOf, me, toNextWindow, tryGiveItem, walkOut } from "./helpers";
 
 /** 陷阱格号 → 对应 def（TRAP_DEFS 按生态组序+格 id 序一一咬合；测试用格 id 辅记） */
 const trapCellOf = (defId: string): number => {
@@ -102,16 +102,7 @@ const restBots = (k: GameKernel, now: number): void => {
   for (const p of k.state.players) if (p.isBot) void k.apply({ type: "dev.setDead", pid: p.id }, now);
 };
 
-/** 条件注入道具（给不进时返回 false——开局手牌+1 可能把目标卡先摸走了）：不耗随机流 */
-const tryGiveItem = (k: GameKernel, pid: number, cardId: string, now: number): boolean => {
-  if (k.state.players[pid]!.hand.includes(cardId)) return true;
-  try {
-    k.apply({ type: "dev.giveItem", pid, cardId }, now);
-    return true;
-  } catch {
-    return false;
-  }
-};
+// tryGiveItem（条件注入道具）已收回公共 helpers（hp.test 同款用）
 
 // ---------- 配额守恒与逐格分布（§5.4 对账；纯数据，零随机流） ----------
 

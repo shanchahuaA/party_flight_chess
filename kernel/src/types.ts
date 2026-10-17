@@ -231,6 +231,8 @@ export type Fact =
   | { type: "bounce"; pid: number }
   | { type: "bounceExit"; pid: number }
   | { type: "finish"; pid: number }
+  /** 血尽淘汰（#34 T5c retirePlayer）：壳层据此进入观战贴皮（变暗+☠锁标+提示，不弹窗） */
+  | { type: "eliminated"; pid: number }
   | { type: "routeAskOpen"; pid: number; options: RouteOption[]; deadline: number }
   | { type: "routeChosen"; pid: number; to: number; auto: boolean }
   /** 事件卡：抽到（T3a2 中央抉择浮层挂卡面入口）／抉择落定（auto=代选） */

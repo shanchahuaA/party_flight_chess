@@ -90,7 +90,6 @@ const tokenViews = computed(() =>
 const maxHp = computed(() => gameStore.kernel.value?.config.maxHp ?? 10);
 const hpBarW = (p: PlayerState): string => (16 * hpRatio(p.hp, maxHp.value)).toFixed(2);
 const hpFill = (p: PlayerState): string => HP_TONE_COLOR[hpTone(hpRatio(p.hp, maxHp.value))];
-const hpTitle = (p: PlayerState): string => `${p.id === 0 ? "你" : p.name} 血量 ${p.hp}/${maxHp.value}`;
 
 // ---------- 出生位归属（T2 起按人数落座）：家环/门前小路只画本局出生位 ----------
 const ownerBySpawnCell = computed(() => {
@@ -122,6 +121,8 @@ const legalSet = computed<Set<number> | null>(() => {
   return new Set(itemLegalTargets(state.value, 0, cardId));
 });
 function tokenClass(id: number): string {
+  const p = state.value?.players[id];
+  if (p?.dead) return "dead"; // 淘汰者（T5c）：不做 targeting 演出，变暗观战贴皮单走一份
   const s = legalSet.value;
   if (!s) return "";
   return s.has(id) ? "tg legal" : "tg dim";
@@ -281,7 +282,7 @@ const groundViews = computed(() => {
       <text :x="t.tail.flag.x" :y="t.tail.flag.y + 5" text-anchor="middle" font-size="14">🏁</text>
     </g>
 
-    <!-- 棋子（targeting 期：合法亮/非法灰，点头像收口——非 targeting 不响应） -->
+    <!-- 棋子（targeting 期：合法亮/非法灰，点头像收口；淘汰者变暗+☠锁标观战） -->
     <g
       v-for="tv in tokenViews"
       :key="`tk${tv.p.id}`"
@@ -290,17 +291,18 @@ const groundViews = computed(() => {
       :style="{ transform: `translate(${tv.x}px, ${tv.y}px)` }"
       @click="onTokenClick(tv.p.id)"
     >
+      <title v-if="tv.p.dead">☠ {{ tv.p.id === 0 ? "你已" : `${tv.p.name}已` }}出局——观战中（不再被指认）</title>
       <circle v-if="tv.p.id === 0" r="11" fill="none" stroke="#90cbd8" stroke-width="1.5" stroke-dasharray="3 2.5" />
       <circle class="tkMain" r="8.5" :fill="TOKEN_COLORS[tv.p.id]" stroke="#fff" stroke-width="2" />
       <text class="tokenLbl" y="3.2" text-anchor="middle" font-size="9">
         {{ tv.p.id === 0 ? "你" : tv.p.name.replace("小", "") }}
       </text>
-      <!-- 血条（T5a 常驻）：底槽＋按血量占比的填充；自己头顶再加心形读数 -->
+      <!-- 血条（T5a 常驻）：底槽＋按血量占比的填充；自己头顶再加深 ❤ 读数；淘汰者头顶换成 ☠ 锁标 -->
       <g class="hpG">
-        <title>{{ hpTitle(tv.p) }}</title>
         <rect x="-8" y="13" width="16" height="3" rx="1.5" fill="rgba(0,0,0,.5)" />
         <rect x="-8" y="13" :width="hpBarW(tv.p)" height="3" rx="1.5" :fill="hpFill(tv.p)" />
-        <text v-if="tv.p.id === 0" x="0" y="-12.5" text-anchor="middle" class="hpNum" font-size="8">❤{{ tv.p.hp }}</text>
+        <text v-if="tv.p.dead" x="0" y="-12.5" text-anchor="middle" class="hpNum hpDead" font-size="8">☠</text>
+        <text v-else-if="tv.p.id === 0" x="0" y="-12.5" text-anchor="middle" class="hpNum" font-size="8">❤{{ tv.p.hp }}</text>
       </g>
     </g>
 
@@ -354,6 +356,17 @@ const groundViews = computed(() => {
   stroke: #263238;
   stroke-width: 2;
   paint-order: stroke fill;
+}
+/* 观战贴皮（T5c）：淘汰 token 整体变暗（头上有 ☠ 锁标——hover title 提示）；不再列进 targeting 演出 */
+.tk.dead {
+  filter: grayscale(1);
+  opacity: 0.55;
+}
+.tk.dead .tokenLbl {
+  fill: #b0bec5;
+}
+.hpNum.hpDead {
+  fill: #e57373;
 }
 /* targeting 期头像语义：合法可选（亮+呼吸圈）/非法置灰；非 targeting 无行为 */
 .tk.tg.legal {

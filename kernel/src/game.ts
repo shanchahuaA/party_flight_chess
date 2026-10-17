@@ -352,13 +352,9 @@ export class GameKernel {
       }
       case "dev.setDead": {
         if (!this.config.allowDev) throw new KernelError("dev 意图未开放");
-        const p = this.player(intent.pid);
-        p.dead = true;
-        p.hp = 0;
-        p.walk = null;
-        p.walkQueue = [];
-        p.cardPending = null;
-        this.msg("system", `${p.name} 出局（测试通道），进入观战——不再被指认。`, p.id, { emphasis: "big" });
+        // 直接走淘汰流程单口径（T5c）：挂账清理/手牌回弃/播报/事实与真实血尽同构——
+        // 测试用它造假人退场时，撞上的便是淘汰后真实可复现的棋盘状态
+        this.retirePlayer(this.player(intent.pid));
         break;
       }
       case "dev.drawCard": {
@@ -630,7 +626,8 @@ export class GameKernel {
   private maybeCloseWindow(now: number): void {
     if (this.state.phase !== "acting") return;
     const act = this.activePlayers();
-    if (act.length > 0 && act.every((p) => p.confirmed)) {
+    // act 空（全员淘汰/全入席）时 every 本真=照常收窗——血尽横扫后回合钟不卡死（T5c）
+    if (act.every((p) => p.confirmed)) {
       this.closeWindow(now, false);
     }
   }
@@ -1045,6 +1042,7 @@ export class GameKernel {
    * tries/连抽上限都是防循环的保守熔断，正常对局不触发。
    */
   private drawEventFor(p: PlayerState, now: number, forced?: EventCard): void {
+    if (p.dead) return; // 死了就死了（T5c）：强发通道也不给死人发卡出声
     if (p.cardPending) return; // 挂起中的抉择不叠新卡
     if (!forced) {
       if (p.cardDraws >= EVENT_CHAIN_CAP) {
@@ -1304,12 +1302,14 @@ export class GameKernel {
   /**
    * 血量通道（#23 T5a，数值表 §5.3）：全部扣血/治疗的**唯一结算入口**——
    *   已接渠道=卡面 hp 原语（事件：断桥/熔岩/近路/孤注一掷、温泉；道具：药水+2/万能药+4/地雷失败支）
-   *   ＋dev.hit 测试通道；后备渠道=陷阱扣血/世界恶意/滚石/塌陷/野狗咬/年兽反噬（T5b/T6 落卡时
-   *   一律走本原语——逐渠道调 this.applyHpDelta，不得旁路改 p.hp，封顶/护身符/盾的口径全渠道同吃）。
+   *   ＋陷阱（#33 全渠道同吃：护身符/盾照拦）＋dev.hit 测试通道；后备渠道=恶意/滚石/塌陷/
+   *   野狗咬/年兽反噬（T6 落卡时一律走本原语——逐渠道调 this.applyHpDelta，不得旁路改 p.hp）。
    * 结算序：扣血先过护身符（表一 #14，触发即消耗）再过盾（皮糙肉厚）；同刻多源按到达序逐笔落账；
-   *   回血封顶 maxHp 不溢出；归零只播报（淘汰流程=T5c，本票不接）。
+   *   回血封顶 maxHp 不溢出；血尽归零=淘汰（#34 T5c retirePlayer 单入口：死了就死了——
+   *   死后本通道对死人 no-op，治疗拉不起、挂账扣血也不复播）。
    */
   private applyHpDelta(p: PlayerState, delta: number): void {
+    if (p.dead) return; // 死了就死了（T5c）：不再扣血也不再进账——治疗拉不起死人
     if (delta === 0) return;
     if (delta < 0 && p.talisman > 0) {
       p.talisman -= 1;
@@ -1327,11 +1327,46 @@ export class GameKernel {
     if (delta < 0) {
       this.msg("event", `${p.name} 扣 ${-real} 血（剩 ${p.hp}/${this.config.maxHp}）`, p.id, { emphasis: "target" });
       if (before > 0 && p.hp === 0) {
-        this.msg("event", `${p.name} 血量归零——血尽=淘汰（观战；流程 T5c 起接入）。`, p.id, { emphasis: "big" });
+        this.retirePlayer(p);
       }
     } else {
       this.msg("event", `${p.name} 回 ${real} 血（剩 ${p.hp}/${this.config.maxHp}）`, p.id);
     }
+  }
+
+  /**
+   * 淘汰流程（#34 T5c，一页纸「血量与淘汰」修订 1.4：血尽=淘汰，死了就死了）：
+   *   挂起态全清（走格/续走队列/抉择挂起/骰面与检定修正批——不再占窗不再消费），
+   *   手牌按数值表 §5.3 定案全数回道具弃牌堆（单池守恒——与贼赃房 discard「离手即入弃牌堆」同口径；
+   *   事件牌从不入手、无此负担），暗牌不撤（淘汰不免除已达成的事实，「活到结算」型留 T8b1 判）。
+   * 进入观战：留在游戏页（棋子原地变暗+☠锁标，壳层 T5c 贴皮）；不再掷骰/打卡/被指认——
+   *   四闸同滤 dead 已在位：activePlayers/checkWindowAction/itemPlayGate/identifyTargets。
+   * dev.setDead 测试通道同走本口径（同一套清账，不旁开第二份淘汰语义）。
+   */
+  private retirePlayer(p: PlayerState): void {
+    if (p.dead) return;
+    p.dead = true;
+    p.hp = 0; // 血尽定格 0（dev.setDead 测试通道同到此清零——观战血条空槽）
+    p.walk = null;
+    p.walkQueue = [];
+    p.cardPending = null;
+    p.rollMods = [];
+    p.checkMods = [];
+    p.stun = 0;
+    p.talisman = 0;
+    p.itemBan = 0; // itemBanned 由下窗 openWindow 从 itemBan 重导出（死于途中自然落 false），不另设值
+    p.botSchedule = { rollAt: 0, confirmAt: 0 };
+    if (p.hand.length > 0) {
+      const n = p.hand.length;
+      this.state.itemDiscard.push(...p.hand);
+      p.hand = [];
+      this.msg("system", `${p.name} 手牌 ${n} 张散落归还牌堆。`, p.id);
+    }
+    this.msg("system", `☠ ${p.name} 血尽出局——死了就死了，进入观战（不再掷骰、打卡，不再被指认）。`, p.id, {
+      emphasis: "big",
+    });
+    this.emit({ type: "eliminated", pid: p.id });
+    this.emit({ type: "pulse", pid: p.id, level: "big" });
   }
 
   /**

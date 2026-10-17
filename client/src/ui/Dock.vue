@@ -14,6 +14,7 @@ const state = computed(() => {
 const me = computed<PlayerState | null>(() => state.value?.players[0] ?? null);
 
 const acting = computed(() => state.value?.phase === "acting");
+const dead = computed(() => !!me.value?.dead);
 const canRoll = computed(() => {
   const p = me.value;
   return acting.value && !!p && p.zone !== "done" && !p.dead && !p.rolled && !p.confirmed && !p.walk;
@@ -43,11 +44,12 @@ function confirm(): void {
       </button>
       <button
         id="confirmBtn"
-        :class="{ armed: (!!rolled || done) && !confirmed, waited: confirmed }"
-        :disabled="!acting || confirmed || (!rolled && !done)"
+        :class="{ armed: (!!rolled || done) && !confirmed && !dead, waited: confirmed, spectating: dead }"
+        :disabled="!acting || confirmed || dead || (!rolled && !done)"
         @click="confirm"
       >
-        <template v-if="confirmed">⏳ 已确认 · 等待区</template>
+        <template v-if="dead">☠ 已出局 · 观战中</template>
+        <template v-else-if="confirmed">⏳ 已确认 · 等待区</template>
         <template v-else-if="done">🏁 通关席 · 观局</template>
         <template v-else>✔ 确认结束</template>
       </button>
@@ -113,6 +115,12 @@ function confirm(): void {
 #confirmBtn.waited {
   background: #2b3640;
   color: #90a4ae;
+}
+/* 观战态（T5c）：出局后按钮定格成一排灰—不干扰看戏（观战横幅在 M3） */
+#confirmBtn.spectating {
+  background: #21262d;
+  color: #78909c;
+  letter-spacing: 1px;
 }
 #confirmBtn:disabled {
   opacity: 0.85;

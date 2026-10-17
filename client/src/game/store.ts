@@ -132,6 +132,12 @@ class GameStore {
           // 打出成功的事实收账（T4a2）：目卡不在手=已出袋；targeting 属于目卡即退场（内核拒时不发此事实）
           if (f.pid === 0 && this.targeting.value === f.cardId) this.cancelTargeting();
           break;
+        case "eliminated":
+          // 血尽淘汰（T5c）：观战提示用 toast 不弹窗打断（界面呈现定案 §六：棋盘变暗+锁标是本体）；
+          // 本人出局时打牌目标选择若还挂着，一并收掉（死人不出手）
+          if (f.pid === 0 && this.targeting.value) this.cancelTargeting();
+          this.showToast(`☠ ${this.state.value?.players[f.pid]?.name ?? "有人"} 血尽出局——进入观战`);
+          break;
         case "pulse":
           this.pulses[f.pid] = {
             level: f.level,
