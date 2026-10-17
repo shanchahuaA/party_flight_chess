@@ -164,6 +164,19 @@ export interface GameState {
   ambient: { cardId: string; /** 剩余触发回合数（回合开始结算一次后 −1；0=到期失效） */ left: number } | null;
   /** 指向他人的卡面效果（world·即时）：下一世界回合开始时结算（窗口 openWindow 消费） */
   deferred: DeferredEffect[];
+  /**
+   * 世界恶意挂账（#24 T6a）：木头=预警落点（下一世界回合开始砸落）／塌陷=裂开的格子与
+   * 剩余存续世界回合数（踩入咬人、开窗递减到 0 复原）／滚石=本次滚过的 10 格路径（演出残留，
+   * 无后续结算）。壳层据此渲染阴影/塌陷图皮/滚石路径；三类互不叠加、各单槽。
+   */
+  malice: {
+    /** 🪵 木头预警：挂着的 3 个落点格（下一世界回合开始砸清） */
+    timber: number[] | null;
+    /** 🕳 塌陷区：裂开的格子群 + 剩余存续世界回合数 */
+    sink: { cells: number[]; left: number } | null;
+    /** 🪨 滚石：最近一次滚过的路径（仅演出） */
+    rock: number[] | null;
+  };
   /** 内部：战报 id 发号与 RNG 状态（随状态走，M2 快照恢复随机流） */
   seq: number;
   rngState: number;
@@ -187,6 +200,10 @@ export interface GameConfig {
   routeAskMs: number;
   /** 逐格走格节拍毫秒（客户端动画节奏的事实事实锚，默认 140） */
   stepMs: number;
+  /** 世界恶意周期：每 N 个世界回合一波（#24 T6a，2..5、默认 3） */
+  maliceEvery: number;
+  /** 世界恶意强度档（数值表 §5.5）：温和 −1 血／猛 −2 血／off=整局关闭（默认温和） */
+  maliceLevel: "mild" | "fierce" | "off";
   /** 测试通道：允许 dev 意图（默认 false；单测开） */
   allowDev?: boolean;
 }

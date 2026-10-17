@@ -6,13 +6,13 @@
  *   输入 now 由壳层（shell 时钟）提供，内核自身不读时钟——全部对时可由 t 系列单测驱动。
  *   #7 定案：全员同窗行动、掷完立刻逐格走、全员完成提前开窗、超时替掷并自动确认（不替打卡）。
  */
-import { BOARD, BRANCH_LEN, ECO_NAMES, NET_GOAL, SPAWN_SLOTS, STREET_NAMES, cellAt, spawnMenu, type BoardCell } from "./board";
+import { BOARD, BRANCH_LEN, ECO_NAMES, MAIN_PLAYABLE_CELLS, NET_GOAL, SPAWN_SLOTS, STREET_NAMES, STREET_RUNS, cellAt, spawnMenu, type BoardCell } from "./board";
 import { M1_EVENT_POOL, EVENT_CARD_BY_ID, type CardEffect, type CheckSpec, type DiceMod, type EffectPart, type EventCard } from "./data/events";
 import { ITEM_CARD_BY_ID, M1_ITEM_POOL, itemCard, itemHasPart } from "./data/items";
 import { trapDefAt } from "./data/traps";
 import { AXIS_NAMES, ROLES, roleDef } from "./data/roles";
 import { SECRET_GOALS } from "./data/goals";
-import { CHECK_FACES, effectiveValue, netMods, resolveCheck, roleCheckMods, roleOneToCrit, rollD20, rollDice, type CheckGrade, type CheckMods } from "./check";
+import { CHECK_FACES, effectiveValue, netMods, resolveCheck, roleCheckMods, roleOneToCrit, rollD20, rollDice, type CheckGrade, type CheckMods, type CheckResolve } from "./check";
 import { rngFrom, type Rng, type RngState } from "./rng";
 import type { WalkState } from "./types";
 import {
@@ -61,18 +61,21 @@ export const GAME_DEFAULTS: Required<Omit<GameConfig, "allowDev">> = {
   timerMode: "world",
   routeAskMs: 10_000,
   stepMs: 140,
+  maliceEvery: 3,
+  maliceLevel: "mild",
 };
 
 /** 卡牌效果来源上下文（T4b1）：kind=道具卡/事件卡通道、srcPid=打出者——小圆盾「免疫他人卡牌效果」的拦截判据 */
 type GuardCtx = { kind: "item" | "event"; srcPid: number };
 
-/** 配置五项的合法域（#16 问题陈述 2：局长 5–30／血量 5–20／窗 10–90s／休息 0–20s）。
+/** 配置域（#16 问题陈述 2：局长 5–30／血量 5–20／窗 10–90s／休息 0–20s／恶意周期 2–5 波间隔）。
  *  壳层表单（大厅滑条）直接消费这份常量，域改一处即全端生效。 */
 export const CONFIG_LIMITS = {
   turnCap: [5, 30],
   maxHp: [5, 20],
   windowMs: [10_000, 90_000],
   restMs: [0, 20_000],
+  maliceEvery: [2, 5],
 } as const;
 
 const PLAYER_DEFS: PlayerDef[] = [
@@ -87,6 +90,13 @@ const WALK_DIE = 10;
 
 /** 环境卡全桌气候持续的世界回合数（表一 #13/#19/#20 拍板 2） */
 const AMBIENT_TURNS = 2;
+
+/** 世界恶意三型定案参数（数值表 §5.5「四型均分」的三型行；野狗型 T6b 并入后补第四档）。
+ *  客户端文案（大厅提示/棋盘 title）引用常量不硬编——改一处全端生效。 */
+export const TIMBER_CELLS = 3; // 🪵 木头砸落的格数（预警阴影=这 3 格）
+export const ROCK_LEN = 10; // 🪨 滚石沿街滚过的路段格数
+export const SINK_CELLS = 6; // 🕳 塌陷一次裂开的格数
+export const SINK_TURNS = 2; // 塌陷区存续的世界回合数（开窗递减，归零复原）
 
 /** 单名玩家单窗抽卡上限（卡面引走格→落格重触发抽卡的连环熔断） */
 const EVENT_CHAIN_CAP = 4;
@@ -177,6 +187,7 @@ export class GameKernel {
       ground: [],
       ambient: null,
       deferred: [],
+      malice: { timber: null, sink: null, rock: null },
       seq: 0,
       rngState: this.rngHost.s,
     };
@@ -228,6 +239,9 @@ export class GameKernel {
     }
     if (merged.timerMode !== "world" && merged.timerMode !== "turn") {
       throw new KernelError("计时模式未知（world=世界·即时 / turn=轮班·限时）");
+    }
+    if (merged.maliceLevel !== "mild" && merged.maliceLevel !== "fierce" && merged.maliceLevel !== "off") {
+      throw new KernelError("世界恶意档位未知（mild=温和 / fierce=猛 / off=关闭）");
     }
     // 冻结：配置开局定死、局中不可改（局间配置=下一局新 kernel）
     const kernel = new GameKernel(Object.freeze(merged) as GameConfig, defs, now);
@@ -502,8 +516,11 @@ export class GameKernel {
       }
     }
     // 环境卡气候（《生物圈 3 号》三原则，#32 T4b2）：每个世界回合「行动前」结算一次——
-    // 雷暴=随机劈人；暴雨/风暴按所在生态地形行上判定/修正。轮空者无行动不判（罚停消耗之后。
+    // 雷暴=随机劈 1 名在场者回退（按所在格生态地形行）；暴雨/风暴按所在生态地形行上判定/修正。轮空者无行动不判（罚停消耗之后。
     this.tickAmbient(now);
+    // 世界恶意（#24 T6a，数值表 §5.5 管道）：气候之后、windowStart 之前——同为世界层「行动前」
+    // 结算：先落旧账（木头砸落/塌陷计时），再按周期起新波。全程不打断操作。
+    this.tickMalice(now);
     this.emit({ type: "windowStart", turn: this.state.turn, deadline: this.state.windowDeadline });
     this.reserveBots(now);
   }
@@ -589,6 +606,173 @@ export class GameKernel {
       emphasis: "target",
     });
     if (row.onFall.length > 0) this.applyParts(p, row.onFall, now);
+  }
+
+  // ---------- 世界恶意（#24 T6a，数值表 §5.5 管道与三型） ----------
+
+  /** 世界恶意伤害（强度档）：温和 −1／猛 −2——三型（滚石追命/木头砸落/塌陷踩入）同一档位账。 */
+  private maliceDmg(): number {
+    return this.config.maliceLevel === "fierce" ? 2 : 1;
+  }
+
+  /** 战报里的落点点名：生态·街名（同街多格同名可接受——落点的视觉真锚在棋盘阴影/图皮上） */
+  private cellTag(id: number): string {
+    const c = this.cell(id);
+    return `${ECO_NAMES[c.zone]}·${STREET_NAMES[c.street]}`;
+  }
+
+  /** 世界层「咬一口」三连收口（T6a 三型共享的结算形）：战报点名 + applyHpDelta（档位伤害·malice 分色）
+   *  + 受害者脉冲事实。非卡通道不传 ctx——小圆盾不拦天灾。 */
+  private maliceStrike(p: PlayerState, text: string): void {
+    this.msg("malice", text, p.id, { targets: [p.id], emphasis: "target" });
+    this.applyHpDelta(p, -this.maliceDmg(), "malice");
+    this.emit({ type: "pulse", pid: p.id, level: "target" });
+  }
+
+  /** 世界回合开始的世界层结算（openWindow 在气候之后调用）：先落旧账（上一波挂的木头砸落、
+   *  塌陷存续计数），再按周期起新波（每 maliceEvery 世界回合一波；三型 rng 均分——野狗型 T6b
+   *  并入后改四档）。管道纪律（数值表 §5.5）：世界层**全程不打断操作**——不碰
+   *  rolled/confirmed/walk/cardPending，一切经战报 🌲 条目承载；扣血一律走 applyHpDelta
+   *  单入口（T5a 后备渠道口径，护身符/皮糙肉厚盾照拦）。 */
+  private tickMalice(now: number): void {
+    // —— 旧账 1：木头砸落。预警窗=1 个世界回合（挂账于上一波，本窗开始即砸）：
+    //    窗内移动离开落点=天然免伤，预警才真的有用。砸中=对落点上每个主干道活人各判各扣。
+    const timber = this.state.malice.timber;
+    if (timber) {
+      this.state.malice.timber = null;
+      let hit = 0;
+      for (const c of timber) {
+        for (const p of this.state.players) {
+          if (p.dead || p.zone !== "main" || p.pos !== c) continue;
+          this.maliceStrike(p, `🪵 大木头轰然砸中 ${p.name} 所在的落点！`);
+          hit += 1;
+        }
+      }
+      if (hit === 0) {
+        this.msg("malice", `🪵 大木头轰然砸在预定的 ${timber.length} 个落点上——还好上空无人。`);
+      }
+    }
+    // —— 旧账 2：塌陷存续计数（开窗递减；归零=复原出声） ——
+    const sink = this.state.malice.sink;
+    if (sink) {
+      sink.left -= 1;
+      if (sink.left <= 0) {
+        this.state.malice.sink = null;
+        this.msg("malice", `🕳 塌陷区终于平复——地面重新结好（${SINK_TURNS} 世界回合到期）。`);
+      }
+    }
+    // —— 新波：周期到点（turn 从 1 起：turn%every==0 的那个回合开窗时触发——默认第 3 回合起波） ——
+    if (this.config.maliceLevel === "off") return;
+    if (this.state.turn % this.config.maliceEvery !== 0) return;
+    this.msg("malice", `🌲 世界恶意第 ${Math.floor(this.state.turn / this.config.maliceEvery)} 波——庄园上的不测之祸又来了。`, undefined, {
+      emphasis: "highlight",
+    });
+    // 选型：木头需要「下一世界回合砸落」的预警窗——局末波点（turn==turnCap，下一回合即进 T8 终局）压成滚石赶路，
+    // 遇免预警悬挂到结算的死账；终局份量由 T8 的「最后一波」加强档接管。
+    const timberable = this.state.turn < this.config.turnCap;
+    const kind = timberable ? this.rng.int(3) : 1;
+    this.syncRng();
+    if (kind === 0) this.waveTimber();
+    else if (kind === 1) this.waveRock(now);
+    else this.waveSink(now);
+  }
+
+  /** 🪵 木头：落点提前定并挂预警阴影（3 个 主网可落格），下一世界回合开始砸落。 */
+  private waveTimber(): void {
+    const cells = this.rng.shuffle([...MAIN_PLAYABLE_CELLS]).slice(0, TIMBER_CELLS).sort((a, b) => a - b);
+    this.syncRng();
+    this.state.malice.timber = cells;
+    this.msg(
+      "malice",
+      `🪵 大木头悬空！预警阴影罩上 ${cells.map((id) => this.cellTag(id)).join("、")}——下一世界回合开始砸落，正在格上的人速离。`,
+      undefined,
+      { emphasis: "highlight" },
+    );
+  }
+
+  /** 🪨 滚石：从一条够长的直线街段随机切出 10 格连续路段一次滚完——滚到的格上有主干道活人
+   *  =被追上，敏检 DC12（同一检定通道：沙暴修正批/轴系特长同吃互抵）：通过（含大成功）=
+   *  闪开不伤；失败（含大失败）=扣血。世界层判定不吃力检特长的 dogFight scope（scope 缺省=全检定生效——
+   *  猎手不适用，蛮力/狡运对应轴不沾）。 */
+  private waveRock(now: number): void {
+    const runs = STREET_RUNS.filter((r) => r.cells.length >= ROCK_LEN);
+    const run = runs[this.rng.int(runs.length)]!;
+    const offset = this.rng.int(run.cells.length - ROCK_LEN + 1);
+    const path = run.cells.slice(offset, offset + ROCK_LEN);
+    this.syncRng();
+    this.state.malice.rock = path;
+    this.msg(
+      "malice",
+      `🪨 塌坡滚石！从 ${this.cellTag(path[0]!)} 轰隆启程，沿街滚过 ${ROCK_LEN} 格路段——被追上要扣血，敏检 DC12 可躲开。`,
+      undefined,
+      { emphasis: "highlight" },
+    );
+    for (const c of path) {
+      for (const p of this.state.players) {
+        if (p.dead || p.zone !== "main" || p.pos !== c) continue;
+        const res = this.runCheck(p, { axis: "agile", dc: 12 }, now, undefined, "malice");
+        if (res.grade === "pass" || res.grade === "crit") {
+          this.msg("malice", `${p.name} 侧身一闪——滚石擦身而过，毫发无伤。`, p.id, { targets: [p.id], emphasis: "target" });
+        } else {
+          this.maliceStrike(p, `${p.name} 没躲开，被滚石追上！`);
+        }
+      }
+    }
+    this.msg("malice", `🪨 滚石滚过 ${ROCK_LEN} 格路段，怼出庄园外扬长而去。`);
+  }
+
+  /** 🕳 塌陷区：随机种子格 BFS 扩 6 格（环岛/出生格不裂也不占配额继续找），裂开挂账塌
+   *  SINK_TURNS 世界回合；裂开当时站进裂开区的人立即负伤（实现期定案——「塌了人还站着」是无声怪事，
+   *  收账注记回表），此后踩入走 landOn 通道（sinkHit）。周期域 2..5 ≥ SINK_TURNS=2：新波开波前
+   *  旧区必然已在 tickMalice 旧账处递减到 0 复原清账，塌陷区永不叠加。 */
+  private waveSink(now: number): void {
+    const cells = this.sinkCells();
+    this.state.malice.sink = { cells, left: SINK_TURNS };
+    this.msg(
+      "malice",
+      `🕳 地面蛋壳般裂开！${this.cellTag(cells[0]!)} 一带塌陷 ${cells.length} 格，塌 ${SINK_TURNS} 世界回合——踩进去要吃亏。`,
+      undefined,
+      { emphasis: "highlight" },
+    );
+    for (const p of this.state.players) {
+      if (!p.dead && p.zone === "main" && cells.includes(p.pos)) this.sinkHit(p);
+    }
+  }
+
+  /** 选塌陷区：洗匀的种子池从首个能凑满 SINK_CELLS 的种子格 BFS（邻域扩时跳过环岛与出生格）。 */
+  private sinkCells(): number[] {
+    const pool = this.rng.shuffle([...MAIN_PLAYABLE_CELLS]);
+    for (const seed of pool) {
+      const seen = new Set<number>([seed]);
+      const cells = [seed];
+      let frontier = [seed];
+      while (frontier.length > 0 && cells.length < SINK_CELLS) {
+        const next: number[] = [];
+        for (const id of frontier) {
+          for (const l of this.cell(id).links) {
+            if (seen.has(l)) continue;
+            const c = this.cell(l);
+            if (c.street === "J" || c.spawnIndex >= 0) continue;
+            seen.add(l);
+            cells.push(l);
+            next.push(l);
+            if (cells.length >= SINK_CELLS) break;
+          }
+          if (cells.length >= SINK_CELLS) break;
+        }
+        frontier = next;
+      }
+      if (cells.length >= SINK_CELLS) return cells.sort((a, b) => a - b);
+    }
+    return pool.slice(0, SINK_CELLS).sort((a, b) => a - b); // 兜底理论不可达（主网稠密连通，逐种子试必成）
+  }
+
+  /** 踩入塌陷区（#24 T6a）：裂开当刻的在场者与此后每次 landOn 踩进的人各判一咬（每次踩进各算各的）；
+   *  无检定直扣（数值表 §5.5「踩进扣血」纯损格式）；扣血走 applyHpDelta 单入口（护身符/盾照拦）。 */
+  private sinkHit(p: PlayerState): void {
+    const sink = this.state.malice.sink;
+    if (!sink || !sink.cells.includes(p.pos)) return;
+    this.maliceStrike(p, `🕳 ${p.name} 踏进塌陷区——塌方的边缘啃了他一口！`);
   }
 
   /** 窗内挂起抉择到点代选：超时未应答按卡面默认项结算并标注（事件定案 §1.7） */
@@ -1006,11 +1190,13 @@ export class GameKernel {
   }
 
   /** 落格结算（走停即触发，前进/退格一视同仁；终点支路与净底格不触发）：
-   *  场地型附着先判（踩上即踩上），再按格型——道具格摸卡／事件格抽卡／陷阱格检定逃生。
+   *  世界层塌陷先判（踩进即咬），再场地型附着（踩上即踩上），再按格型——道具格摸卡／
+   *  事件格抽卡／陷阱格检定逃生。
    *  w=刚走完的这段（触发本格的来路）：陷阱格消费「倒霉蛋走格骰 10 无事」按它识别发团骰。 */
   private landOn(p: PlayerState, now: number, w: WalkState | null): void {
     if (p.dead || p.zone !== "main") return;
     const c = this.cell(p.pos);
+    this.sinkHit(p);
     this.triggerGround(p, now);
     if (c.type === "I") {
       this.drawItems(p, 1, "踩上道具格");
@@ -1308,7 +1494,7 @@ export class GameKernel {
    *   回血封顶 maxHp 不溢出；血尽归零=淘汰（#34 T5c retirePlayer 单入口：死了就死了——
    *   死后本通道对死人 no-op，治疗拉不起、挂账扣血也不复播）。
    */
-  private applyHpDelta(p: PlayerState, delta: number): void {
+  private applyHpDelta(p: PlayerState, delta: number, tone: MessageKind = "event"): void {
     if (p.dead) return; // 死了就死了（T5c）：不再扣血也不再进账——治疗拉不起死人
     if (delta === 0) return;
     if (delta < 0 && p.talisman > 0) {
@@ -1325,7 +1511,7 @@ export class GameKernel {
     p.hp = Math.max(0, Math.min(this.config.maxHp, p.hp + delta));
     const real = p.hp - before; // 播报实际生效量（削顶/兜底按真账记「逐笔落账」，#23 T5a review）
     if (delta < 0) {
-      this.msg("event", `${p.name} 扣 ${-real} 血（剩 ${p.hp}/${this.config.maxHp}）`, p.id, { emphasis: "target" });
+      this.msg(tone, `${p.name} 扣 ${-real} 血（剩 ${p.hp}/${this.config.maxHp}）`, p.id, { emphasis: "target" });
       if (before > 0 && p.hp === 0) {
         this.retirePlayer(p);
       }
@@ -1376,7 +1562,7 @@ export class GameKernel {
    * ctx 透传给分支原语（小圆盾判「他人卡牌效果」的依据，T4b1）；kind=战报类别
    * （卡面检定默认 event；陷阱格踩中传 trap——同一结算通道、战报分色，T5b）。
    */
-  private runCheck(p: PlayerState, spec: CheckSpec, now: number, ctx?: GuardCtx, kind: MessageKind = "event"): void {
+  private runCheck(p: PlayerState, spec: CheckSpec, now: number, ctx?: GuardCtx, kind: MessageKind = "event"): CheckResolve {
     const role = roleDef(p.roleId);
     const mods: CheckMods[] = [
       ...toCheckMods(p.checkMods), // 风暴·沙暴等气候挂的本回合检定修正（T4b2）——与卡面/特长同一互抵批（走格骰不吃它）
@@ -1425,6 +1611,7 @@ export class GameKernel {
       parts = res.grade === "pass" ? spec.onPass : spec.onFail;
     }
     if (parts?.length) this.applyParts(p, parts, now, ctx);
+    return res;
   }
 
   // ---------- 道具卡打出链（#21 T4a：手牌+时机锁+三类路由+场地附着；#22 T4b1：auto 指认+新原语+两模式语境） ----------

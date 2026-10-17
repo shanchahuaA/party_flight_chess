@@ -3,11 +3,13 @@
  * 大厅简版页（M1 形态：配置表单 + 直达「开始」）：
  * - 配置五项：局长 5–30 默认 15／血量上限 5–20 默认 10／世界回合窗 10–90s 默认 30／
  *   计时模式双选（世界·即时默认；轮班·限时先可选中，完整行为在 T9，M1 前段按世界·即时跑）／休息 0–20s 默认 10。
+ * - 世界恶意（#24 T6a，数值表 §5.5）：档位三段钮（关/温和 −1 血/猛 −2 血，默认温和）+
+ *   波周期滑条（每 2–5 个世界回合一波，默认 3；关档时禁用）。
  * - 假人 1–7（共 2–8 人局）；角色 5 个明选（可重复选同一角色，属性只在详情弹层展示）。
  * - 出生格按人数均布由内核 spawnMenu 落座（各占一角相望）。
  */
 import { computed, reactive, ref } from "vue";
-import { CONFIG_LIMITS, ROLES, type GameConfig, type PlayerDef, type RoleId } from "../../../kernel/src";
+import { CONFIG_LIMITS, ROCK_LEN, ROLES, SINK_CELLS, TIMBER_CELLS, type GameConfig, type PlayerDef, type RoleId } from "../../../kernel/src";
 import { gameStore } from "../game/store";
 import BaseSheet from "./BaseSheet.vue";
 
@@ -20,11 +22,18 @@ const cfg = reactive({
   windowSeconds: 30,
   timerMode: "world" as "world" | "turn",
   restSeconds: 10,
+  maliceLevel: "mild" as "mild" | "fierce" | "off",
+  maliceEvery: 3,
 });
 const humanRole = ref<RoleId>("light");
 const detailRole = ref<RoleId | null>(null);
 
 const WINDOW_OPTIONS = [10, 15, 20, 30, 60, 90];
+const MALICE_LEVELS: Array<{ id: "mild" | "fierce" | "off"; label: string; note: string }> = [
+  { id: "off", label: "关", note: "整局无世界恶意" },
+  { id: "mild", label: "温和", note: "每波 −1 血（默认）" },
+  { id: "fierce", label: "猛", note: "每波 −2 血（伤害翻倍）" },
+];
 const detail = computed(() => (detailRole.value ? ROLES.find((r) => r.id === detailRole.value) ?? null : null));
 
 function pickRole(id: RoleId): void {
@@ -39,6 +48,8 @@ function start(): void {
     windowMs: cfg.windowSeconds * 1000,
     restMs: cfg.restSeconds * 1000,
     timerMode: cfg.timerMode,
+    maliceLevel: cfg.maliceLevel,
+    maliceEvery: cfg.maliceEvery,
   };
   const defs: PlayerDef[] = [
     { name: "你", isBot: false, roleId: humanRole.value },
@@ -110,6 +121,27 @@ function start(): void {
         </span>
       </div>
       <p v-if="cfg.timerMode === 'turn'" class="hint">轮班·限时选段已记下；完整轮转行为在 T9 接入，本局先按世界·即时跑。</p>
+      <div class="field">
+        <span class="lab">世界恶意</span>
+        <span class="ctl seg">
+          <button
+            v-for="l in MALICE_LEVELS"
+            :key="l.id"
+            type="button"
+            :class="{ on: cfg.maliceLevel === l.id }"
+            :title="l.note"
+            @click="cfg.maliceLevel = l.id"
+          >{{ l.label }}</button>
+        </span>
+      </div>
+      <label class="field">
+        <span class="lab">恶意波周期</span>
+        <span class="ctl" :class="{ off: cfg.maliceLevel === 'off' }">
+          <input v-model.number="cfg.maliceEvery" type="range" :min="CONFIG_LIMITS.maliceEvery[0]" :max="CONFIG_LIMITS.maliceEvery[1]" step="1" :disabled="cfg.maliceLevel === 'off'" />
+          <b>每 {{ cfg.maliceEvery }} 回合</b>
+        </span>
+      </label>
+      <p class="hint">世界恶意：🌲 每 N 回合一波全桌不测之祸（🪵 木头砸 {{ TIMBER_CELLS }} 格·预警可逃／🪨 滚石 {{ ROCK_LEN }} 格可躲／🕳 塌陷 {{ SINK_CELLS }} 格），战报承载、不打断操作。</p>
     </section>
 
     <section class="card">
@@ -263,6 +295,9 @@ function start(): void {
 }
 .seg {
   gap: 6px;
+}
+.ctl.off {
+  opacity: 0.45;
 }
 .seg button {
   flex: 1;

@@ -151,6 +151,14 @@ export function toNextWindow(k: GameKernel, now: number, windowMs: number, restM
   return now + windowMs + restMs;
 }
 
+/** 快进 n 个世界回合（windowMs:0 局专用——每次 tick 替掷收上一窗、立即开下一窗，一 tick 一回合）。
+ *  时刻链在「当前窗 deadline+1 起」联合编码：内核时间必须单调，重复调用不倒退（测试时序铁律）。 */
+export function advanceWorldTurns(k: GameKernel, n: number): number {
+  let now = Math.max(k.state.windowDeadline, k.state.restUntil) + 1;
+  for (let i = 0; i < n; i++, now++) k.tick(now);
+  return now;
+}
+
 export const me = (k: GameKernel): PlayerState => k.state.players[0]!;
 
 /** 条件注入道具（给不进时返回 false——开局手牌+1 可能把目标卡先摸走了；hp.test/traps.test 共用，不耗随机流） */

@@ -215,8 +215,38 @@ assignTypes(cells);
 
 export const BOARD: readonly BoardCell[] = Object.freeze(cells);
 
+/** 主干道「可落格」池（#24 T6a 世界恶意选点共用）：排除环岛（J）与出生格（S）——
+ *  出生格是每局的唯一不动点（开局/传送回复位），不进恶意选点池；
+ *  环岛是多岔交汇的大圆盘，预警阴影罩着它视觉杂乱且常空站，一并排除。 */
+export const MAIN_PLAYABLE_CELLS: readonly number[] = Object.freeze(
+  cells.filter((n) => n.street !== "J" && n.spawnIndex < 0).map((n) => n.id),
+);
+
 const key = (c: number, r: number) => `${c},${r}`;
 export const cellAt = (col: number, row: number): BoardCell | undefined => at.get(key(col, row));
+
+/** 各直线街段的完整格序 (#24 T6a 滚石路径池消费)：RUNS 的几何直线链——
+ *  环岛格/出生格也在链上（它本就是这条街的一部分；滚石沿街滚过不停留）。 */
+export interface StreetRun {
+  street: StreetKey;
+  cells: number[];
+}
+export const STREET_RUNS: readonly StreetRun[] = Object.freeze(
+  RUNS.map((run) => {
+    const [c0, r0] = run.from;
+    const [c1, r1] = run.to;
+    const dc = Math.sign(c1 - c0);
+    const dr = Math.sign(r1 - r0);
+    const len = Math.abs(c1 - c0) + Math.abs(r1 - r0);
+    const path: number[] = [];
+    for (let i = 0; i <= len; i++) {
+      const n = at.get(key(c0 + dc * i, r0 + dr * i));
+      if (!n) throw new Error(`街段 (${run.from})→(${run.to}) 第 ${i} 格不在路网上`);
+      path.push(n.id);
+    }
+    return { street: run.street, cells: path };
+  }),
+);
 
 export const SPAWN_CELLS: readonly number[] = Object.freeze(
   cells.filter((n) => n.spawnIndex >= 0).sort((a, b) => a.spawnIndex - b.spawnIndex).map((n) => n.id),

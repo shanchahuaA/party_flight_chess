@@ -3,6 +3,8 @@
  * 满屏棋盘 SVG（渲染层）：
  * - 静态层数据全取内核 BOARD（100 格路网/生态三区/街名/内园占位/支路投影），本组件不持规则。
  * - 棋子位置读内核玩家态；逐格动画 = CSS transform 过渡（内核 140ms 节拍的事实驱动）。
+ * - 世界恶意演出（#24 T6a）：木头预警阴影/塌陷区凹皮/滚石路径描边全从 state.malice 投影，
+ *   三级联动复用「格背景 + 角标 + title」同一张画皮（描边呼吸/残迹压暗皆 CSS 类）。
  */
 import { computed } from "vue";
 import {
@@ -152,6 +154,15 @@ const groundViews = computed(() => {
     };
   });
 });
+
+// ---------- 世界恶意演出（#24 T6a，数值表 §5.5）：state.malice 投影三级联动 ----------
+// 木头=预警阴影（呼吸红晕+🪵 悬牌，下一世界回合砸落；到期清理即消失）；
+// 塌陷=凹色底+🕳 角标（存续 2 世界回合，left 带进 title）；滚石=路径描边流动+🪨 石标（残迹回放两拍后静止）。
+const malice = computed(() => state.value?.malice ?? { timber: null, sink: null, rock: null });
+const timberViews = computed(() => (malice.value.timber ?? []).map((id) => BOARD[id]!));
+const sinkViews = computed(() => (malice.value.sink?.cells ?? []).map((id) => BOARD[id]!));
+const sinkLeft = computed(() => malice.value.sink?.left ?? 0);
+const rockViews = computed(() => (malice.value.rock ?? []).map((id) => BOARD[id]!));
 </script>
 
 <template>
@@ -238,6 +249,29 @@ const groundViews = computed(() => {
           >家</text>
         </template>
       </template>
+    </g>
+
+    <!-- 世界恶意 · 塌陷区图皮（#24 T6a）：凹色底+🕳 角标，踩进扣血；title 带剩余存续回合 -->
+    <g v-for="(c, i) in sinkViews" :key="`sk${i}`" class="maliceSink">
+      <rect :x="c.x - 10" :y="c.y - 10" width="20" height="20" rx="5.5" fill="rgba(8,10,8,.5)" stroke="#4e342e" stroke-width="1.2" stroke-dasharray="2.5 2" />
+      <text :x="c.x" :y="c.y + 4" text-anchor="middle" font-size="9.5">🕳️</text>
+      <title>🕳 塌陷区——踩进要扣血；还剩 {{ sinkLeft }} 个世界回合复原</title>
+    </g>
+
+    <!-- 世界恶意 · 木头预警阴影（#24 T6a）：呼吸红晕+🪵 悬牌——下一世界回合开始砸落，速离此格 -->
+    <g v-for="(c, i) in timberViews" :key="`tw${i}`" class="maliceTimber">
+      <rect :x="c.x - 10.5" :y="c.y - 10.5" width="21" height="21" rx="6" fill="rgba(239,83,80,.26)" stroke="#ef5350" stroke-width="1.5" class="warnPulse" />
+      <text :x="c.x" :y="c.y - 12" text-anchor="middle" font-size="8.5">🪵</text>
+      <title>🪵 大木头预警阴影——下一世界回合开始砸落，正在格上的人速离</title>
+    </g>
+
+    <!-- 世界恶意 · 滚石路径残迹（#24 T6a）：虚线描边流动两拍回放滚过路段，终点扛 🪨 石标 -->
+    <g v-for="(c, i) in rockViews" :key="`rk${i}`" class="maliceRock">
+      <rect :x="c.x - 10" :y="c.y - 10" width="20" height="20" rx="5.5" fill="none" stroke="#ffcc80" stroke-width="1.2" stroke-dasharray="3 2.5" class="rockFlow" />
+      <template v-if="i === rockViews.length - 1">
+        <text :x="c.x" :y="c.y - 12" text-anchor="middle" font-size="9">🪨</text>
+      </template>
+      <title>🪨 滚石刚滚过的路段（10 格，被追上者已判定）</title>
     </g>
 
     <!-- 街名路牌 -->
@@ -367,6 +401,32 @@ const groundViews = computed(() => {
 }
 .hpNum.hpDead {
   fill: #e57373;
+}
+/* 世界恶意（#24 T6a）：木头预警阴影呼吸描边；滚石=虚线路径流动两拍回放（dashoffset 前爬一周期×2，之后静止）；
+   塌陷凹皮静态。三类都只承载演出，不抢棋盘点击。 */
+.maliceTimber .warnPulse {
+  animation: warnBlink 0.9s ease-in-out infinite;
+}
+@keyframes warnBlink {
+  0%,
+  100% {
+    opacity: 0.55;
+  }
+  50% {
+    opacity: 1;
+  }
+}
+.maliceRock .rockFlow {
+  animation: rockCrawl 1.1s linear 2;
+}
+@keyframes rockCrawl {
+  to {
+    stroke-dashoffset: -11; /* 虚线周期 3+2.5≈5.5，爬两周期=滚过路的回放感，然后静止成残迹 */
+  }
+}
+.maliceTimber,
+.maliceRock title {
+  pointer-events: auto;
 }
 /* targeting 期头像语义：合法可选（亮+呼吸圈）/非法置灰；非 targeting 无行为 */
 .tk.tg.legal {
