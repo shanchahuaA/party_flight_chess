@@ -3,6 +3,7 @@
 import { computed, ref } from "vue";
 import { BOARD, ECO_NAMES, secretGoal } from "../../../kernel/src";
 import { gameStore } from "../game/store";
+import { hpRatio, hpTone } from "../game/hp";
 import BaseSheet from "./BaseSheet.vue";
 
 const state = computed(() => {
@@ -56,6 +57,12 @@ const myGoal = computed(() => {
   if (!p || pick == null) return null;
   return secretGoal(p.secretOptions[pick]!);
 });
+
+// 血量常驻 pill（#23 T5a，数值表 §5.3）：心形数字+微条，跟随自定义上限；档位判据走共用件 game/hp
+const maxHp = computed(() => gameStore.kernel.value?.config.maxHp ?? 10);
+const myHp = computed(() => state.value?.players[0]?.hp ?? 0);
+const hpPct = computed(() => hpRatio(myHp.value, maxHp.value));
+const hpToneCls = computed(() => hpTone(hpPct.value));
 </script>
 
 <template>
@@ -68,6 +75,11 @@ const myGoal = computed(() => {
       <button v-if="canSkip" class="skip" @click="skip">跳过休息</button>
     </div>
     <div class="sp" />
+    <!-- 血量常驻（T5a §5.3）：心形数字+微条；title 带完整读数 -->
+    <div class="pill hp" :title="`血量 ${myHp}/${maxHp}`">
+      <span class="face">❤ {{ myHp }}</span>
+      <span class="bar"><i :class="hpToneCls" :style="{ width: `${Math.round(hpPct * 100)}%` }" /></span>
+    </div>
     <button class="pill secret" type="button" @click="showSecret = true">🎯</button>
 
     <!-- 我的暗牌（仅本人视角；浮层原则：查看类不切页） -->
@@ -117,6 +129,39 @@ const myGoal = computed(() => {
   background: rgba(38, 50, 56, 0.78);
   color: #e0f2f1;
   border-color: transparent;
+}
+/* 血量 pill（T5a）：心形数字+微条；三档色随占比切换 */
+.pill.hp {
+  display: flex;
+  align-items: center;
+  cursor: default;
+}
+.pill.hp .face {
+  color: #c62828;
+}
+.pill.hp .bar {
+  display: inline-block;
+  width: 46px;
+  height: 5px;
+  margin-left: 5px;
+  border-radius: 3px;
+  background: rgba(38, 50, 56, 0.35);
+  overflow: hidden;
+}
+.pill.hp .bar i {
+  display: block;
+  height: 100%;
+  border-radius: 3px;
+  transition: width 0.25s ease;
+}
+.pill.hp .bar .ok {
+  background: #66bb6a;
+}
+.pill.hp .bar .mid {
+  background: #ffca28;
+}
+.pill.hp .bar .low {
+  background: #ef5350;
 }
 .skip {
   margin-left: 6px;

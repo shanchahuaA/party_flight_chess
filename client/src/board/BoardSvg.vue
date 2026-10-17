@@ -18,6 +18,7 @@ import {
   type PlayerState,
 } from "../../../kernel/src";
 import { gameStore } from "../game/store";
+import { HP_TONE_COLOR, hpRatio, hpTone } from "../game/hp";
 
 const state = computed(() => {
   return gameStore.state.value;
@@ -83,6 +84,13 @@ const tokenViews = computed(() =>
     return { p, x: pt.x, y: pt.y };
   }),
 );
+
+// ---------- 血条（#23 T5a，数值表 §5.3 常驻呈现）：自己=❤数字+微条；他人=微型血条 ----------
+// 档位与色取共用件 game/hp（HUD pill 同吃一份）——本格只管几何与读数
+const maxHp = computed(() => gameStore.kernel.value?.config.maxHp ?? 10);
+const hpBarW = (p: PlayerState): string => (16 * hpRatio(p.hp, maxHp.value)).toFixed(2);
+const hpFill = (p: PlayerState): string => HP_TONE_COLOR[hpTone(hpRatio(p.hp, maxHp.value))];
+const hpTitle = (p: PlayerState): string => `${p.id === 0 ? "你" : p.name} 血量 ${p.hp}/${maxHp.value}`;
 
 // ---------- 出生位归属（T2 起按人数落座）：家环/门前小路只画本局出生位 ----------
 const ownerBySpawnCell = computed(() => {
@@ -287,6 +295,13 @@ const groundViews = computed(() => {
       <text class="tokenLbl" y="3.2" text-anchor="middle" font-size="9">
         {{ tv.p.id === 0 ? "你" : tv.p.name.replace("小", "") }}
       </text>
+      <!-- 血条（T5a 常驻）：底槽＋按血量占比的填充；自己头顶再加心形读数 -->
+      <g class="hpG">
+        <title>{{ hpTitle(tv.p) }}</title>
+        <rect x="-8" y="13" width="16" height="3" rx="1.5" fill="rgba(0,0,0,.5)" />
+        <rect x="-8" y="13" :width="hpBarW(tv.p)" height="3" rx="1.5" :fill="hpFill(tv.p)" />
+        <text v-if="tv.p.id === 0" x="0" y="-12.5" text-anchor="middle" class="hpNum" font-size="8">❤{{ tv.p.hp }}</text>
+      </g>
     </g>
 
     <!-- 场地型角标：附着格右上角画皮（踩上触发即消失；同格多张横向错开） -->
@@ -328,6 +343,17 @@ const groundViews = computed(() => {
   font-weight: 800;
   fill: #fff;
   pointer-events: none;
+}
+/* 血条（T5a）：全组不持行为——呈现件不抢棋子的点击（title 提示随之失效，读数在 HUD 与 ❤ 数字兜底） */
+.hpG {
+  pointer-events: none;
+}
+.hpNum {
+  font-weight: 800;
+  fill: #ffe082;
+  stroke: #263238;
+  stroke-width: 2;
+  paint-order: stroke fill;
 }
 /* targeting 期头像语义：合法可选（亮+呼吸圈）/非法置灰；非 targeting 无行为 */
 .tk.tg.legal {

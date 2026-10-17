@@ -1232,7 +1232,14 @@ export class GameKernel {
     }
   }
 
-  /** 血量通道：扣血先过护身符（表一 #14，触发即消耗）再过盾（皮糙肉厚，T5 陷阱同款），回血封顶上限，归零只播报（淘汰流程 T5c） */
+  /**
+   * 血量通道（#23 T5a，数值表 §5.3）：全部扣血/治疗的**唯一结算入口**——
+   *   已接渠道=卡面 hp 原语（事件：断桥/熔岩/近路/孤注一掷、温泉；道具：药水+2/万能药+4/地雷失败支）
+   *   ＋dev.hit 测试通道；后备渠道=陷阱扣血/世界恶意/滚石/塌陷/野狗咬/年兽反噬（T5b/T6 落卡时
+   *   一律走本原语——逐渠道调 this.applyHpDelta，不得旁路改 p.hp，封顶/护身符/盾的口径全渠道同吃）。
+   * 结算序：扣血先过护身符（表一 #14，触发即消耗）再过盾（皮糙肉厚）；同刻多源按到达序逐笔落账；
+   *   回血封顶 maxHp 不溢出；归零只播报（淘汰流程=T5c，本票不接）。
+   */
   private applyHpDelta(p: PlayerState, delta: number): void {
     if (delta === 0) return;
     if (delta < 0 && p.talisman > 0) {
@@ -1245,14 +1252,16 @@ export class GameKernel {
       this.msg("event", `${p.name} 皮糙肉厚被动：免疫这次扣血！`, p.id, { emphasis: "highlight" });
       return;
     }
+    const before = p.hp;
     p.hp = Math.max(0, Math.min(this.config.maxHp, p.hp + delta));
+    const real = p.hp - before; // 播报实际生效量（削顶/兜底按真账记「逐笔落账」，#23 T5a review）
     if (delta < 0) {
-      this.msg("event", `${p.name} 扣 ${-delta} 血（剩 ${p.hp}/${this.config.maxHp}）`, p.id, { emphasis: "target" });
-      if (p.hp === 0) {
+      this.msg("event", `${p.name} 扣 ${-real} 血（剩 ${p.hp}/${this.config.maxHp}）`, p.id, { emphasis: "target" });
+      if (before > 0 && p.hp === 0) {
         this.msg("event", `${p.name} 血量归零——血尽=淘汰（观战；流程 T5c 起接入）。`, p.id, { emphasis: "big" });
       }
     } else {
-      this.msg("event", `${p.name} 回 ${delta} 血（剩 ${p.hp}/${this.config.maxHp}）`, p.id);
+      this.msg("event", `${p.name} 回 ${real} 血（剩 ${p.hp}/${this.config.maxHp}）`, p.id);
     }
   }
 
