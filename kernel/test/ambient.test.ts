@@ -175,31 +175,37 @@ const bootWithFall = (seed: number, cardId: string, pin: Eco): { k: GameKernel; 
 };
 
 describe("暴雨（表一 #19，湿滑系）三行地形表", () => {
-  it("平原行：摔跌判定 d4≤1（25%）——摔倒=下次走格骰削面 1（rollMods cut 在下一次掷骰消费）", () => {
+  it("平原行：摔跌判定 d4≤1（25%）——摔倒=下次走格骰削面 1（rollMods cut 下一次掷骰一次消费）", () => {
+    // 受难者钉到人间：替掷/假人日程的随机流噪声不再让窗偷偷提前闭合（T5b 起陷阱格触发消耗随机流，
+    // 「同窗 rollMods 清零」类状态断言必须钉在单意图边界上，防窗 3 气候第二判定混入）
     const seed = seedForFall("i19", "plain", (k, who, now) => {
-      playThroughP0(k, now); // 摔倒者掷骰消费「削面 1」（战报点名修正来源）
-      return k.state.messages.some((m) => m.turn === 2 && m.who === who && m.text.includes("暴雨·湿滑 削面 1"));
+      if (who !== 0) return false;
+      playThroughP0(k, now); // 受难者（=人间）掷骰：战报让「暴雨·湿滑 削面 1」现身（重放内逐拍照抄）
+      return k.state.messages.some((m) => m.turn === 2 && m.who === 0 && m.text.includes("暴雨·湿滑 削面 1"));
     });
-    const { k, now, fellWho } = bootWithFall(seed, "i19", "plain");
-    const fell = k.state.messages.find((m) => m.turn === 2 && m.who === fellWho && m.text.includes("摔倒了"))!;
+    const { k, now } = bootWithFall(seed, "i19", "plain");
+    const fell = k.state.messages.find((m) => m.turn === 2 && m.who === 0 && m.text.includes("摔倒了"))!;
     expect(fell.text).toContain("摔倒判定 d4("); // 平原行环境判定骰=1d4
-    playThroughP0(k, now); // 摔倒者（可能真人/假人）掷骰：战报让「暴雨·湿滑 削面 1」现身=通道全链真消费
-    expect(k.state.messages.some((m) => m.turn === 2 && m.who === fellWho && m.text.includes("暴雨·湿滑 削面 1"))).toBe(true);
-    expect(k.state.players[fellWho]!.rollMods.filter((m) => m.src === "暴雨·湿滑").length).toBe(0); // 一次消费不重挂
+    for (const p of k.state.players) if (p.isBot) void k.apply({ type: "dev.setDead", pid: p.id }, now);
+    expect(k.state.players[0]!.rollMods.some((m) => m.src === "暴雨·湿滑" && m.mode === "cut" && m.v === 1)).toBe(true);
+    void k.apply({ type: "roll", pid: 0 }, now); // 削面批在本骰消费（doRoll 顺手清空 rollMods）
+    expect(k.state.messages.some((m) => m.turn === 2 && m.who === 0 && m.text.includes("暴雨·湿滑 削面 1"))).toBe(true);
+    expect(k.state.players[0]!.rollMods.filter((m) => m.src === "暴雨·湿滑").length).toBe(0); // 一次消费不重挂
   });
 
   it("雪山行：冻雨摔跌=罚停 1 回合（stun 挂账）——窗 3 开窗「罚停生效——本回合轮空」", () => {
     const seed = seedForFall("i19", "snow", (k, who, now) => {
-      playThroughP0(k, now);
-      toNextWindow(k, now, 60_000, 0); // 窗 3：stun 消耗轮空
-      return k.state.messages.some((m) => m.turn === 3 && m.who === who && m.text.includes("罚停生效——本回合轮空"));
+      if (who !== 0) return false;
+      playThroughP0(k, now); // 受难者（=人间）替掷链路同款（重放内逐拍照抄）
+      return k.state.messages.some((m) => m.turn === 2 && m.who === 0 && m.text.includes("被罚停 1 回合"));
     });
-    const { k, now, fellWho } = bootWithFall(seed, "i19", "snow");
-    expect(k.state.messages.some((m) => m.turn === 2 && m.who === fellWho && m.text.includes("被罚停 1 回合"))).toBe(true);
-    playThroughP0(k, now);
-    void toNextWindow(k, now, 60_000, 0); // 窗 3
-    expect(k.state.messages.some((m) => m.turn === 3 && m.who === fellWho && m.text.includes("罚停生效——本回合轮空"))).toBe(true);
-    expect(k.state.players[fellWho]!.skipped).toBe(true);
+    const { k, now } = bootWithFall(seed, "i19", "snow");
+    expect(k.state.messages.some((m) => m.turn === 2 && m.who === 0 && m.text.includes("被罚停 1 回合"))).toBe(true);
+    for (const p of k.state.players) if (p.isBot) void k.apply({ type: "dev.setDead", pid: p.id }, now);
+    expect(k.state.players[0]!.stun).toBe(1);
+    k.tick(now + 60_000); // 窗 2 截止一拍收口：替掷替确认→关窗→窗 3 开窗时消耗罚停（stun 只拍一次，断言不跨拍）
+    expect(k.state.messages.some((m) => m.turn === 3 && m.who === 0 && m.text.includes("罚停生效——本回合轮空"))).toBe(true);
+    expect(k.state.players[0]!.skipped).toBe(true);
   });
 
   it("戈壁行：细雨摔跌改掷 1d8≤1（12.5% 减半）；摔倒后果表文未标=回落平原削面（T4b2 实现期定案）", () => {

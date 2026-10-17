@@ -9,6 +9,7 @@
 import { BOARD, BRANCH_LEN, ECO_NAMES, NET_GOAL, SPAWN_SLOTS, STREET_NAMES, cellAt, spawnMenu, type BoardCell } from "./board";
 import { M1_EVENT_POOL, EVENT_CARD_BY_ID, type CardEffect, type CheckSpec, type DiceMod, type EffectPart, type EventCard } from "./data/events";
 import { ITEM_CARD_BY_ID, M1_ITEM_POOL, itemCard, itemHasPart } from "./data/items";
+import { trapDefAt } from "./data/traps";
 import { AXIS_NAMES, ROLES, roleDef } from "./data/roles";
 import { SECRET_GOALS } from "./data/goals";
 import { CHECK_FACES, effectiveValue, netMods, resolveCheck, roleCheckMods, roleOneToCrit, rollD20, rollDice, type CheckGrade, type CheckMods } from "./check";
@@ -161,6 +162,8 @@ export class GameKernel {
           rollMods: [],
           checkMods: [],
           wearHalves: 0,
+          itemBan: 0,
+          itemBanned: false,
         };
       }),
       finishers: [],
@@ -491,6 +494,16 @@ export class GameKernel {
       p.confirmed = true;
       p.skipped = true;
       this.msg("event", `${p.name} 罚停生效——本回合轮空。`, p.id, { emphasis: "normal" });
+    }
+    // 禁道具：挂账逐窗消费（#33 T5b 沙困行囊）——置位本窗打不出道具，出窗自然解除
+    for (const p of this.state.players) {
+      p.itemBanned = p.itemBan > 0;
+      if (p.itemBan > 0) {
+        p.itemBan -= 1;
+        if (!p.dead) {
+          this.msg("trap", `${p.name} 行囊灌满沙——本回合禁道具。`, p.id, { emphasis: "target" });
+        }
+      }
     }
     // 环境卡气候（《生物圈 3 号》三原则，#32 T4b2）：每个世界回合「行动前」结算一次——
     // 雷暴=随机劈人；暴雨/风暴按所在生态地形行上判定/修正。轮空者无行动不判（罚停消耗之后。
@@ -920,7 +933,7 @@ export class GameKernel {
     if (w && w.bounced && p.zone === "branch" && p.bpos > 0) {
       this.msg("system", `${p.name} 撞旗反弹，停在支路第 ${p.bpos} 格`, p.id, { flavor: "尽头差一点就踩进。" });
     }
-    this.landOn(p, now); // 落格结算：事件格抽卡（走停即触发，双向一视同仁）
+    this.landOn(p, now, w); // 落格结算：事件格抽卡（走停即触发，双向一视同仁）
     if (p.walkQueue.length > 0) {
       // 卡面连动续走：接队首（不再调度确认——还在走；下一拍自然步进）。效果轨（dice=false）
       const next = p.walkQueue.shift()!;
@@ -996,8 +1009,9 @@ export class GameKernel {
   }
 
   /** 落格结算（走停即触发，前进/退格一视同仁；终点支路与净底格不触发）：
-   *  场地型附着先判（踩上即踩上），再按格型——道具格摸卡／事件格抽卡。 */
-  private landOn(p: PlayerState, now: number): void {
+   *  场地型附着先判（踩上即踩上），再按格型——道具格摸卡／事件格抽卡／陷阱格检定逃生。
+   *  w=刚走完的这段（触发本格的来路）：陷阱格消费「倒霉蛋走格骰 10 无事」按它识别发团骰。 */
+  private landOn(p: PlayerState, now: number, w: WalkState | null): void {
     if (p.dead || p.zone !== "main") return;
     const c = this.cell(p.pos);
     this.triggerGround(p, now);
@@ -1005,7 +1019,24 @@ export class GameKernel {
       this.drawItems(p, 1, "踩上道具格");
     } else if (c.type === "E") {
       this.drawEventFor(p, now);
+    } else if (c.type === "T") {
+      this.triggerTrap(p, now, w);
     }
+  }
+
+  /** 陷阱格踩中（#33 T5b，数值表 §5.4 全检定制）：踩上先掷对应轴检定逃生——通过=免伤或仅小惩罚、
+   *  失败=吃该格负面、骰 1 大失败=负面加重一档（单格自带）。检定修正批（沙暴 −4）与轴系特长
+   *  同吃互抵口径。扣血走 hp 原语=applyHpDelta 单入口（护身符/盾照拦，T5a）；退/罚停/弃卡/传送/
+   *  禁道具各走既有与新原语通道。战报 kind=trap。
+   *  倒霉蛋求生直觉（表三 trapWalk10Safe）：把你送进来的走格骰掷出 10（有效面）则整格无事。 */
+  private triggerTrap(p: PlayerState, now: number, w: WalkState | null): void {
+    if (roleDef(p.roleId).flags.trapWalk10Safe && w?.dice && w.total === WALK_DIE) {
+      this.msg("trap", `${p.name} 走格骰掷出 10——一步跨过陷阱，浑然不觉（倒霉蛋直觉）。`, p.id, { emphasis: "highlight" });
+      return;
+    }
+    const def = trapDefAt(this.cell(p.pos));
+    this.msg("trap", `${p.name} 踩上「${def.name}」！`, p.id, { flavor: def.flavor, emphasis: "target" });
+    this.runCheck(p, def.check, now, undefined, "trap");
   }
 
   /**
@@ -1226,6 +1257,44 @@ export class GameKernel {
           }
           break;
         }
+        case "teleport": {
+          // 传送回自己出生格（#33 陷阱流沙坑/回旋沙柱）：净步保留（行进账不折损——与偷天换日「净步各保留」同口径）、
+          // 来向/来路栈清空（退格从零重审）。落点=出生格净底，不二次触发 landOn。
+          const to = p.spawnCell;
+          p.pos = to;
+          p.from = null;
+          p.trail = [];
+          if (p.zone !== "main") {
+            p.zone = "main";
+            p.bpos = 0;
+          }
+          this.msg("trap", `${p.name} 被卷回了自家门前——传送回出生格（净步保留）。`, p.id, { emphasis: "big" });
+          break;
+        }
+        case "discard": {
+          // 随机弃手牌 v 张（#33 贼赃房）：单池守恒——离手即入弃牌堆；无卡可弃=落空出声
+          let n = 0;
+          const titles: string[] = [];
+          while (p.hand.length > 0 && n < part.v) {
+            const idx = Math.floor(this.draw() * p.hand.length);
+            const id = p.hand.splice(idx, 1)[0]!;
+            this.state.itemDiscard.push(id);
+            titles.push(itemCard(id).title);
+            n += 1;
+          }
+          if (n === 0) {
+            this.msg("trap", `${p.name} 手头无卡可弃——贼赃房也薅了个空。`, p.id);
+          } else {
+            this.msg("trap", `${p.name} 被薅走 ${n} 张道具卡：${titles.join("、")}。`, p.id, { emphasis: "target" });
+          }
+          break;
+        }
+        case "itemBan": {
+          // 禁道具挂账（#33 沙困行囊）：记忆 v 个世界回合，开窗消费到 itemBanned（当窗打不出的道具闸在 itemPlayGate）
+          if (part.v > 0) p.itemBan += part.v;
+          this.msg("trap", `${p.name} 行囊灌满沙——接下来 ${part.v} 个回合打不出任何道具卡。`, p.id, { emphasis: "target" });
+          break;
+        }
         case "none":
           break;
       }
@@ -1269,9 +1338,10 @@ export class GameKernel {
    * 检定三态（1d20+轴 vs 卡面 DC）：修正四原语与角色特长先全量互抵再掷再判；
    * 极值挂原始面 20/1（升面骰出的 21+ 只算大数，不算大成功——保持「极值不随面宽翻动」口径）。
    * 无 dc 的前途骰走 bands 分档（命运之骰：20/1 极值 → 余面按 min/max 首中，末条兜底）。
-   * ctx 透传给分支原语（小圆盾判「他人卡牌效果」的依据，T4b1）。
+   * ctx 透传给分支原语（小圆盾判「他人卡牌效果」的依据，T4b1）；kind=战报类别
+   * （卡面检定默认 event；陷阱格踩中传 trap——同一结算通道、战报分色，T5b）。
    */
-  private runCheck(p: PlayerState, spec: CheckSpec, now: number, ctx?: GuardCtx): void {
+  private runCheck(p: PlayerState, spec: CheckSpec, now: number, ctx?: GuardCtx, kind: MessageKind = "event"): void {
     const role = roleDef(p.roleId);
     const mods: CheckMods[] = [
       ...toCheckMods(p.checkMods), // 风暴·沙暴等气候挂的本回合检定修正（T4b2）——与卡面/特长同一互抵批（走格骰不吃它）
@@ -1294,7 +1364,7 @@ export class GameKernel {
     const axisName = spec.axis ? AXIS_NAMES[spec.axis] : "前途骰";
     if (spec.dc != null) {
       this.msg(
-        "event",
+        kind,
         `${p.name} ${axisName}检 d20(${res.raw})${res.mods >= 0 ? "+" : "−"}${Math.abs(res.mods)}=${res.used} vs DC${spec.dc} —— ${gradeText[res.grade]}！`,
         p.id,
         { emphasis: res.grade === "crit" || res.grade === "critfail" ? "highlight" : "normal" },
@@ -1303,7 +1373,7 @@ export class GameKernel {
       // 前途骰（无 dc）：修正括注与 dc 分支同形；档位结果由 bands 分支的 move/back 播报自报，此处只报面
       const mods =
         res.mods === 0 ? "" : res.mods > 0 ? `（+${res.mods}）` : `（−${-res.mods}）`;
-      this.msg("event", `${p.name} ${axisName}掷出 ${res.raw}${mods}。`, p.id, {
+      this.msg(kind, `${p.name} ${axisName}掷出 ${res.raw}${mods}。`, p.id, {
         emphasis: "normal",
       });
     }
@@ -1590,6 +1660,7 @@ export function itemPlayGate(state: GameState, pid: number, cardId: string): Pla
   if (!card) return { ok: false, reason: `道具卡 ${cardId} 不在表一` };
   if (!p.hand.includes(cardId)) return { ok: false, reason: "这张卡不在你的手牌里" };
   if (p.skipped) return { ok: false, reason: "本回合罚停轮空——不能出手" };
+  if (p.itemBanned) return { ok: false, reason: "本回合禁道具——陷阱的余劲还缠着你，打不出卡" };
   if (p.zone === "done") {
     if (card.route === "chooseOther" || card.route === "auto") {
       return { ok: true };

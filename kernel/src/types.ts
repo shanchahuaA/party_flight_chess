@@ -86,6 +86,10 @@ export interface PlayerState {
   checkMods: DiceMod[];
   /** 轻装上阵被动「穿戴类负面减半（2 层并 1）」的半分账（每次穿戴类负面 +1，满 2 折合 1 层真效果） */
   wearHalves: number;
+  /** 禁道具挂账（#33 T5b 沙困行囊）：剩余禁道具的世界回合数，开窗消费进 itemBanned */
+  itemBan: number;
+  /** 本窗禁道具：itemPlayGate 按它拒「打道具卡」（开窗置位、随窗自然解除，不随确认重置） */
+  itemBanned: boolean;
 }
 
 export interface RouteOption {

@@ -72,6 +72,13 @@ export type EffectPart =
   | { type: "roundShield" }
   /** 清除当前格起前方 v 格内全部场地型卡（表一 #18 清障符，T4b1）：BFS 前向（来路作后界），收走上限深度 */
   | { type: "clearGround"; v: number }
+  // ---- T5b 新原语（#33 陷阱格三格专属，#33 落卡；其余渠道现无数据位）----
+  /** 传送回**自己**的出生格（#33 流沙坑/回旋沙柱）：净步保留、来向/来路栈清空（与偷天换日退格口径一致）；支路/通关席状态复位主干道位 */
+  | { type: "teleport" }
+  /** 随机弃手牌 v 张进弃牌堆（#33 贼赃房：单池守恒；无卡可弃=落空出声） */
+  | { type: "discard"; v: number }
+  /** 禁道具 v 个世界回合（#33 沙困行囊）：开窗消费 itemBan→itemBanned，本窗打不出道具卡；无伤害无位移 */
+  | { type: "itemBan"; v: number }
   | { type: "none" };
 
 export interface TargetedEffect {

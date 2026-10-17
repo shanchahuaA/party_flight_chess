@@ -12,4 +12,5 @@ export * from "./data/roles";
 export * from "./data/goals";
 export * from "./data/events";
 export * from "./data/items";
+export * from "./data/traps";
 export { rngFrom, type Rng, type RngState } from "./rng";
