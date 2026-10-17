@@ -418,7 +418,8 @@ describe("血量/盾通道", () => {
 
 describe("检定三态（1d20+轴 vs 卡面 DC）与极值分支", () => {
   it("断桥跳桥力检 DC12：过=前进 3；败=扣 1 血停原地", () => {
-    const passSeed = seedForDrawCheck("e03", (raw) => raw + 1 >= 12); // 轻装 might1
+    // wants 收紧极值档（20=大成功/1=大失败走分支用例）——普通过/败档不被极值播报顶穿
+    const passSeed = seedForDrawCheck("e03", (raw) => raw + 1 >= 12 && raw < 20); // 轻装 might1
     const k = boot({ seed: passSeed });
     k.apply({ type: "dev.drawCard", pid: 0, cardId: "e03" }, 0);
     k.apply({ type: "chooseCard", pid: 0, option: 1 }, 0);
@@ -426,7 +427,7 @@ describe("检定三态（1d20+轴 vs 卡面 DC）与极值分支", () => {
     expect(me(k).hp).toBe(10);
     expect(k.state.messages.some((m) => m.text.includes("力检 d20") && m.text.includes("—— 通过"))).toBe(true);
 
-    const failSeed = seedForDrawCheck("e03", (raw) => raw + 1 < 12);
+    const failSeed = seedForDrawCheck("e03", (raw) => raw + 1 < 12 && raw > 1);
     const k2 = boot({ seed: failSeed });
     k2.apply({ type: "dev.drawCard", pid: 0, cardId: "e03" }, 0);
     k2.apply({ type: "chooseCard", pid: 0, option: 1 }, 0);

@@ -1,27 +1,49 @@
 /**
- * 道具卡表（内容数值表 · 表一，全池 20 张）+ 道具打出链数据面（#21 T4a / #22 T4b1）。
+ * 道具卡表（内容数值表 · 表一，全池 20 张）+ 道具打出链数据面（#21 T4a / #22 T4b1 / #32 T4b2）。
  *
- * 目标路由（#10 定案目标六类，T4a 三类起步、T4b1 补全非环境）：
+ * 目标路由（#10 定案目标六类，T4a self/chooseOther/ground → T4b1 auto → T4b2 ambient 全类落齐）：
  *   `self` 自身 ｜ `chooseOther` 自选他人（打出时提交目标意图，内核验合法） ｜ `ground` 场地型
  *   （附着当前格，下一踩上者——含铺设者本人——触发判定后消失）｜ `auto` 自动指认
- *   （**卡面写死指认规则** autoRule：系统按规则选目标，无目标=指认落空；淘汰者/通关席自动跳过）。
- *   余 `allOthers` 全体（表一首批空缺）／`ambient` 全场环境（表一 3 张雷暴/暴雨/风暴 → T4b2 票）。
+ *   （**卡面写死指认规则** autoRule：系统按规则选目标，无目标=指认落空；淘汰者/通关席自动跳过）｜
+ *   `ambient` 全场环境（**《生物圈 3 号》三原则**：一场同时最多 1 个环境生效；后打的顶掉前一个——
+ *   旧环境即时失效；打出者摸 1 张道具卡补偿。全桌气候 2 世界回合，每回合开始按所在生态地形行结算）。
+ *   余 `allOthers` 全体（表一首批空缺=惊雷已升格雷暴）。
  *
- * T4a 首批落数 10 张（覆盖三类通路 + 违禁 4 + 走格骰修正三原语）；
- * T4b1 补落非环境余 7 张（时光怀表/偷天换日/小圆盾/护身符/加倍骰/狗笛/清障符），
- * 池内全池 17 张临时到齐；环境卡 3 张 T4b2 追加至 20。编号沿用表一序号。
+ * T4a 首批落数 10 张 + T4b1 非环境 7 张 + T4b2 环境卡 3 张（雷暴/暴雨/风暴）——**全池 20 张全量落数**。
+ * 编号沿用表一序号。
  *
  * 口径：10 血／走格 1d10；违禁 7 张全池清单见 CONTRABAND_TITLES（警长查货窗 T7 消费）。
  */
-import type { CheckSpec, EffectPart, TargetedEffect } from "./events";
+import type { Eco } from "../board";
+import type { CheckSpec, DiceMod, EffectPart, TargetedEffect } from "./events";
 import { DC_TIERS } from "./events";
 import { back, clearGround, drawItem, hp, move, reroll, rollMod, roundShield, swap, talisman } from "./primitives";
 
-export type ItemRoute = "self" | "chooseOther" | "auto" | "ground";
+export type ItemRoute = "self" | "chooseOther" | "auto" | "ground" | "ambient";
 
 /** 场地型踩上判定（香蕉皮/地雷）：过=安全，败=负面；无论过败触发即消耗 */
 export interface GroundSpec {
   check: CheckSpec;
+}
+
+/**
+ * 环境卡三行地形表数据（表一 #13 雷暴／#19 暴雨／#20 风暴，T4b2）：
+ * 每世界回合「行动前」按玩家所在生态地形取行结算（行走格不落地、气候是即时钩子）。
+ * 检定原语共用 CheckSpec/DiceMod 通道（与卡面 DSL 同一套修正式），保证与其他扣血/扣面渠道不串扰。
+ */
+export interface WeatherSpec {
+  /** 雷暴（劈人系 #13）：每回合开始随机劈 1 名在场者回退（回合开始=行动前；劈出者含打出者自己） */
+  strike?: Record<Eco, number>;
+  /**
+   * 湿滑判定（摔跌系：#19 暴雨全桌／#20 风暴·雪山行）：掷 {faces} 面骰 ≤{guard}=摔倒 → onFall 后果。
+   * 只写占用的生态行（如风暴只占雪山行），没写的行不触发判定。
+   */
+  slip?: Partial<Record<Eco, { faces: number; guard: number; onFall: EffectPart[] }>>;
+  /**
+   * 风压修正（压制系 #20 风暴）：行动前按所在生态上账——walkMod 走格骰修正批（下次掷骰一次性消费）、
+   * checkMod 检定修正批（本回合内所有检定都吃，回合开始重刷）。播报数值一律从本数据取值，不硬写。
+   */
+  wind?: Partial<Record<Eco, { walkMod?: DiceMod; checkMod?: DiceMod; check?: { faces: number; guard: number; onFall: EffectPart[] } }>>;
 }
 
 export interface ItemCard {
@@ -31,7 +53,7 @@ export interface ItemCard {
   title: string;
   /** 一句场景文案（叙事皮：春节怪谈×庄园） */
   flavor: string;
-  /** 目标路由（T4a self/chooseOther/ground；T4b1 auto；allOthers/ambient 后票扩） */
+  /** 目标路由（T4a self/chooseOther/ground；T4b1 auto；T4b2 ambient） */
   route: ItemRoute;
   /** 整蛊类=违禁品（表一 7 张）：警长查货窗走私清单（T7 行为）；壳层视觉标识随 T4a2 */
   contraband?: true;
@@ -41,6 +63,8 @@ export interface ItemCard {
   ground?: GroundSpec;
   /** auto 路由专用：卡面写死指认规则（与事件卡系统指认同型，淘汰者/通关席自动跳过） */
   autoRule?: TargetedEffect["target"];
+  /** ambient 专用：三行地形表数据（打出即进 state.ambient，按所在生态行结算） */
+  weather?: WeatherSpec;
   /** 效果挂后续票的占位卡（表一 #16 狗笛=T6b 野狗生成）：打出照常落账，效果先挂「T# 起接入」 */
   tbd?: string;
 }
@@ -149,6 +173,16 @@ export const ITEM_CARDS: readonly ItemCard[] = [
     parts: [drawItem(2)],
   },
   {
+    id: "i13",
+    no: 13,
+    title: "雷暴",
+    flavor: "云层里滚过一声闷响，雷光把庄园照得雪白。",
+    route: "ambient",
+    contraband: true,
+    // 表一 #13：全桌气候 2 回合——每回合开始随机劈 1 人回退（按被劈者所在生态取行）
+    weather: { strike: { plain: 2, snow: 3, gobi: 1 } },
+  },
+  {
     id: "i14",
     no: 14,
     title: "护身符",
@@ -192,6 +226,39 @@ export const ITEM_CARDS: readonly ItemCard[] = [
     route: "self",
     parts: [clearGround(3)],
   },
+  {
+    id: "i19",
+    no: 19,
+    title: "暴雨",
+    flavor: "豆大的雨点砸下来，砖面很快淌成一道道水痕。",
+    route: "ambient",
+    // 表一 #19（湿滑系）：全桌气候 2 回合——每世界回合行动前掷环境判定骰，摔倒按所在生态取行：
+    // 平原 1d4≤1（25%）摔倒→下回合削面 1；雪山冻雨摔倒→罚停 1 回合；戈壁细雨改掷 1d8≤1（12.5% 减半）。
+    // 戈壁行的摔倒后果表文未标，按「摔倒」语义回落平原行（同=下回合削面 1）——T4b2 实现期定案，实玩复查回表。
+    weather: {
+      slip: {
+        plain: { faces: 4, guard: 1, onFall: [rollMod([{ mode: "cut", v: 1, src: "暴雨·湿滑" }])] },
+        snow: { faces: 4, guard: 1, onFall: [{ type: "skip", v: 1 }] },
+        gobi: { faces: 8, guard: 1, onFall: [rollMod([{ mode: "cut", v: 1, src: "暴雨·湿滑" }])] },
+      },
+    },
+  },
+  {
+    id: "i20",
+    no: 20,
+    title: "风暴",
+    flavor: "狂风卷着沙尘压上庄园，连屋檐都在呻吟。",
+    route: "ambient",
+    // 表一 #20（风压系）：全桌气候 2 回合——每世界回合行动前按所在生态上账：
+    // 平原狂风=下次走格骰 −2／雪山暴风雪摔倒判定 1d4≤2（50%）→削面 1／戈壁沙暴=本回合全员检定 −4 修正。
+    weather: {
+      wind: {
+        plain: { walkMod: { mode: "flat", v: -2, src: "风暴·狂风" } },
+        snow: { check: { faces: 4, guard: 2, onFall: [rollMod([{ mode: "cut", v: 1, src: "风暴·暴风雪" }])] } },
+        gobi: { checkMod: { mode: "flat", v: -4, src: "风暴·沙暴" } },
+      },
+    },
+  },
 ];
 
 const BY_ID = new Map(ITEM_CARDS.map((c) => [c.id, c]));
@@ -207,7 +274,7 @@ export const itemCard = (id: string): ItemCard => {
 export const itemHasPart = (card: ItemCard, type: EffectPart["type"]): boolean =>
   card.parts?.some((x) => x.type === type) === true;
 
-/** M1 道具牌池（T4a 首批 10 + T4b1 非环境 7 = 17 张；T4b2 环境卡 3 张追加至全池 20）——单池洗匀，抽空弃牌堆洗回 */
+/** M1 道具牌池（T4a 10 + T4b1 7 + T4b2 环境 3 = 全池 20 张，#32 收口）——单池洗匀，抽空弃牌堆洗回 */
 export const M1_ITEM_POOL: readonly ItemCard[] = ITEM_CARDS;
 
 /** 表一违禁 7 张全池清单（走私弹药；本批落的 6 张必在其列——数据校验兜底） */
@@ -238,6 +305,9 @@ export const registerCards = (cards: readonly ItemCard[]): void => {
       if (tier && dc != null && DC_TIERS[tier] !== dc) throw new Error(`道具卡 ${c.id} 检定档位与 DC 不一致`);
     } else if (c.route === "auto" && !c.autoRule) {
       throw new Error(`自动指认卡 ${c.id} 缺卡面指认规则`);
+    } else if (c.route === "ambient") {
+      if (!c.weather) throw new Error(`环境卡 ${c.id} 缺三行地形表数据`);
+      if (c.parts) throw new Error(`环境卡 ${c.id} 不应带 parts（结算走气候钩子）`);
     } else if (!c.parts?.length && !c.tbd) {
       throw new Error(`道具卡 ${c.id}（${c.route}）缺效果原语`);
     }

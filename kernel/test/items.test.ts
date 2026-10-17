@@ -160,7 +160,7 @@ function bootOntoItemCell(): GameKernel {
   throw new Error("找不到道具格停靠位");
 }
 
-describe("表一 T4a 首批 10 张对表（编号/路由/违禁/文案）", () => {
+describe("表一 20 张全量对表（编号/路由/违禁/文案；T4b2 收口）", () => {
   const EXPECTED: Array<{ id: string; no: number; title: string; route: string; contraband?: boolean }> = [
     { id: "i01", no: 1, title: "顺风靴", route: "self" },
     { id: "i02", no: 2, title: "时光怀表", route: "self" },
@@ -174,16 +174,19 @@ describe("表一 T4a 首批 10 张对表（编号/路由/违禁/文案）", () =
     { id: "i10", no: 10, title: "弹弓", route: "chooseOther", contraband: true },
     { id: "i11", no: 11, title: "幸运骰", route: "self" },
     { id: "i12", no: 12, title: "双倍惊喜", route: "self" },
+    { id: "i13", no: 13, title: "雷暴", route: "ambient", contraband: true },
     { id: "i14", no: 14, title: "护身符", route: "self" },
     { id: "i15", no: 15, title: "加倍骰", route: "self" },
     { id: "i16", no: 16, title: "狗笛", route: "chooseOther", contraband: true },
     { id: "i17", no: 17, title: "地雷", route: "ground", contraband: true },
     { id: "i18", no: 18, title: "清障符", route: "self" },
+    { id: "i19", no: 19, title: "暴雨", route: "ambient" },
+    { id: "i20", no: 20, title: "风暴", route: "ambient" },
   ];
 
-  it("T4b1 非环境 17 张逐张对上表一：id/编号/卡名/路由（环境卡 3 张缺席给 T4b2）", () => {
-    expect(ITEM_CARDS.length).toBe(17);
-    expect(M1_ITEM_POOL.length).toBe(17); // 牌池=非环境全量；雷暴/暴雨/风暴 T4b2 追加至 20
+  it("表一 20 张全量逐张对上：id/编号/卡名/路由（T4a 10 + T4b1 7 + T4b2 3 收口）", () => {
+    expect(ITEM_CARDS.length).toBe(20);
+    expect(M1_ITEM_POOL.length).toBe(20); // 全池到齐：单池结构不变，环境卡 3 张并入
     for (const e of EXPECTED) {
       const c = ITEM_CARDS.find((x) => x.no === e.no);
       expect(c, `表一 #${e.no}`).toBeDefined();
@@ -191,15 +194,13 @@ describe("表一 T4a 首批 10 张对表（编号/路由/违禁/文案）", () =
       expect(c!.title).toBe(e.title);
       expect(c!.route).toBe(e.route);
       expect(!!c!.contraband).toBe(!!e.contraband);
-      for (const skip of [13, 19, 20]) {
-        expect(ITEM_CARDS.find((x) => x.no === skip), `表一 #${skip} 留给 T4b2`).toBeUndefined();
-      }
     }
     const byRoute = (r: string) => ITEM_CARDS.filter((c) => c.route === r).length;
     expect(byRoute("self")).toBe(11);
     expect(byRoute("chooseOther")).toBe(4);
     expect(byRoute("ground")).toBe(2);
-    expect(byRoute("auto")).toBe(0); // 表一未标 auto 的道具卡——auto 路由机制随本票初始化，真人消费留后续票
+    expect(byRoute("auto")).toBe(0); // 表一未标 auto 的道具卡——auto 路由机制 T4b1 已立，真人消费卡留后续票
+    expect(byRoute("ambient")).toBe(3); // 表一环境卡 3 张（雷暴劈人/暴雨摔倒/风暴压制）
     expect(ITEM_CARDS.every((c) => c.flavor.length > 0)).toBe(true);
   });
 
@@ -226,11 +227,12 @@ describe("表一 T4a 首批 10 张对表（编号/路由/违禁/文案）", () =
     expect(itemCard(cid(1)).parts).toEqual([{ type: "rollMod", mods: [{ mode: "flat", v: 3, src: "顺风靴" }] }]);
   });
 
-  it("违禁 6 张字段贯通且全在表一 7 张走私清单内（雷暴 T4b2 落池凑齐 7）", () => {
+  it("违禁 7 张全池字段贯通且全在表一走私清单内（T4b2 雷暴落池凑齐）", () => {
     const flagged = ITEM_CARDS.filter((c) => c.contraband).map((c) => c.title).sort();
-    expect(flagged).toEqual(["地雷", "弹弓", "偷天换日", "狗笛", "脚镣", "香蕉皮"].sort());
+    expect(flagged).toEqual(["地雷", "弹弓", "偷天换日", "狗笛", "脚镣", "香蕉皮", "雷暴"].sort());
     for (const t of flagged) expect(CONTRABAND_TITLES).toContain(t);
-    expect(CONTRABAND_TITLES.length).toBe(7); // 表一全池清单（含 T4b2 待落的雷暴）
+    expect(CONTRABAND_TITLES.length).toBe(7);
+    expect([...CONTRABAND_TITLES].sort()).toEqual(flagged); // 全池对齐：走私清单=表一违禁 7 张
   });
 
   it("每张有场景文案；场地卡带踩上判定（香蕉皮 DC8／地雷 DC12）", () => {
@@ -781,13 +783,14 @@ describe("时光怀表（重掷本次走格骰）", () => {
   });
 
   it("gate：没掷骰不能重掷；骰已走完不能重掷", () => {
-    const k = boot();
+    // 掷 1 步、三拍内走完（140/280ms）——赶在假人 rollAt（≥750ms）之前，事件流零触发、时序全确定
+    const k = boot({ seed: seedForFirstDie(1) });
     ensureHand(k, 0, "i02");
     expect(() => k.apply({ type: "playItem", pid: 0, cardId: "i02" }, 0)).toThrow(/重掷无从说起/);
     void k.apply({ type: "roll", pid: 0 }, 0);
     walkOut(k, 0);
     expect(me(k).walk).toBeNull();
-    expect(() => k.apply({ type: "playItem", pid: 0, cardId: "i02" }, 3_000)).toThrow(/重掷窗口已过/);
+    expect(() => k.apply({ type: "playItem", pid: 0, cardId: "i02" }, 300)).toThrow(/重掷窗口已过/);
   });
 });
 

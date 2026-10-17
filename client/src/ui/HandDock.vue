@@ -11,6 +11,7 @@
 import { computed, ref, watchEffect } from "vue";
 import {
   AXIS_NAMES,
+  ECO_NAMES,
   ITEM_CARD_BY_ID,
   itemPlayGate,
   type CheckSpec,
@@ -21,6 +22,7 @@ import {
   type PlayGate,
   type PlayerState,
   type GameState,
+  type WeatherSpec,
 } from "../../../kernel/src";
 import { gameStore } from "../game/store";
 import BaseSheet from "./BaseSheet.vue";
@@ -79,6 +81,7 @@ const ROUTE_TXT: Record<ItemRoute, string> = {
   chooseOther: "指向他人",
   auto: "自动指认",
   ground: "场地 · 搁脚下",
+  ambient: "全场环境",
 };
 
 function modText(mods: DiceMod[]): string {
@@ -126,10 +129,44 @@ function checkText(spec: CheckSpec): string {
   const pass = spec.onPass?.length ? `；通过 ${spec.onPass.map(partText).join("，")}` : "；通过 安全无事";
   return `${axis}判定${dc}：失败 ${fail}${pass}`;
 }
+/** 环境卡三行地形表 → 机械投影（按所在生态分行；每行摊平到「判定/上账」真话） */
+const ECO_ORDER = ["plain", "snow", "gobi"] as const;
+function weatherText(w: WeatherSpec): string[] {
+  const lines: string[] = [];
+  if (w.strike) {
+    lines.push(`每回合开始随机劈 1 人回退：${ECO_ORDER.map((e) => `${ECO_NAMES[e]} ${w.strike![e]}`).join("／")}`);
+  }
+  if (w.slip) {
+    for (const e of ECO_ORDER) {
+      const row = w.slip[e];
+      if (!row) continue;
+      const pct = `${Math.round((row.guard / row.faces) * 100)}% 摔倒`;
+      const fx = row.onFall.map(partText).join("，");
+      lines.push(`${ECO_NAMES[e]}：判定 d${row.faces}≤${row.guard}（${pct}）→ ${fx}`);
+    }
+  }
+  if (w.wind) {
+    for (const e of ECO_ORDER) {
+      const row = w.wind[e];
+      if (!row) continue;
+      if (row.walkMod) {
+        const m = row.walkMod;
+        lines.push(`${ECO_NAMES[e]}：下次走格骰 ${m.src ? `${m.src} ` : ""}${m.v < 0 ? `−${-m.v}` : `+${m.v}`}`);
+      }
+      if (row.check) {
+        const pct = `${Math.round((row.check.guard / row.check.faces) * 100)}% 摔倒`;
+        lines.push(`${ECO_NAMES[e]}：判定 d${row.check.faces}≤${row.check.guard}（${pct}）→ ${row.check.onFall.map(partText).join("，")}`);
+      }
+      if (row.checkMod) lines.push(`${ECO_NAMES[e]}：本回合所有检定 ${row.checkMod.v < 0 ? `−${-row.checkMod.v}` : `+${row.checkMod.v}`}`);
+    }
+  }
+  return lines;
+}
 const drawerLines = computed<string[]>(() => {
   const c = drawerItem.value;
   if (!c) return [];
   if (c.route === "ground") return c.ground ? [checkText(c.ground.check)] : [];
+  if (c.route === "ambient") return c.weather ? weatherText(c.weather) : [];
   if (c.tbd) return [`效果挂后线：${c.tbd} 起接入（打出即晒牌，眼前先无结算）`];
   return (c.parts ?? []).map(partText);
 });
@@ -174,6 +211,9 @@ const drawerLines = computed<string[]>(() => {
       <p v-if="drawerItem!.route === 'chooseOther'" class="hint">打出后指向对方；世界·即时：下一世界回合开始时结算。</p>
       <p v-if="drawerItem!.route === 'auto'" class="hint">不用选目标——系统按卡面规则自动指认（淘汰者/通关席跳过）；时机与他人卡同口径。</p>
       <p v-if="drawerItem!.route === 'ground'" class="hint">搁在脚下这格；下一踩上的人（含自己）触发判定，触发即消失。</p>
+      <p v-if="drawerItem!.route === 'ambient'" class="hint">
+        不用选目标——全桌气候 2 世界回合，各按所在地形行结算；《生物圈 3 号》：一场最多 1 个气候，后打顶掉旧气候（旧环境即时失效），打出者摸 1 张补偿。
+      </p>
 
       <!-- 打牌入口：gate 不给过就不出钮（reason 落字） -->
       <div v-if="gate?.ok" class="actions">
@@ -181,7 +221,7 @@ const drawerLines = computed<string[]>(() => {
           🎯 指向他人 · 去棋盘点目标
         </button>
         <button v-else type="button" class="playBtn" @click="playDirect">
-          {{ drawerItem!.route === "ground" ? "⚠ 搁在脚下" : "▶ 打出" }}
+          {{ drawerItem!.route === "ground" ? "⚠ 搁在脚下" : drawerItem!.route === "ambient" ? "🌪 掀起气候" : "▶ 打出" }}
         </button>
         <button type="button" class="ghostBtn" @click="closeDrawer">先不下</button>
       </div>

@@ -82,6 +82,8 @@ export interface PlayerState {
   hand: string[];
   /** 积压的走格骰修正（T4a：顺风靴/脚镣/幸运骰……下次掷骰一次性消费，多张先互抵） */
   rollMods: DiceMod[];
+  /** 本回合内所有检定吃的修正批（#32 T4b2 风暴·戈壁沙暴行：行动前挂、回合开始重刷；走格骰不吃它） */
+  checkMods: DiceMod[];
   /** 轻装上阵被动「穿戴类负面减半（2 层并 1）」的半分账（每次穿戴类负面 +1，满 2 折合 1 层真效果） */
   wearHalves: number;
 }
@@ -150,6 +152,12 @@ export interface GameState {
   itemDiscard: string[];
   /** 场上的场地型附着（踩上触发后消失；T4a2 棋盘角标渲染数据） */
   ground: GroundMark[];
+  /**
+   * 现役全场环境（《生物圈 3 号》三原则，#32 T4b2）：一场同时最多 1 个环境生效——后打的顶掉前一个
+   * （旧环境即时失效），打出者摸 1 张补偿。打出当回合不触发；此后每个世界回合开始结算一次
+   * （按所在生态地形行），left 减到 0=气候平息自然失效。null=无气候。
+   */
+  ambient: { cardId: string; /** 剩余触发回合数（回合开始结算一次后 −1；0=到期失效） */ left: number } | null;
   /** 指向他人的卡面效果（world·即时）：下一世界回合开始时结算（窗口 openWindow 消费） */
   deferred: DeferredEffect[];
   /** 内部：战报 id 发号与 RNG 状态（随状态走，M2 快照恢复随机流） */

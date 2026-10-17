@@ -46,6 +46,11 @@ function modDetail(mods: DiceMod[]): string {
   return mods.map((m) => (m.src ? `${m.src} ${txt(m)}` : txt(m))).join("、");
 }
 
+/** 单项修正播报值（−2/+4 全宽负号播报——气候挂账从 WeatherSpec 数据取值，不硬写） */
+function modSigned(v: number): string {
+  return v < 0 ? `−${-v}` : `+${v}`;
+}
+
 export const GAME_DEFAULTS: Required<Omit<GameConfig, "allowDev">> = {
   seed: 20261016,
   turnCap: 15,
@@ -78,6 +83,9 @@ const PLAYER_DEFS: PlayerDef[] = [
 
 /** 走格骰面数（1d10） */
 const WALK_DIE = 10;
+
+/** 环境卡全桌气候持续的世界回合数（表一 #13/#19/#20 拍板 2） */
+const AMBIENT_TURNS = 2;
 
 /** 单名玩家单窗抽卡上限（卡面引走格→落格重触发抽卡的连环熔断） */
 const EVENT_CHAIN_CAP = 4;
@@ -151,6 +159,7 @@ export class GameKernel {
           cardDraws: 0,
           hand: [],
           rollMods: [],
+          checkMods: [],
           wearHalves: 0,
         };
       }),
@@ -159,10 +168,11 @@ export class GameKernel {
       // 事件牌堆：单池洗匀（表二 20 张；'window' 卡 T7 放行——事件定案 §1.8 抽完即洗回弃牌堆）
       deck: this.rng.shuffle(M1_EVENT_POOL.map((c) => c.id)),
       discard: [],
-      // 道具牌堆：单池洗匀（T4a 首批 10 张；T4b 追加至 20——事件定案 §1.8 同口径）
+      // 道具牌堆：单池洗匀（表一 20 张全量，T4b2 收口——事件定案 §1.8 同口径）
       itemDeck: this.rng.shuffle(M1_ITEM_POOL.map((c) => c.id)),
       itemDiscard: [],
       ground: [],
+      ambient: null,
       deferred: [],
       seq: 0,
       rngState: this.rngHost.s,
@@ -455,6 +465,7 @@ export class GameKernel {
       p.confirmed = false;
       p.skipped = false;
       p.cardDraws = 0; // 连抽上限按世界回合重计
+      p.checkMods = []; // 风暴·沙暴的 −4 只属本回合：回合开始重刷（T4b2）
       p.botSchedule = { rollAt: now, confirmAt: 0 };
     }
     // 指向他人的卡面效果：下一世界回合开始时结算（事件定案 §1.6——被整蛊者有预判窗口）
@@ -481,6 +492,9 @@ export class GameKernel {
       p.skipped = true;
       this.msg("event", `${p.name} 罚停生效——本回合轮空。`, p.id, { emphasis: "normal" });
     }
+    // 环境卡气候（《生物圈 3 号》三原则，#32 T4b2）：每个世界回合「行动前」结算一次——
+    // 雷暴=随机劈人；暴雨/风暴按所在生态地形行上判定/修正。轮空者无行动不判（罚停消耗之后。
+    this.tickAmbient(now);
     this.emit({ type: "windowStart", turn: this.state.turn, deadline: this.state.windowDeadline });
     this.reserveBots(now);
   }
@@ -500,6 +514,72 @@ export class GameKernel {
         this.doConfirm(p, now, "bot");
       }
     }
+  }
+
+  // ---------- 环境卡气候（《生物圈 3 号》三原则，#32 T4b2） ----------
+
+  /** 全场环境每世界回合「行动前」结算（打出的当回合已过时点、从下一回合开始；left 减到 0=平息失效）：
+   *  雷暴=回合开始随机劈 1 名在场者回退（按被劈者生态取行）；暴雨/风暴=各行动者按所在生态地形行
+   *  掷摔倒判定或上修正批。通道全走既有原语（applyParts/addWalkMods/checkMods）——与其他扣血/扣面渠道互抵不串扰。 */
+  private tickAmbient(now: number): void {
+    const amb = this.state.ambient;
+    if (!amb) return;
+    const card = itemCard(amb.cardId);
+    const w = card.weather!;
+    if (w.strike) {
+      // 雷暴：随机劈 1 名在场者（含打出者自己——天灾无主）；回退步数按被劈者所在格生态取行
+      const act = this.state.players.filter((q) => !q.dead && q.zone !== "done");
+      const victim = act[Math.floor(this.draw() * act.length)];
+      if (victim) {
+        const eco = this.cell(victim.pos).zone; // 支路里的人 pos=出生格（平原）——行军地貌按所在格统一口径
+        const steps = w.strike[eco] ?? 0;
+        if (steps > 0) {
+          this.msg("item", `⛈ 雷暴劈下——${victim.name} 在${ECO_NAMES[eco]}被劈中，回退 ${steps} 步。`, victim.id, {
+            emphasis: "target",
+          });
+          this.startWalk(victim, -steps, now);
+        }
+      }
+    }
+    // 行动者逐人取行（罚停轮空者本回合无行动——不判不挂）
+    for (const p of this.state.players) {
+      if (p.dead || p.zone === "done" || p.skipped) continue;
+      const eco = this.cell(p.pos).zone;
+      const slip = w.slip?.[eco];
+      if (slip) this.weatherCheck(p, card.title, slip, now);
+      const wind = w.wind?.[eco];
+      if (wind) {
+        if (wind.walkMod) {
+          this.addWalkMods(p, [wind.walkMod]);
+          this.msg("item", `🌪 「${card.title}」狂风扑面——${p.name} 在${ECO_NAMES[eco]}的下次走格骰 ${modSigned(wind.walkMod.v)}（顶风逆行）。`, p.id);
+        }
+        if (wind.checkMod) {
+          p.checkMods.push(wind.checkMod);
+          this.msg("item", `🌪 「${card.title}」沙暴漫天——${p.name} 在${ECO_NAMES[eco]}本回合所有检定 ${modSigned(wind.checkMod.v)}。`, p.id, {
+            emphasis: "normal",
+          });
+        }
+        if (wind.check) this.weatherCheck(p, card.title, wind.check, now);
+      }
+    }
+    amb.left -= 1;
+    if (amb.left <= 0) {
+      this.state.ambient = null;
+      this.msg("item", `「${card.title}」天色放晴——全桌气候平息（${AMBIENT_TURNS} 世界回合到期）。`, undefined, {
+        emphasis: "normal",
+      });
+    }
+  }
+
+  /** 环境判定骰（暴雨/风暴摔倒行共用）：掷 faces 面骰 ≤guard=摔倒；没摔不出声，摔了后果走 applyParts 原通道 */
+  private weatherCheck(p: PlayerState, cardTitle: string, row: { faces: number; guard: number; onFall: EffectPart[] }, now: number): void {
+    const raw = rollDice(this.rng, { adv: 0, advCount: 0 }, row.faces);
+    this.syncRng();
+    if (raw > row.guard) return;
+    this.msg("item", `⚖ 「${cardTitle}」摔倒判定 d${row.faces}(${raw})≤${row.guard}——${p.name} 摔倒了！`, p.id, {
+      emphasis: "target",
+    });
+    if (row.onFall.length > 0) this.applyParts(p, row.onFall, now);
   }
 
   /** 窗内挂起抉择到点代选：超时未应答按卡面默认项结算并标注（事件定案 §1.7） */
@@ -1185,6 +1265,7 @@ export class GameKernel {
   private runCheck(p: PlayerState, spec: CheckSpec, now: number, ctx?: GuardCtx): void {
     const role = roleDef(p.roleId);
     const mods: CheckMods[] = [
+      ...toCheckMods(p.checkMods), // 风暴·沙暴等气候挂的本回合检定修正（T4b2）——与卡面/特长同一互抵批（走格骰不吃它）
       ...toCheckMods(spec.mods ?? []),
       // 轴系特长（蛮力/狡运）只跟有轴检定走；无轴前途骰（命运之骰）不吃特长
       ...(spec.axis ? roleCheckMods(role, spec.axis) : []),
@@ -1251,6 +1332,8 @@ export class GameKernel {
       }
     } else if (card.route === "auto") {
       if (target != null) throw new KernelError(`「${card.title}」是系统指认——不用带目标`);
+    } else if (card.route === "ambient") {
+      if (target != null) throw new KernelError(`「${card.title}」是全场气候——不用带目标`);
     } else if (target != null) {
       throw new KernelError(`「${card.title}」不需要目标`);
     }
@@ -1301,6 +1384,22 @@ export class GameKernel {
         return;
       }
       this.dispatchToOthers(targets, card.parts!, now, { kind: "item", srcPid: pid });
+      return;
+    }
+    if (card.route === "ambient") {
+      // 《生物圈 3 号》三原则（#32 T4b2）：出袋即回弃牌堆（气候只挂状态——单池守恒式自动成立）；
+      // 一场最多 1 个环境生效——现役旧环境计时失效（状态当场撤掉、下一回合起不再触发）；打出者摸 1 张补偿。
+      this.state.itemDiscard.push(cardId);
+      const old = this.state.ambient;
+      this.state.ambient = { cardId, left: AMBIENT_TURNS };
+      const scene = old
+        ? `${p.name} 打出「${card.title}」，压掉旧气候「${itemCard(old.cardId).title}」（旧环境即时失效）——全桌气候 ${AMBIENT_TURNS} 世界回合`
+        : `${p.name} 打出「${card.title}」——全桌气候 ${AMBIENT_TURNS} 世界回合`;
+      this.msg("item", `${scene}（下一回合起按所在生态逐行结算）。`, pid, {
+        flavor: card.flavor,
+        emphasis: old ? "big" : "highlight",
+      });
+      this.drawItems(p, 1, "打出环境补偿");
       return;
     }
     if (card.route === "self") {
@@ -1470,8 +1569,9 @@ export type PlayGate = { ok: true } | { ok: false; reason: string };
 
 /** 打出时机锁：确认结束之前的窗内任意时刻（含未掷/走格中）、张数不限。
  *  淘汰=观战不出手；罚停轮空窗不出手；通关席按一页纸/GLOSSARY「仍可打卡整蛊」留 chooseOther/auto 两个口子
- *  （auto=系统指认的整蛊通道，T4b1 扩口；自用类对通关席无意义、场地卡会搁在其出生格——两者一并收紧，
- *  T4a2 壳层亦隐藏入口）。重掷类（时光怀表）：走格骰发团的走在路上才可打。 */
+ *  （auto=系统指认的整蛊通道，T4b1 扩口；自用类无意义、场地卡会搁其出生格、ambient 气候无指认口子——
+ *  三类一并收紧，T4a2 壳层亦隐藏入口；若实玩想放行 ambient 整蛊，改这一行即可）。重掷类（时光怀表）：
+ *  走格骰发团的走在路上才可打。 */
 export function itemPlayGate(state: GameState, pid: number, cardId: string): PlayGate {
   const p = state.players[pid];
   if (!p) return { ok: false, reason: `玩家 ${pid} 不存在` };
