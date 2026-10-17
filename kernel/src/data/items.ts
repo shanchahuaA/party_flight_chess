@@ -17,7 +17,7 @@
 import type { Eco } from "../board";
 import type { CheckSpec, DiceMod, EffectPart, TargetedEffect } from "./events";
 import { DC_TIERS } from "./events";
-import { back, clearGround, drawItem, hp, move, reroll, rollMod, roundShield, swap, talisman } from "./primitives";
+import { back, clearGround, dogSpawn, drawItem, hp, move, reroll, rollMod, roundShield, swap, talisman } from "./primitives";
 
 export type ItemRoute = "self" | "chooseOther" | "auto" | "ground" | "ambient";
 
@@ -65,8 +65,6 @@ export interface ItemCard {
   autoRule?: TargetedEffect["target"];
   /** ambient 专用：三行地形表数据（打出即进 state.ambient，按所在生态行结算） */
   weather?: WeatherSpec;
-  /** 效果挂后续票的占位卡（表一 #16 狗笛=T6b 野狗生成）：打出照常落账，效果先挂「T# 起接入」 */
-  tbd?: string;
 }
 
 // ---- 卡片表（原语速写共用 data/primitives.ts） ----
@@ -205,7 +203,10 @@ export const ITEM_CARDS: readonly ItemCard[] = [
     flavor: "一长两短，林子深处的耳朵竖了起来。",
     route: "chooseOther",
     contraband: true,
-    tbd: "T6b",
+    // 表一 #16（T6b 接通）：系统在指定玩家相邻格生成 1 只标准野狗（4 血/3 世界回合寿命）——
+    // 原语 dogSpawn 落在受指向者身上（world·即时走 deferred 链=道具卡同口径；轮班·限时的「相邻格」
+    // 按结算时刻的位置取）。相邻候选全体等概率（含环岛/出生格——整蛊无豁免）。
+    parts: [dogSpawn()],
   },
   {
     id: "i17",
@@ -308,7 +309,7 @@ export const registerCards = (cards: readonly ItemCard[]): void => {
     } else if (c.route === "ambient") {
       if (!c.weather) throw new Error(`环境卡 ${c.id} 缺三行地形表数据`);
       if (c.parts) throw new Error(`环境卡 ${c.id} 不应带 parts（结算走气候钩子）`);
-    } else if (!c.parts?.length && !c.tbd) {
+    } else if (!c.parts?.length) {
       throw new Error(`道具卡 ${c.id}（${c.route}）缺效果原语`);
     }
     if (c.contraband && !CONTRABAND_TITLES.includes(c.title)) {

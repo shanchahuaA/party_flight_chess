@@ -219,11 +219,9 @@ describe("表一 20 张全量对表（编号/路由/违禁/文案；T4b2 收口�
     expect(itemCard(cid(14)).parts).toEqual([{ type: "talisman" }]);
     expect(itemCard(cid(15)).parts).toEqual([{ type: "rollMod", mods: [{ mode: "raise", v: 2, src: "加倍骰" }] }]); // 1d10→1d12
     expect(itemCard(cid(18)).parts).toEqual([{ type: "clearGround", v: 3 }]);
-    // 狗笛：效果挂 T6b（占位卡，无原语）；违禁在列
-    const dog = itemCard(cid(16));
-    expect(dog.tbd).toBe("T6b");
-    expect(dog.parts).toBeUndefined();
-    expect(dog.contraband).toBe(true);
+    // 狗笛：效果=T6b 野狗生成原语（表一 #16 接口——生成账在 dogs.test 收账）；违禁在列
+    expect(itemCard(cid(16)).parts).toEqual([{ type: "dogSpawn" }]);
+    expect(itemCard(cid(16)).contraband).toBe(true);
     expect(itemCard(cid(1)).parts).toEqual([{ type: "rollMod", mods: [{ mode: "flat", v: 3, src: "顺风靴" }] }]);
   });
 
@@ -961,16 +959,17 @@ describe("加倍骰（升面 1d10→1d12）", () => {
   });
 });
 
-describe("狗笛（T6b 挂账占位卡：晒牌照常、效果晚接）", () => {
-  it("打出指向合法目标：占位战报点名 T6b、卡正常回池、无 deferred 效果挂账", () => {
+describe("狗笛（表一 #16=T6b 野狗生成原语：打出链照 chooseOther 走）", () => {
+  it("打出指向合法目标：卡回池、deferred 挂账带 dogSpawn、生成账到下窗开窗才落（生成本身归 dogs.test）", () => {
     const k = bootFixed();
     ensureHand(k, 0, "i16");
     k.apply({ type: "playItem", pid: 0, cardId: "i16", target: 1 }, 0);
     expect(me(k).hand).not.toContain("i16");
-    expect(k.state.itemDiscard).toContain("i16"); // 晒牌回池（T6b 接生成效果）
-    expect(k.state.deferred).toHaveLength(0);
+    expect(k.state.itemDiscard).toContain("i16"); // 晒牌照常回池
+    expect(k.state.deferred).toEqual([{ pid: 1, parts: [{ type: "dogSpawn" }], kind: "item", srcPid: 0 }]);
+    expect(k.state.malice.dogs).toHaveLength(0); // world·即时：未到结算时刻不生成
     expect(k.state.messages.some((m) => m.text.includes("打出「狗笛」"))).toBe(true);
-    expect(k.state.messages.some((m) => m.text.includes("T6b") && m.text.includes("小黄"))).toBe(true);
+    expect(k.state.messages.some((m) => m.kind === "item" && m.text.includes("下一世界回合开始时结算"))).toBe(true);
     expect(itemLegalTargets(k.state, 0, "i16")).toContain(2); // chooseOther 口径照常
   });
 });

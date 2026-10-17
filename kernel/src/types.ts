@@ -137,6 +137,26 @@ export interface GroundMark {
   owner: number;
 }
 
+/** 🐕 野狗（#25 T6b，数值表 §5.5 四型第四档）：世界层我行我素小怪——不入玩家资产池。 */
+export interface DogState {
+  /** 当局序号（壳层 token 渲染的稳定 key——同一只狗生死/跨波不换号） */
+  id: number;
+  /** 所在主网格 id（撞上玩家=强制遭遇战；环岛/出生格也可能路过） */
+  cell: number;
+  /** 野狗血量（4 血；世界恶意/玩家遭遇战各可扣，归零=消灭移出花名册） */
+  hp: number;
+  /** 剩余寿命（世界回合数）：开窗递减，归零=消散出声——「存活 3 世界回合」按含出生窗计 3 */
+  left: number;
+}
+
+/** 狗笛生成请求（dogSpawn 原语入队、下一世界回合 tickMalice 出队的完整账） */
+export interface DogSpawnReq {
+  /** 排定的落点格 id */
+  cell: number;
+  /** 受指向者（战报归因「X 旁边的落点」） */
+  target: number;
+}
+
 export interface GameState {
   turn: number;
   phase: GamePhase;
@@ -165,9 +185,11 @@ export interface GameState {
   /** 指向他人的卡面效果（world·即时）：下一世界回合开始时结算（窗口 openWindow 消费） */
   deferred: DeferredEffect[];
   /**
-   * 世界恶意挂账（#24 T6a）：木头=预警落点（下一世界回合开始砸落）／塌陷=裂开的格子与
+   * 世界恶意挂账（#24 T6a + #25 T6b）：木头=预警落点（下一世界回合开始砸落）／塌陷=裂开的格子与
    * 剩余存续世界回合数（踩入咬人、开窗递减到 0 复原）／滚石=本次滚过的 10 格路径（演出残留，
-   * 无后续结算）。壳层据此渲染阴影/塌陷图皮/滚石路径；三类互不叠加、各单槽。
+   * 无后续结算）／野狗=活狗花名册（每回合随机移动或留守、撞上玩家=强制遭遇战、寿命到期消散；
+   * 狗笛/dev 通道同一条入册路径）。壳层据此渲染阴影/塌陷图皮/滚石路径/狗 token；三类互不叠加、各单槽，
+   * 野狗为多槽花名册。
    */
   malice: {
     /** 🪵 木头预警：挂着的 3 个落点格（下一世界回合开始砸清） */
@@ -176,6 +198,11 @@ export interface GameState {
     sink: { cells: number[]; left: number } | null;
     /** 🪨 滚石：最近一次滚过的路径（仅演出） */
     rock: number[] | null;
+    /** 🐕 狗笛挂账（#25 T6b）：登记中的生成请求——dogSpawn 原语入队，下一世界回合 tickMalice
+     *  出队结算（与波生同段位=标准寿命不吃「出生窗减寿」；世界恶意 off 档也能由道具起狗） */
+    spawnQueue: DogSpawnReq[];
+    /** 🐕 野狗花名册：活狗实时位置/血量/寿命（波次生成与狗笛生成共一条入册通道） */
+    dogs: DogState[];
   };
   /** 内部：战报 id 发号与 RNG 状态（随状态走，M2 快照恢复随机流） */
   seq: number;
@@ -228,7 +255,9 @@ export type Intent =
   /** 从牌堆/弃牌堆取指定道具卡塞进手牌（道具链冒烟/测试用） */
   | { type: "dev.giveItem"; pid: number; cardId: string }
   /** 直接吃 dmg 点伤害（走 applyHpDelta 完整通道：护身符/盾照拦；伤害链单测不绕弯路） */
-  | { type: "dev.hit"; pid: number; dmg: number };
+  | { type: "dev.hit"; pid: number; dmg: number }
+  /** 在指定格生成 1 只标准野狗（T6b 遭遇战/恶意互演链的确定性钉位通道；生成当拍同格=撞上照打遭遇战） */
+  | { type: "dev.spawnDog"; cell: number };
 
 // ---------- 事实（下行：客户端据此动起来） ----------
 
@@ -259,7 +288,9 @@ export type Fact =
   | { type: "itemDrawn"; pid: number; cardId: string }
   | { type: "itemPlayed"; pid: number; cardId: string; target?: number }
   /** 棋盘联动：说明性脉冲（界面呈现定案 §四 S1 描边） */
-  | { type: "pulse"; pid: number; level: "normal" | "target" | "big" };
+  | { type: "pulse"; pid: number; level: "normal" | "target" | "big" }
+  /** 击毙野狗（#25 T6b 遭遇战成功/大成功；暗牌「打狗英雄 ≥2 只」表四 #7 走对局事件流计数，T8b1 消费） */
+  | { type: "dogKilled"; pid: number };
 
 export interface PlayerDef {
   name: string;

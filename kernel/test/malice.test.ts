@@ -17,8 +17,8 @@ import { describe, expect, it } from "vitest";
 import { BOARD, GameKernel, MAIN_PLAYABLE_CELLS, STREET_RUNS, type GameConfig } from "../src";
 import { advanceWorldTurns, boot, bootWithDie, cell, dieOf, toNextWindow, walkOut } from "./helpers";
 
-type WaveKeyword = "大木头悬空" | "塌坡滚石" | "地面蛋壳般裂开";
-const WAVE_MARKERS: readonly WaveKeyword[] = ["大木头悬空", "塌坡滚石", "地面蛋壳般裂开"];
+type WaveKeyword = "大木头悬空" | "塌坡滚石" | "地面蛋壳般裂开" | "野狗出没";
+const WAVE_MARKERS: readonly WaveKeyword[] = ["大木头悬空", "塌坡滚石", "地面蛋壳般裂开", "野狗出没"];
 
 const PINNED = (): number => cell(0, 13); // 外环西侧主干道格（塌陷 BFS 的高频落点区；非环岛非出生格）——搜与复放用同一钉位=同流对照
 
@@ -63,11 +63,16 @@ describe("世界恶意 · 管道（#24 T6a 数值表 §5.5）", () => {
     expect(off.state.players.every((p) => p.hp === off.config.maxHp)).toBe(true);
   });
 
-  it("三型均分池：同一局满 10 波（默认种子）三型各至少出现一次", () => {
-    const k = boot({ windowMs: 0, restMs: 0, maliceEvery: 3, turnCap: 30 });
-    advanceWorldTurns(k, 30);
-    const text = k.state.messages.filter((m) => m.kind === "malice").map((m) => m.text).join("\n");
-    for (const mark of WAVE_MARKERS) expect(text).toContain(mark);
+  it("四型均分池（#25 T6b 野狗并入）：搜种子满 10 波四型各至少出现一次", () => {
+    for (let seed = 1; seed < 400; seed++) {
+      const k = boot({ seed, windowMs: 0, restMs: 0, maliceEvery: 3, turnCap: 30 });
+      advanceWorldTurns(k, 30);
+      const text = k.state.messages.filter((m) => m.kind === "malice").map((m) => m.text).join("\n");
+      if (!WAVE_MARKERS.every((mark) => text.includes(mark))) continue;
+      expect(WAVE_MARKERS.filter((mark) => text.includes(mark))).toHaveLength(4);
+      return;
+    }
+    throw new Error("找不到 10 波四型齐出的种子（1..400）");
   });
 
   it("世界层不打断操作：走格跨窗的玩家在波结算时保持余步不变、波窗内照常走完落格", () => {
@@ -81,7 +86,7 @@ describe("世界恶意 · 管道（#24 T6a 数值表 §5.5）", () => {
     expect(k.state.players[0]!.walk).toBeNull();
   });
 
-  it("末回合让位：turn==turnCap 波点只出滚石（木头预警下一回合砸不出、塌陷复原也赶不上——即时赶路一条，死账零悬挂）", () => {
+  it("末回合让位：turn==turnCap 波点只出滚石（木头预警下一回合砸不出、塌陷复原也赶不上、狗挂到终局无人再结——即时赶路一条，死账零悬挂）", () => {
     for (let seed = 1; seed < 8000; seed++) {
       const k = GameKernel.create({ allowDev: true, windowMs: 0, restMs: 0, seed, maliceEvery: 3, turnCap: 3 }, 0).kernel;
       k.apply({ type: "chooseSecret", pid: 0, pick: 0 }, 0);
@@ -89,6 +94,7 @@ describe("世界恶意 · 管道（#24 T6a 数值表 §5.5）", () => {
       if (!k.state.messages.some((m) => m.turn === 3 && m.kind === "malice" && m.text.includes("塌坡滚石"))) continue;
       expect(k.state.malice.timber).toBeNull();
       expect(k.state.malice.sink).toBeNull();
+      expect(k.state.malice.dogs).toEqual([]);
       expect(k.state.messages.some((m) => m.kind === "malice" && m.text.includes("大木头悬空"))).toBe(false);
       return;
     }

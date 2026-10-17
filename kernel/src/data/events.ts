@@ -37,6 +37,9 @@ export interface CheckSpec {
   dc?: number;
   /** 参考档锚（易8/中12/难16；与 dc 同给时数据校验一致性） */
   tier?: DCTier;
+  /** 检定域（内核自建遭遇场景用，表五 roleCheckMods 同名口径）：dogFight=野狗遭遇战专指
+   *  ——猎手特长只在该域生效；卡面缺省不设=全域通用检定（T6b 连线）。 */
+  scope?: "dogFight";
   /** 骰面修正四原语（与角色特长合并后互抵） */
   mods?: DiceMod[];
   /** 骰 20 大成功分支（当卡自带额外正面；缺省回落 onPass） */
@@ -79,6 +82,8 @@ export type EffectPart =
   | { type: "discard"; v: number }
   /** 禁道具 v 个世界回合（#33 沙困行囊）：开窗消费 itemBan→itemBanned，本窗打不出道具卡；无伤害无位移 */
   | { type: "itemBan"; v: number }
+  /** 狗笛生成（表一 #16，T6b）：受指向者相邻格生成 1 只标准野狗（4 血/3 世界回合寿命）+生成当拍同格照打遭遇战 */
+  | { type: "dogSpawn" }
   | { type: "none" };
 
 export interface TargetedEffect {

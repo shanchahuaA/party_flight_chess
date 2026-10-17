@@ -11,6 +11,8 @@ import {
   BOARD,
   BOARD_H,
   BOARD_W,
+  DOG_FIGHT_DC,
+  DOG_HP,
   ITEM_CARD_BY_ID,
   STREET_TAGS,
   YARDS,
@@ -158,11 +160,19 @@ const groundViews = computed(() => {
 // ---------- 世界恶意演出（#24 T6a，数值表 §5.5）：state.malice 投影三级联动 ----------
 // 木头=预警阴影（呼吸红晕+🪵 悬牌，下一世界回合砸落；到期清理即消失）；
 // 塌陷=凹色底+🕳 角标（存续 2 世界回合，left 带进 title）；滚石=路径描边流动+🪨 石标（残迹回放两拍后静止）。
-const malice = computed(() => state.value?.malice ?? { timber: null, sink: null, rock: null });
+const malice = computed(() => state.value?.malice ?? { timber: null, sink: null, rock: null, spawnQueue: [], dogs: [] });
 const timberViews = computed(() => (malice.value.timber ?? []).map((id) => BOARD[id]!));
 const sinkViews = computed(() => (malice.value.sink?.cells ?? []).map((id) => BOARD[id]!));
 const sinkLeft = computed(() => malice.value.sink?.left ?? 0);
 const rockViews = computed(() => (malice.value.rock ?? []).map((id) => BOARD[id]!));
+
+// ---------- 野狗 token（#25 T6b）：我行我素小怪游荡账——血量/寿命写进 title；死亡=变暗淡出（TransitionGroup 按 dog.id 收账） ----------
+const dogViews = computed(() =>
+  (malice.value.dogs ?? []).map((d) => {
+    const c = BOARD[d.cell]!;
+    return { d, x: c.x, y: c.y + 6.5 };
+  }),
+);
 </script>
 
 <template>
@@ -346,6 +356,21 @@ const rockViews = computed(() => (malice.value.rock ?? []).map((id) => BOARD[id]
       <circle :cx="g.x" :cy="g.y" r="6.2" fill="#fffde7" stroke="#ff8f00" stroke-width="1.5" />
       <text :x="g.x" :y="g.y + 2.4" text-anchor="middle" font-size="6.4">{{ g.icon }}</text>
     </g>
+
+    <!-- 世界恶意 · 野狗 token（#25 T6b）：格心偏下小圆牌 🐕——血量/寿命/遭遇战提示在 title；
+         死亡变暗淡出（TransitionGroup 按 dog.id 收账，狗挪窝走位复用 transform 过渡） -->
+    <TransitionGroup name="dog" tag="g">
+      <g
+        v-for="dv in dogViews"
+        :key="`dg${dv.d.id}`"
+        class="dogTk"
+        :style="{ transform: `translate(${dv.x}px, ${dv.y}px)` }"
+      >
+        <title>🐕 野狗——血 {{ dv.d.hp }}/{{ DOG_HP }}；撞上=强制遭遇战（力检 DC{{ DOG_FIGHT_DC }} 击毙它），寿命剩 {{ dv.d.left }} 个世界回合</title>
+        <circle r="5.4" fill="#3e2723" stroke="#ef9a9a" stroke-width="1.2" />
+        <text y="2.6" text-anchor="middle" font-size="7">🐕</text>
+      </g>
+    </TransitionGroup>
   </svg>
 </template>
 
@@ -451,5 +476,24 @@ const rockViews = computed(() => (malice.value.rock ?? []).map((id) => BOARD[id]
 }
 .gm {
   pointer-events: auto;
+}
+/* 野狗 token（T6b）：小圆牌游荡=transform 挪窝过渡；死亡（被击毙/消散离册）→ 变暗淡出；
+   全组不持行为——不抢棋子点击（dogs 只承载演出） */
+.dogTk {
+  transition: transform 0.13s linear;
+}
+.dog-enter-active {
+  transition: opacity 0.18s ease-out;
+}
+.dog-enter-from {
+  opacity: 0;
+}
+.dog-leave-active {
+  transition: opacity 0.32s ease-in, filter 0.32s ease-in;
+  filter: grayscale(1);
+}
+.dog-leave-to {
+  opacity: 0;
+  filter: grayscale(1);
 }
 </style>

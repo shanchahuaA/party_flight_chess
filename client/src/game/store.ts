@@ -5,7 +5,7 @@
  * - 演出：逐格动画靠 .tkMain 的 CSS transform 过渡（内核 140ms 节拍的事实驱动）。
  */
 import { reactive, ref, shallowRef } from "vue";
-import { GameKernel } from "../../../kernel/src";
+import { BOARD, GameKernel } from "../../../kernel/src";
 import type { Fact, GameConfig, GameState, Intent, PlayerDef } from "../../../kernel/src";
 
 export interface PulseLit {
@@ -190,13 +190,20 @@ export function maybeBootFastPath(): void {
 
 /** 调试卡牌通道（?dev=1）：window.__pzcard("e03", pid?) → dev.drawCard 强抽（抉择/效果/地区卡冒烟）；
  *  __pzgive(道具卡 id, pid?) 塞手牌；__pzplay(道具卡 id, target?) 打出手（T4a 打出链冒烟）；
- *  __pzdead(pid?) 出局占位（T4a2 淘汰观战态冒烟） */
+ *  __pzdead(pid?) 出局占位（T4a2 淘汰观战态冒烟）；__pzdog(cell?) 生成野狗钉位（T6b 遭遇战/棋盘贴皮冒烟——
+ *  缺省钉人间相邻格=过一拍就可能撞上） */
 function bindDevChannels(): void {
   const w = window as unknown as Record<string, unknown>;
   w.__pzcard = (cardId: string, pid = 0) => gameStore.apply({ type: "dev.drawCard", pid, cardId });
   w.__pzgive = (cardId: string, pid = 0) => gameStore.apply({ type: "dev.giveItem", pid, cardId });
   w.__pzplay = (cardId: string, target?: number) => gameStore.playItem(cardId, target);
   w.__pzdead = (pid = 0) => gameStore.apply({ type: "dev.setDead", pid });
+  w.__pzdog = (cell?: number) => {
+    const k = gameStore.kernel.value;
+    if (!k) return;
+    const me = k.state.players[0]!;
+    gameStore.apply({ type: "dev.spawnDog", cell: cell ?? BOARD[me.pos]!.links[0]! }); // 缺省钉人间相邻格=过一拍可能撞上
+  };
 }
 
 /** 开发期只读快照钩子（window.__pz()）：内核态随手可查 */
@@ -215,8 +222,9 @@ function bindDevSnapshot(): void {
       finishers: s.finishers,
       hand: me.hand.join(","),
       ground: s.ground.map((g) => `${g.cell}:${g.cardId}`).join(" "),
+      dogs: s.malice.dogs.map((d) => `${d.cell}:hp${d.hp}:life${d.left}`).join(" ") || "无", // T6b 狗账快照
       items: `堆${s.itemDeck.length}/弃${s.itemDiscard.length}`,
-      msgs: s.messages.slice(-2).map((m) => m.text),
+      msgs: s.messages.slice(-8).map((m) => m.text),
     };
   };
 }

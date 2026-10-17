@@ -11,6 +11,8 @@
 import { computed, ref, watchEffect } from "vue";
 import {
   AXIS_NAMES,
+  DOG_HP,
+  DOG_TURNS,
   ECO_NAMES,
   ITEM_CARD_BY_ID,
   itemPlayGate,
@@ -118,6 +120,8 @@ function partText(p: EffectPart): string {
       return "下一回合免疫他人卡牌效果";
     case "clearGround":
       return `清掉当前格起前方 ${p.v} 格内的香蕉皮/地雷`;
+    case "dogSpawn":
+      return `系统在指定玩家相邻格生成 1 只标准野狗（${DOG_HP} 血/${DOG_TURNS} 世界回合寿命；撞上=强制遭遇战）`;
     default:
       return "无效果";
   }
@@ -167,7 +171,6 @@ const drawerLines = computed<string[]>(() => {
   if (!c) return [];
   if (c.route === "ground") return c.ground ? [checkText(c.ground.check)] : [];
   if (c.route === "ambient") return c.weather ? weatherText(c.weather) : [];
-  if (c.tbd) return [`效果挂后线：${c.tbd} 起接入（打出即晒牌，眼前先无结算）`];
   return (c.parts ?? []).map(partText);
 });
 </script>

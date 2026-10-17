@@ -17,3 +17,5 @@ export const swap = (): EffectPart => ({ type: "swap" });
 export const talisman = (): EffectPart => ({ type: "talisman" });
 export const roundShield = (): EffectPart => ({ type: "roundShield" });
 export const clearGround = (v: number): EffectPart => ({ type: "clearGround", v });
+/** T6b 原语（表一 #16 狗笛）：在受指向者相邻格生成 1 只标准野狗（4 血/3 世界回合寿命） */
+export const dogSpawn = (): EffectPart => ({ type: "dogSpawn" });

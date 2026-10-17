@@ -7,7 +7,7 @@
  *   #7 定案：全员同窗行动、掷完立刻逐格走、全员完成提前开窗、超时替掷并自动确认（不替打卡）。
  */
 import { BOARD, BRANCH_LEN, ECO_NAMES, MAIN_PLAYABLE_CELLS, NET_GOAL, SPAWN_SLOTS, STREET_NAMES, STREET_RUNS, cellAt, spawnMenu, type BoardCell } from "./board";
-import { M1_EVENT_POOL, EVENT_CARD_BY_ID, type CardEffect, type CheckSpec, type DiceMod, type EffectPart, type EventCard } from "./data/events";
+import { DC_TIERS, M1_EVENT_POOL, EVENT_CARD_BY_ID, type CardEffect, type CheckSpec, type DiceMod, type EffectPart, type EventCard } from "./data/events";
 import { ITEM_CARD_BY_ID, M1_ITEM_POOL, itemCard, itemHasPart } from "./data/items";
 import { trapDefAt } from "./data/traps";
 import { AXIS_NAMES, ROLES, roleDef } from "./data/roles";
@@ -17,6 +17,7 @@ import { rngFrom, type Rng, type RngState } from "./rng";
 import type { WalkState } from "./types";
 import {
   KernelError,
+  type DogState,
   type Fact,
   type GameConfig,
   type GameState,
@@ -91,12 +92,16 @@ const WALK_DIE = 10;
 /** 环境卡全桌气候持续的世界回合数（表一 #13/#19/#20 拍板 2） */
 const AMBIENT_TURNS = 2;
 
-/** 世界恶意三型定案参数（数值表 §5.5「四型均分」的三型行；野狗型 T6b 并入后补第四档）。
+/** 世界恶意四型定案参数（数值表 §5.5「四型均分」；野狗=T6b 第四型并入）。
  *  客户端文案（大厅提示/棋盘 title）引用常量不硬编——改一处全端生效。 */
 export const TIMBER_CELLS = 3; // 🪵 木头砸落的格数（预警阴影=这 3 格）
 export const ROCK_LEN = 10; // 🪨 滚石沿街滚过的路段格数
 export const SINK_CELLS = 6; // 🕳 塌陷一次裂开的格数
 export const SINK_TURNS = 2; // 塌陷区存续的世界回合数（开窗递减，归零复原）
+export const DOGS_PER_WAVE = 3; // 🐕 野狗一波生成的只数（数值表「野狗 ×3」）
+export const DOG_HP = 4; // 🐕 单只野狗血量（世界恶意/遭遇战各可扣）
+export const DOG_TURNS = 3; // 🐕 野狗寿命（世界回合数，含出生窗：出生那窗=第 1 个世界回合）
+export const DOG_FIGHT_DC = DC_TIERS.mid; // 🐕 遭遇战力检 DC（表五中档 12——无一色加值时通过率 45%）
 
 /** 单名玩家单窗抽卡上限（卡面引走格→落格重触发抽卡的连环熔断） */
 const EVENT_CHAIN_CAP = 4;
@@ -115,6 +120,8 @@ export class GameKernel {
 
   private rngHost: RngState;
   private rng: Rng;
+  /** 🐕 当局野狗编号发号（DogState.id=壳层 token 稳定 key） */
+  private dogSeq = 0;
 
   private constructor(config: GameConfig, defs: PlayerDef[], now: number) {
     // 随机源先立：假人角色分派与暗牌抽取都消耗它（顺序固定=同种子全序流）
@@ -187,7 +194,7 @@ export class GameKernel {
       ground: [],
       ambient: null,
       deferred: [],
-      malice: { timber: null, sink: null, rock: null },
+      malice: { timber: null, sink: null, rock: null, spawnQueue: [], dogs: [] },
       seq: 0,
       rngState: this.rngHost.s,
     };
@@ -400,6 +407,14 @@ export class GameKernel {
         if (!this.config.allowDev) throw new KernelError("dev 意图未开放");
         if (intent.dmg <= 0) throw new KernelError("伤害数应为正");
         this.applyHpDelta(this.player(intent.pid), -intent.dmg);
+        break;
+      }
+      case "dev.spawnDog": {
+        if (!this.config.allowDev) throw new KernelError("dev 意图未开放");
+        if (!Number.isInteger(intent.cell) || intent.cell < 0 || intent.cell >= BOARD.length)
+          throw new KernelError("格 id 越界");
+        this.spawnDogAt(intent.cell);
+        this.dogCollisions(now); // 生成当拍撞上=遭遇战照打（与真波生成同口径）
         break;
       }
       case "dev.setPos": {
@@ -630,13 +645,14 @@ export class GameKernel {
   }
 
   /** 世界回合开始的世界层结算（openWindow 在气候之后调用）：先落旧账（上一波挂的木头砸落、
-   *  塌陷存续计数），再按周期起新波（每 maliceEvery 世界回合一波；三型 rng 均分——野狗型 T6b
-   *  并入后改四档）。管道纪律（数值表 §5.5）：世界层**全程不打断操作**——不碰
+   *  塌陷存续计数、野狗花名册生活账），再按周期起新波（每 maliceEvery 世界回合一波；四型 rng
+   *  均分——野狗=T6b 第四型）。管道纪律（数值表 §5.5)：世界层**全程不打断操作**——不碰
    *  rolled/confirmed/walk/cardPending，一切经战报 🌲 条目承载；扣血一律走 applyHpDelta
    *  单入口（T5a 后备渠道口径，护身符/皮糙肉厚盾照拦）。 */
   private tickMalice(now: number): void {
     // —— 旧账 1：木头砸落。预警窗=1 个世界回合（挂账于上一波，本窗开始即砸）：
-    //    窗内移动离开落点=天然免伤，预警才真的有用。砸中=对落点上每个主干道活人各判各扣。
+    //    窗内移动离开落点=天然免伤，预警才真的有用。砸中=对落点上每个主干道活人各判各扣；
+    //    落点上的野狗也挨砸（世界层互击——对狗固定 −1，不吃档位翻账）。
     const timber = this.state.malice.timber;
     if (timber) {
       this.state.malice.timber = null;
@@ -647,6 +663,7 @@ export class GameKernel {
           this.maliceStrike(p, `🪵 大木头轰然砸中 ${p.name} 所在的落点！`);
           hit += 1;
         }
+        this.dogsHitAt(c, "大木头轰然砸中");
       }
       if (hit === 0) {
         this.msg("malice", `🪵 大木头轰然砸在预定的 ${timber.length} 个落点上——还好上空无人。`);
@@ -661,6 +678,10 @@ export class GameKernel {
         this.msg("malice", `🕳 塌陷区终于平复——地面重新结好（${SINK_TURNS} 世界回合到期）。`);
       }
     }
+    // —— 旧账 3：野狗花名册生活账（#25 T6b）：寿命递减→消散出声→存活者随机移动或留守→撞上玩家照打遭遇战
+    this.tickDogs(now);
+    // —— 旧账 4：狗笛挂账出队（无条件——狗是道具起的狗，世界恶意 off 档也不吃它的悬挂账）
+    this.consumeDogQueue(now);
     // —— 新波：周期到点（turn 从 1 起：turn%every==0 的那个回合开窗时触发——默认第 3 回合起波） ——
     if (this.config.maliceLevel === "off") return;
     if (this.state.turn % this.config.maliceEvery !== 0) return;
@@ -668,13 +689,73 @@ export class GameKernel {
       emphasis: "highlight",
     });
     // 选型：木头需要「下一世界回合砸落」的预警窗——局末波点（turn==turnCap，下一回合即进 T8 终局）压成滚石赶路，
-    // 遇免预警悬挂到结算的死账；终局份量由 T8 的「最后一波」加强档接管。
+    // 遇免预警悬挂到结算的死账；狗/塌陷挂到终局也无人再结——同账全体让位。终局份量由 T8 的「最后一波」加强档接管。
+    // 四型=下标 0..3 一张共表（木头/滚石/塌陷/野狗，rng 均分）；末回合取滚石=下标 1，无魔法数字散落。
     const timberable = this.state.turn < this.config.turnCap;
-    const kind = timberable ? this.rng.int(3) : 1;
+    const kind = timberable ? this.rng.int(4) : 1;
     this.syncRng();
-    if (kind === 0) this.waveTimber();
-    else if (kind === 1) this.waveRock(now);
-    else this.waveSink(now);
+    const kinds: Array<(now: number) => void> = [
+      () => this.waveTimber(),
+      (n) => this.waveRock(n),
+      (n) => this.waveSink(n),
+      (n) => this.waveDogs(n),
+    ];
+    kinds[kind]!(now);
+  }
+
+  /** 🐕 野狗每世界回合生活账（tickMalice 旧账位）：寿命递减→归零消散出声；存活者每回合随机移动或
+   *  留守（各半；落点=相邻等概率，环岛/出生格也走——野狗我行我素）；动完做一次同格撞上清账。
+   *  排序纪律：狗先动再清账——「挪走了就当没撞上」，狗与玩家的遭遇账不回头追溯既有同格。 */
+  private tickDogs(now: number): void {
+    const dogs = this.state.malice.dogs;
+    if (dogs.length === 0) return;
+    const dissipated: DogState[] = [];
+    const survivors: DogState[] = [];
+    for (const d of dogs) {
+      d.left -= 1;
+      if (d.left <= 0) dissipated.push(d);
+      else survivors.push(d);
+    }
+    this.state.malice.dogs = survivors;
+    if (dissipated.length > 0) {
+      this.msg("malice", `🐕 ${dissipated.length} 只野狗游荡期满——溜回林子深处没了踪影。`);
+    }
+    for (const d of survivors) {
+      if (this.rng.int(2) === 0) continue; // 留守：趴着不走（各半，实现期定案）
+      const links = this.cell(d.cell).links;
+      d.cell = links[Math.floor(this.draw() * links.length)]!;
+    }
+    this.dogCollisions(now);
+  }
+
+  /** 狗笛挂账出队结算（dogSpawn 原语入队 → 本窗 tickDogs 之后消费）：出队即入册=标准狗
+   *  （出生窗免减寿——与波生同段位）；出队当拍同格撞上=遭遇战照打。 */
+  private consumeDogQueue(now: number): void {
+    const queue = this.state.malice.spawnQueue;
+    if (queue.length === 0) return;
+    this.state.malice.spawnQueue = [];
+    for (const req of queue) {
+      this.spawnDogAt(req.cell);
+      const tgt = this.player(req.target);
+      this.msg("item", `🐕 「狗笛」一声长鸣——一只野狗循声现身在 ${tgt.name} 旁边的 ${this.cellTag(req.cell)}！`, req.target, {
+        emphasis: "target",
+      });
+    }
+    this.dogCollisions(now);
+  }
+
+  /** 同格撞上清账：每一只狗逐只与格上主干道活人各判各打（一狗可被同格多头围打——先打死狗，
+   *  死狗 hp=0 的守卫拦下后来者的复打零双份战利品；血尽淘汰者当场退出不再接咬）。 */
+  private dogCollisions(now: number): void {
+    for (const d of [...this.state.malice.dogs]) {
+      if (d.hp <= 0) continue;
+      for (const p of this.state.players) {
+        if (d.hp <= 0) break; // 被上一位打死——按快照循环里跳死狗（kill 清账见 dogFight）
+        if (p.dead || p.zone !== "main" || p.pos !== d.cell) continue;
+        this.dogFight(d, p, now);
+      }
+    }
+    this.removeDeadDogs();
   }
 
   /** 🪵 木头：落点提前定并挂预警阴影（3 个 主网可落格），下一世界回合开始砸落。 */
@@ -693,7 +774,7 @@ export class GameKernel {
   /** 🪨 滚石：从一条够长的直线街段随机切出 10 格连续路段一次滚完——滚到的格上有主干道活人
    *  =被追上，敏检 DC12（同一检定通道：沙暴修正批/轴系特长同吃互抵）：通过（含大成功）=
    *  闪开不伤；失败（含大失败）=扣血。世界层判定不吃力检特长的 dogFight scope（scope 缺省=全检定生效——
-   *  猎手不适用，蛮力/狡运对应轴不沾）。 */
+   *  猎手不适用，蛮力/狡运对应轴不沾）。滚到的格上有野狗=世界层互击（狗也挨砸，dogHit 随路判）。 */
   private waveRock(now: number): void {
     const runs = STREET_RUNS.filter((r) => r.cells.length >= ROCK_LEN);
     const run = runs[this.rng.int(runs.length)]!;
@@ -717,6 +798,7 @@ export class GameKernel {
           this.maliceStrike(p, `${p.name} 没躲开，被滚石追上！`);
         }
       }
+      this.dogsHitAt(c, "滚石碾过");
     }
     this.msg("malice", `🪨 滚石滚过 ${ROCK_LEN} 格路段，怼出庄园外扬长而去。`);
   }
@@ -736,6 +818,9 @@ export class GameKernel {
     );
     for (const p of this.state.players) {
       if (!p.dead && p.zone === "main" && cells.includes(p.pos)) this.sinkHit(p);
+    }
+    for (const c of cells) {
+      this.dogsHitAt(c, "塌方裂开时吞了进去");
     }
   }
 
@@ -773,6 +858,154 @@ export class GameKernel {
     const sink = this.state.malice.sink;
     if (!sink || !sink.cells.includes(p.pos)) return;
     this.maliceStrike(p, `🕳 ${p.name} 踏进塌陷区——塌方的边缘啃了他一口！`);
+  }
+
+  // ---------- 世界恶意 · 野狗（四型第四档，#25 T6b） ----------
+
+  /** 🐕 野狗出没：一波生成 DOGS_PER_WAVE 只标准野狗——落点=主网可落格洗匀（同木头池照片矩：
+   *  排环岛与出生格——出生格是开局/传送回复位不动点）。生成当拍同格撞上=当场遭遇战（强制）。 */
+  private waveDogs(now: number): void {
+    const cells = this.rng.shuffle([...MAIN_PLAYABLE_CELLS]).slice(0, DOGS_PER_WAVE);
+    this.syncRng();
+    for (const c of cells) this.spawnDogAt(c);
+    this.msg(
+      "malice",
+      `🐕 野狗出没！${DOGS_PER_WAVE} 只野狗从林子里窜上游荡庄园（${cells.map((id) => this.cellTag(id)).join("、")}）——撞上就是一场遭遇战（力检 DC${DOG_FIGHT_DC}），无路可逃。`,
+      undefined,
+      { emphasis: "highlight" },
+    );
+    this.dogCollisions(now);
+  }
+
+  /** 单只标准野狗入册（波次生成/狗笛出队/dev 通道共用）：DOG_HP 血、寿命 DOG_TURNS 世界回合、
+   *  当局自增 id（壳层 token 稳定 key） */
+  private spawnDogAt(cellId: number): void {
+    this.state.malice.dogs.push({ id: ++this.dogSeq, cell: cellId, hp: DOG_HP, left: DOG_TURNS });
+  }
+
+  /** 死狗清册（消灭即离册的唯一收口）：狗被恶意/玩家打死或沦为 0 血后，从这里出册 */
+  private removeDeadDogs(): void {
+    this.state.malice.dogs = this.state.malice.dogs.filter((d) => d.hp > 0);
+  }
+
+  /** 🐕 世界恶意砸中野狗（世界层互击）：对狗固定 −1（数值表「砸中野狗也对狗扣 1 血」——
+   *  不吃档位翻账）；DOG_HP 血归零=消灭（狗被恶意/玩家打死均消灭，removeDeadDogs 出册）。 */
+  private dogHit(d: DogState, cause: string): void {
+    if (d.hp <= 0) return;
+    d.hp -= 1;
+    if (d.hp <= 0) {
+      this.removeDeadDogs();
+      this.msg("malice", `🐕 ${cause}一只野狗——它哀鸣着倒了下去（世界恶意也能打死狗）。`);
+    } else {
+      this.msg("malice", `🐕 ${cause}一只野狗——疼得它嗷了一声（剩 ${d.hp}/${DOG_HP} 血）。`);
+    }
+  }
+
+  /** 🐕 某格上的野狗吃负（世界层互击收口：木头/滚石/塌陷三处共用）：随格判，一狗一咬 */
+  private dogsHitAt(cellId: number, cause: string): void {
+    for (const d of [...this.state.malice.dogs]) {
+      if (d.cell === cellId) this.dogHit(d, cause);
+    }
+  }
+
+  /** 随机薅手牌 v 张进弃牌堆（贼赃房 discard/野性直觉被咬免伤/野狗被抢三处共用账）——
+   *  单池守恒：离手即入弃牌堆；无卡可薅=落空不出声（文案留给调用方）。返回薅走的卡名。 */
+  private snatchCards(p: PlayerState, v: number): string[] {
+    const titles: string[] = [];
+    while (p.hand.length > 0 && titles.length < v) {
+      const id = p.hand.splice(Math.floor(this.draw() * p.hand.length), 1)[0]!;
+      this.state.itemDiscard.push(id);
+      titles.push(itemCard(id).title);
+    }
+    return titles;
+  }
+
+  /** 🐕 强制遭遇战（一页纸「遭遇战细则」）：一掷四档、力检 DC12（同一检定通道走 runCheck——
+   *  checkMods 沙暴批/三轴加值同吃互抵；scope=dogFight 让猎手特长恰在此域生效，滚石闪躲不吃）。
+   *  四档：大成功=击毙+额外战利品再摸 1（掉落+搜窝共 2 张入袋）／通过=击毙（狗掉 1 张道具卡捡走）／
+   *  失败=被咬（−1 血+退 2 格；野性直觉被动：有卡改弃 1 张免伤、无卡才扣血）／大失败=被咬+被抢
+   *  1 张道具卡（随机薅手牌进弃牌堆——狗不占资产，单池守恒）。无逃跑选项；咬人照走 applyHpDelta
+   *  单入口（护身符/皮糙肉厚盾照拦，T5a 渠道账）；击毙走 dogKilled 事实（暗牌「打狗英雄」T8b1 计数流）。 */
+  private dogFight(d: DogState, p: PlayerState, now: number): void {
+    this.msg("malice", `🐕 ${p.name} 撞上一只游荡的野狗——遭遇战一触即发！`, p.id, {
+      targets: [p.id],
+      emphasis: "target",
+    });
+    const res = this.runCheck(p, { axis: "might", dc: DOG_FIGHT_DC, tier: "mid", scope: "dogFight" }, now, undefined, "malice");
+    const kill = (): void => {
+      d.hp = 0; // 击毙挂血尽标记——同格后继玩家对死狗的复打被 dogCollisions 的 hp 守卫拦下（零双份战利品）
+      this.removeDeadDogs();
+      this.emit({ type: "dogKilled", pid: p.id });
+    };
+    const bite = (): void => {
+      // 野性直觉被动（表三 #5）：被咬 −1 血改弃 1 张道具卡（随机薅手牌进弃牌堆=贼赃房同口径；无卡才扣血）
+      const dodge = roleDef(p.roleId).flags.dogBiteDiscard === true ? this.snatchCards(p, 1) : null;
+      if (dodge) {
+        this.msg("malice", `🐕 ${p.name} 被咬了一口——野性直觉让他甩下「${dodge[0]}」引开狗牙，免了这 1 血。`, p.id, {
+          targets: [p.id],
+        });
+      } else {
+        this.applyHpDelta(p, -1, "malice");
+      }
+      if (!p.dead) {
+        this.msg("malice", `🐕 ${p.name} 连滚带爬，向后退了 2 格。`, p.id, { targets: [p.id] });
+        this.startWalk(p, -2, now); // 沿来路栈退 2；走格未完则入队（世界层不打断操作）
+        this.emit({ type: "pulse", pid: p.id, level: "target" });
+      }
+    };
+    switch (res.grade) {
+      case "crit": {
+        kill();
+        this.msg("malice", `🐕 ${p.name} 大成功——一击毙命，野狗当场被打死，还翻出额外战利品！`, p.id, {
+          targets: [p.id],
+          emphasis: "target",
+        });
+        this.drawItems(p, 1, "狗嘴里掉落的"); // 击毙掉落卡捡走
+        this.drawItems(p, 1, "搜出的额外战利品"); // 大成功：额外战利品再摸 1
+        break;
+      }
+      case "pass": {
+        kill();
+        this.msg("malice", `🐕 ${p.name} 击毙了野狗——狗嘴里掉出 1 张道具卡。`, p.id, { targets: [p.id], emphasis: "target" });
+        this.drawItems(p, 1, "狗嘴里掉落的");
+        break;
+      }
+      case "fail": {
+        this.msg("malice", `🐕 ${p.name} 没打过野狗——挨了它结结实实的一口！`, p.id, {
+          targets: [p.id],
+          emphasis: "target",
+        });
+        bite();
+        break;
+      }
+      case "critfail": {
+        this.msg("malice", `🐕 ${p.name} 被野狗咬得人仰马翻——它还叼着东西撒欢！`, p.id, {
+          targets: [p.id],
+          emphasis: "target",
+        });
+        bite();
+        const stolen = this.snatchCards(p, 1);
+        if (stolen.length > 0) {
+          this.msg("malice", `🐕 野狗叼走了 ${p.name} 手里的一张「${stolen[0]}」（被抢 1 张——卡回弃牌堆，狗不占资产）。`, p.id, {
+            targets: [p.id],
+            emphasis: "target",
+          });
+        } else {
+          this.msg("malice", `🐕 野狗凑上来抢——${p.name} 手头无卡，野狗叼了个空。`, p.id, { targets: [p.id] });
+        }
+        break;
+      }
+    }
+  }
+
+  /** 走停落上狗格：撞上=强制遭遇战（站停才算撞上——路过不停不算；一只只轮到打，同格多头挨打）。 */
+  private dogFightHere(p: PlayerState, now: number): void {
+    for (const d of [...this.state.malice.dogs]) {
+      if (d.hp <= 0 || d.cell !== p.pos) continue;
+      if (p.dead) break; // 被前面的狗咬死了就死了——后面不再接咬
+      this.dogFight(d, p, now);
+    }
+    this.removeDeadDogs();
   }
 
   /** 窗内挂起抉择到点代选：超时未应答按卡面默认项结算并标注（事件定案 §1.7） */
@@ -1197,6 +1430,7 @@ export class GameKernel {
     if (p.dead || p.zone !== "main") return;
     const c = this.cell(p.pos);
     this.sinkHit(p);
+    this.dogFightHere(p, now); // 撞上狗=强制遭遇战（#25 T6b：走停即触发）
     this.triggerGround(p, now);
     if (c.type === "I") {
       this.drawItems(p, 1, "踩上道具格");
@@ -1456,20 +1690,12 @@ export class GameKernel {
           break;
         }
         case "discard": {
-          // 随机弃手牌 v 张（#33 贼赃房）：单池守恒——离手即入弃牌堆；无卡可弃=落空出声
-          let n = 0;
-          const titles: string[] = [];
-          while (p.hand.length > 0 && n < part.v) {
-            const idx = Math.floor(this.draw() * p.hand.length);
-            const id = p.hand.splice(idx, 1)[0]!;
-            this.state.itemDiscard.push(id);
-            titles.push(itemCard(id).title);
-            n += 1;
-          }
-          if (n === 0) {
+          // 随机弃手牌 v 张（#33 贼赃房；野性直觉/野狗被抢同账共用 snatchCards）：单池守恒——离手即入弃牌堆；无卡可弃=落空出声
+          const titles = this.snatchCards(p, part.v);
+          if (titles.length === 0) {
             this.msg("trap", `${p.name} 手头无卡可弃——贼赃房也薅了个空。`, p.id);
           } else {
-            this.msg("trap", `${p.name} 被薅走 ${n} 张道具卡：${titles.join("、")}。`, p.id, { emphasis: "target" });
+            this.msg("trap", `${p.name} 被薅走 ${titles.length} 张道具卡：${titles.join("、")}。`, p.id, { emphasis: "target" });
           }
           break;
         }
@@ -1477,6 +1703,18 @@ export class GameKernel {
           // 禁道具挂账（#33 沙困行囊）：记忆 v 个世界回合，开窗消费到 itemBanned（当窗打不出的道具闸在 itemPlayGate）
           if (part.v > 0) p.itemBan += part.v;
           this.msg("trap", `${p.name} 行囊灌满沙——接下来 ${part.v} 个回合打不出任何道具卡。`, p.id, { emphasis: "target" });
+          break;
+        }
+        case "dogSpawn": {
+          // 狗笛（表一 #16，T6b 接通）：在受指向者相邻格生成 1 只标准野狗——相邻候选全体
+          // 等概率取一（含环岛/出生格——整蛊无豁免，喇叭一响野狗循声就来）。
+          // 生成**入挂账队列**（state.malice.spawnQueue）：deferred 结算先于本窗 tickMalice 的
+          // 狗账——直接入册会被同窗减寿一回合（寿命少一拍），挂账让波生与笛生同段位收口
+          // （出队结算在 tickDogs 之后=出生窗不减寿、标准 3 世界回合）。
+          const links = this.cell(p.pos).links;
+          if (links.length === 0) break; // 理论不可达（每格 ≥1 邻）——落空无害
+          const to = links[Math.floor(this.draw() * links.length)]!;
+          this.state.malice.spawnQueue.push({ cell: to, target: p.id });
           break;
         }
         case "none":
@@ -1567,8 +1805,9 @@ export class GameKernel {
     const mods: CheckMods[] = [
       ...toCheckMods(p.checkMods), // 风暴·沙暴等气候挂的本回合检定修正（T4b2）——与卡面/特长同一互抵批（走格骰不吃它）
       ...toCheckMods(spec.mods ?? []),
-      // 轴系特长（蛮力/狡运）只跟有轴检定走；无轴前途骰（命运之骰）不吃特长
-      ...(spec.axis ? roleCheckMods(role, spec.axis) : []),
+      // 轴系特长（蛮力/狡运）只跟有轴检定走；无轴前途骰（命运之骰）不吃特长；
+      // scope（T6b）：dogFight 域=猎手遭遇战特长恰在此域生效，其余域（滚石闪躲等）不吃
+      ...(spec.axis ? roleCheckMods(role, spec.axis, spec.scope) : []),
     ];
     const net = netMods(mods); // 互抵：先全量合账（D&D 原则）
     const faces = Math.max(3, CHECK_FACES + net.face);
@@ -1653,13 +1892,6 @@ export class GameKernel {
         flavor: card.flavor,
         emphasis: "target",
       });
-      // 效果挂后续票的占位卡（狗笛=T6b 野狗生成）：晒牌照常入池，效果先扣住
-      if (card.tbd) {
-        this.msg("item", `「${card.title}」的效果要等 ${card.tbd} 起接入——${q!.name} 的相邻格届时生成，本张先记账。`, pid, {
-          targets: [q!.id],
-        });
-        return;
-      }
       if (this.config.timerMode === "turn") {
         // 轮班·限时：立刻生效（无同时行动，无竞态）
         this.applyParts(q!, card.parts!, now, { kind: "item", srcPid: pid });
