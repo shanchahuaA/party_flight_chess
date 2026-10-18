@@ -90,6 +90,10 @@ export interface PlayerState {
   itemBan: number;
   /** 本窗禁道具：itemPlayGate 按它拒「打道具卡」（开窗置位、随窗自然解除，不随确认重置） */
   itemBanned: boolean;
+  /** 终局名册态（#35 T8a1）：局长打满时全桌成批落定；局中淘汰即时翻 out（死了就是终局外的人）。
+   *  fight=终局参战／seat=通关席必参最后一波／out=淘汰者不参战——T9 轮班·限时按它跳过；
+   *  null=终局外的普通在局者。 */
+  endgame: EndgameStance | null;
 }
 
 export interface RouteOption {
@@ -190,6 +194,20 @@ export interface CustomsPending {
 }
 
 /**
+ * 终局名册态（#35 T8a1）：终局流程里每名玩家的参战身份——
+ *   fight=参战（主网/支路在局者）／seat=通关席必参最后一波（不再掷骰走格，但参战）／out=淘汰者不参战。
+ * T9 轮班·限时的跳过名单=out；最后一波参战名单=fight+seat（T8a2 消费）。
+ */
+export type EndgameStance = "fight" | "seat" | "out";
+
+/** 终局流程挂账（#35 T8a1 骨架）：null=终局未启动（常规对局节奏）。局长打满即启动——
+ *  没有「首名冲线提前结束」；最后一波年兽战与群体失败标记由 T8a2 落此，结算（T8b1）在其收束后。 */
+export interface EndgameState {
+  /** 启动所在的世界回合号（=局长打满后的下一号，与战报分节一致） */
+  turn: number;
+}
+
+/**
  * 警长查货窗（#26 T7；事件卡「黑市开张」）：本世界回合窗变为海关风云——系统随机指派 1 名
  * 在场玩家当警长（淘汰者/通关席除外），其余为偷渡者；窗内玩家间可报备转让道具卡（明面只许
  * 正货，运违禁品只能谎报）；警长 ≤2 次查验（6 人在场及以上 3 次）：命中谎报罚偷渡者 1 张自选
@@ -244,6 +262,9 @@ export interface GameState {
   deferred: DeferredEffect[];
   /** 警长查货窗（#26 T7）：抽到「黑市开张」当窗挂起，收窗即散；null=常规节奏 */
   customs: CustomsState | null;
+  /** 终局流程（#35 T8a1）：局长打满即启动（没有「首名冲线提前结束」）；null=未启动。
+   *  最后一波年兽战（T8a2）挂此；结算分位=finishers 序 ×FINISH_SCORES（T8b1 消费）。 */
+  endgame: EndgameState | null;
   /**
    * 世界恶意挂账（#24 T6a + #25 T6b）：木头=预警落点（下一世界回合开始砸落）／塌陷=裂开的格子与
    * 剩余存续世界回合数（踩入咬人、开窗递减到 0 复原）／滚石=本次滚过的 10 格路径（演出残留，
@@ -365,7 +386,9 @@ export type Fact =
    *  （lied=命中谎报——表四 #6「海关清白」与 T8b1 找战犯「查验打脸」走这枚事实计数） */
   | { type: "customsStart"; sheriff: number; checks: number }
   | { type: "customsEnd" }
-  | { type: "customsChecked"; pid: number; target: number; lied: boolean };
+  | { type: "customsChecked"; pid: number; target: number; lied: boolean }
+  /** 终局流程启动（#35 T8a1）：局长打满——壳层据此换终局布景（横幅/布景 M3 找齐，战报先行） */
+  | { type: "endgameStart"; turn: number };
 
 export interface PlayerDef {
   name: string;

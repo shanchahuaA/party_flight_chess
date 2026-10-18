@@ -113,6 +113,13 @@ export const CUSTOMS_BIG_AT = 6;
 export const CUSTOMS_RETREAT = 3;
 export const CUSTOMS_CHECK_MS = 15_000;
 
+/** 通关分分位（#35 T8a1，数值表 §5.1 真源）：首通 +10／次通 +8／第三 +6，第四位起无分位。
+ *  入席先后序=state.finishers（踩进先后，T1 基座）；T8b1 结算按 finishScore(名次) 消费。 */
+export const FINISH_SCORES = [10, 8, 6];
+export function finishScore(rank: number): number {
+  return FINISH_SCORES[rank - 1] ?? 0;
+}
+
 /** 明面正货清单（报备校验域/壳层报备名池共用——单一来源=data/items 的 LEGIT_ITEM_CARDS） */
 const LEGIT_ITEM_IDS: readonly string[] = LEGIT_ITEM_CARDS.map((c) => c.id);
 
@@ -196,6 +203,7 @@ export class GameKernel {
           wearHalves: 0,
           itemBan: 0,
           itemBanned: false,
+          endgame: null,
         };
       }),
       finishers: [],
@@ -210,6 +218,7 @@ export class GameKernel {
       ambient: null,
       deferred: [],
       customs: null,
+      endgame: null,
       malice: { timber: null, sink: null, rock: null, spawnQueue: [], dogs: [] },
       seq: 0,
       rngState: this.rngHost.s,
@@ -483,7 +492,8 @@ export class GameKernel {
       this.tickCustoms(now); // 海关风云（#26 T7）：假人报备排程/罚没代选/超时退化
       this.advanceWalks(now);
       this.maybeCloseWindow(now);
-      if (now >= this.state.windowDeadline) {
+      // 全员确认已被 maybeCloseWindow 收走的窗不再二次收口（一 tick 双吞世界回合——T8a1 收局边界实测踩中）
+      if (this.state.phase === "acting" && now >= this.state.windowDeadline) {
         this.autoFillAndClose(now);
       }
     } else {
@@ -1338,9 +1348,7 @@ export class GameKernel {
     this.emit({ type: "windowEnd", turn: this.state.turn, auto });
     this.state.turn += 1;
     if (this.state.turn > this.config.turnCap) {
-      this.state.phase = "over";
-      this.msg("system", `局长 ${this.config.turnCap} 世界回合打满——终局流程（最后一波/结算，T8 起接入）。`, undefined, { emphasis: "big" });
-      this.emit({ type: "gameEnd" });
+      this.startEndgame();
       return;
     }
     if (this.config.restMs <= 0) {
@@ -1352,13 +1360,42 @@ export class GameKernel {
     this.emit({ type: "restStart", turn: this.state.turn - 1, until: this.state.restUntil });
   }
 
+  /**
+   * 终局流程启动（#35 T8a1）：局长打满即启动——没有「首名冲线提前结束」，常规回合钟走完才算数。
+   * 全桌成批落终局名册态（p.endgame：通关席必参最后一波／淘汰者不参战——T9 轮班·限时跳过消费；
+   * 局中淘汰已在 retirePlayer 即时翻 out，此处成批为幂等重落）。
+   * 最后一波年兽战本体归 T8a2（挂 state.endgame）；本票先直通收束进结算（T8b1 消费 finishers 分位）。
+   */
+  private startEndgame(): void {
+    this.state.endgame = { turn: this.state.turn };
+    for (const p of this.state.players) {
+      p.endgame = p.dead ? "out" : p.zone === "done" ? "seat" : "fight";
+    }
+    const seat = this.state.players.filter((p) => p.endgame === "seat");
+    const out = this.state.players.filter((p) => p.endgame === "out");
+    this.msg(
+      "system",
+      `🏁 局长 ${this.config.turnCap} 世界回合打满——终局流程启动！参战 ${this.state.players.length - seat.length - out.length} · 通关席 ${seat.length} · 观战 ${out.length}`,
+      undefined,
+      {
+        flavor: "最后一波将至：通关席不再掷骰但必参战，出局者隔岸观火。",
+        emphasis: "big",
+      },
+    );
+    this.emit({ type: "endgameStart", turn: this.state.turn });
+    // 最后一波（T8a2 接入）前的直通：终局名册已落账，收束进结算
+    this.state.phase = "over";
+    this.emit({ type: "gameEnd" });
+  }
+
   // ---------- 掷骰 / 确认 ----------
 
   private checkRoll(pid: number): void {
     const p = this.player(pid);
+    // 成员资格先行（与窗内动作资格阶梯同序）：通关席/出局者拒「不再行动」，而非误导性的「已掷过骰」
+    this.checkWindowAction(p);
     if (p.rolled) throw new KernelError("本窗已掷过骰");
     if (p.walk) throw new KernelError("走格未完成，不能掷");
-    this.checkWindowAction(p);
   }
 
   /** 掷骰前校验＋掷（真人 UI 与机器人日程共用；replacement=超窗替掷播报专用） */
@@ -1618,8 +1655,9 @@ export class GameKernel {
     p.confirmed = true; // 通关席不占确认
     this.state.finishers.push(p.id);
     const rank = this.state.finishers.length;
+    const score = finishScore(rank);
     this.msg("system", `${p.name} 🏁 刚好踩进终点——通关席！`, p.id, {
-      flavor: `为第 ${rank} 位通关席：不再掷骰、仍可打卡（T4 起）、必须过最后一波（T8 起）。`,
+      flavor: `为第 ${rank} 位通关席${score > 0 ? `（结算分位 +${score}）` : ""}：不再掷骰、仍可打整蛊卡、必参最后一波。`,
       emphasis: "big",
     });
     this.emit({ type: "finish", pid: p.id });
@@ -2056,6 +2094,7 @@ export class GameKernel {
     if (p.dead) return;
     p.dead = true;
     p.hp = 0; // 血尽定格 0（dev.setDead 测试通道同到此清零——观战血条空槽）
+    p.endgame = "out"; // 终局名册态即时翻 out（#35 T8a1）：死了就是终局外的人——T9 跳过/最后一波不参战
     p.walk = null;
     p.walkQueue = [];
     p.cardPending = null;
