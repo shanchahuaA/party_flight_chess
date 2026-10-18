@@ -406,15 +406,16 @@ export const EVENT_CARDS: readonly EventCard[] = [
     title: "黑市开张",
     flavor: "后巷一块井盖被掀开，油灯次第亮起。",
     kind: "window",
-    // 警长查货窗：完整规则见一页纸规则「警长查货窗」节；结算数据 T7 落，M1 牌池不含
+    // 警长查货窗（#26 T7 落地）：完整规则见一页纸规则「警长查货窗」节——
+    // 本窗转海关风云（随机警长/报备转让/查验罚没/超时退化），结算全在 game.ts openCustoms 链
   },
 ];
 
 const BY_ID = new Map(EVENT_CARDS.map((c) => [c.id, c]));
 export const EVENT_CARD_BY_ID = BY_ID;
 
-/** M1 牌池（表二 20 张；'window' 卡等 T7 接入后放行） */
-export const M1_EVENT_POOL: readonly EventCard[] = EVENT_CARDS.filter((c) => c.kind !== "window");
+/** M1 牌池（表二 21 张全量：#26 T7 放行「黑市开张」window 卡——抽到即开警长查货窗） */
+export const M1_EVENT_POOL: readonly EventCard[] = EVENT_CARDS;
 
 // ---- 数据完整性校验（load 期执行，卡面坏账立刻炸） ----
 {

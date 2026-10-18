@@ -278,6 +278,9 @@ export const itemHasPart = (card: ItemCard, type: EffectPart["type"]): boolean =
 /** M1 道具牌池（T4a 10 + T4b1 7 + T4b2 环境 3 = 全池 20 张，#32 收口）——单池洗匀，抽空弃牌堆洗回 */
 export const M1_ITEM_POOL: readonly ItemCard[] = ITEM_CARDS;
 
+/** 明面正货清单（表一非违禁卡；#26 T7 警长查货窗的报备校验域/壳层报备名池/假人谎报名池共用单一来源） */
+export const LEGIT_ITEM_CARDS: readonly ItemCard[] = ITEM_CARDS.filter((c) => !c.contraband);
+
 /** 表一违禁 7 张全池清单（走私弹药；本批落的 6 张必在其列——数据校验兜底） */
 export const CONTRABAND_TITLES: readonly string[] = ["香蕉皮", "脚镣", "偷天换日", "弹弓", "雷暴", "狗笛", "地雷"].sort();
 

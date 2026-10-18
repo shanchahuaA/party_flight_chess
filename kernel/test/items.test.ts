@@ -19,7 +19,7 @@ import {
   type ItemCard,
   type PlayerDef,
 } from "../src";
-import { boot, cell, dieOf, me, seedForFirstDie, walkOut } from "./helpers";
+import { boot, cell, dieOf, me, seedForFirstDie, tryGiveItem, walkOut } from "./helpers";
 
 /** 固定盘 defs（种子搜索与测试共用同一套；小黄=黑市老板：敏 1、无盾、无穿戴减半） */
 const FIXED: PlayerDef[] = [
@@ -516,7 +516,18 @@ describe("场地型附着（香蕉皮/地雷）：踩上触发后消失", () => 
   });
 
   it("穿格不停不触发：走过香蕉皮那格、停在别处——卡还在", () => {
-    const k = boot({ seed: seedForFirstDie(3, { pos: cell(8, 0), from: cell(9, 0), net: 0 }) });
+    // 搜种子：首掷=3 且香蕉皮没被先摸走（假人随机角色可能「轻装上阵」开局 +1——牌池扩容换流后的收口口径）
+    const PRE = { pos: cell(8, 0), from: cell(9, 0), net: 0 };
+    let seed = 0;
+    for (let s = 1; s < 5000 && !seed; s++) {
+      const k = boot({ seed: s });
+      if (!tryGiveItem(k, 0, "i03", 0)) continue;
+      k.apply({ type: "dev.setPos", pid: 0, pos: PRE.pos, from: PRE.from, net: PRE.net }, 0);
+      const fx = k.apply({ type: "roll", pid: 0 }, 0);
+      if (dieOf(fx) === 3) seed = s;
+    }
+    expect(seed).toBeGreaterThan(0);
+    const k = boot({ seed });
     ensureHand(k, 0, "i03");
     k.apply({ type: "playItem", pid: 0, cardId: "i03" }, 0); // 出生格 (6,0) 搁下
     k.apply({ type: "dev.setPos", pid: 0, pos: cell(8, 0), from: cell(9, 0), net: 0 }, 0);
@@ -866,26 +877,42 @@ describe("小圆盾（下回合免疫他人卡牌效果）", () => {
   });
 
   it("guard 到窗自然失效：窗 3（挂账→窗 4 结算）的他人卡牌效果照常落地", () => {
-    const k = bootFixed({ restMs: 0 });
-    ensureHand(k, 0, "i09");
-    void k.apply({ type: "playItem", pid: 0, cardId: "i09" }, 0); // guard=2
-    playThroughP0(k, 100);
-    void k.tick(30_000);
-    expect(k.state.turn).toBe(2);
-    playThroughP0(k, 31_000); // 窗 2（guard 生效窗）走完
-    let t = 32_000;
-    while (k.state.turn < 3) {
-      t += 500;
-      k.tick(t);
+    // 搜种子：牌池扩容（20→21）换流后，窗 3 的走停顿生抽卡可能给人间留续走——
+    // 终态「挂账退 2 落成本人当前 walk」即筛条件（同序重放照旧）
+    const script = (k: GameKernel): void => {
+      ensureHand(k, 0, "i09");
+      void k.apply({ type: "playItem", pid: 0, cardId: "i09" }, 0); // guard=2
+      playThroughP0(k, 100);
+      void k.tick(30_000);
+      expect(k.state.turn).toBe(2);
+      playThroughP0(k, 31_000); // 窗 2（guard 生效窗）走完
+      let t = 32_000;
+      while (k.state.turn < 3) {
+        t += 500;
+        k.tick(t);
+      }
+      expect(me(k).cardGuard).toBe(2);
+      k.state.players[1]!.hand.push("i10");
+      void k.apply({ type: "playItem", pid: 1, cardId: "i10", target: 0 }, t); // 窗 3 挂账
+      playThroughP0(k, t);
+      while (k.state.turn < 4) {
+        t += 500;
+        k.tick(t);
+      }
+    };
+    let seed = 0;
+    for (let s = 1; s < 5000 && !seed; s++) {
+      try {
+        const k = bootFixed({ seed: s, restMs: 0 });
+        script(k);
+        if (me(k).walk?.remaining === -2) seed = s;
+      } catch {
+        // 该种子下脚本中断（断言失败=换种子）
+      }
     }
-    expect(me(k).cardGuard).toBe(2);
-    k.state.players[1]!.hand.push("i10");
-    void k.apply({ type: "playItem", pid: 1, cardId: "i10", target: 0 }, t); // 窗 3 挂账
-    playThroughP0(k, t);
-    while (k.state.turn < 4) {
-      t += 500;
-      k.tick(t);
-    }
+    expect(seed).toBeGreaterThan(0);
+    const k = bootFixed({ seed, restMs: 0 });
+    script(k);
     expect(k.state.turn).toBe(4);
     expect(me(k).walk?.remaining).toBe(-2); // 退 2 照常落地（guard 只守窗 2）
     expect(me(k).cardGuard).toBe(2); // guard 值早已不命中（turn 4 ≠ 2）

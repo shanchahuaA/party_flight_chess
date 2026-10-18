@@ -8,7 +8,7 @@
  */
 import { BOARD, BRANCH_LEN, ECO_NAMES, MAIN_PLAYABLE_CELLS, NET_GOAL, SPAWN_SLOTS, STREET_NAMES, STREET_RUNS, cellAt, spawnMenu, type BoardCell } from "./board";
 import { DC_TIERS, M1_EVENT_POOL, EVENT_CARD_BY_ID, type CardEffect, type CheckSpec, type DiceMod, type EffectPart, type EventCard } from "./data/events";
-import { ITEM_CARD_BY_ID, M1_ITEM_POOL, itemCard, itemHasPart } from "./data/items";
+import { ITEM_CARD_BY_ID, LEGIT_ITEM_CARDS, M1_ITEM_POOL, itemCard, itemHasPart } from "./data/items";
 import { trapDefAt } from "./data/traps";
 import { AXIS_NAMES, ROLES, roleDef } from "./data/roles";
 import { SECRET_GOALS } from "./data/goals";
@@ -17,6 +17,7 @@ import { rngFrom, type Rng, type RngState } from "./rng";
 import type { WalkState } from "./types";
 import {
   KernelError,
+  type CustomsGiveReason,
   type DogState,
   type Fact,
   type GameConfig,
@@ -103,6 +104,18 @@ export const DOG_HP = 4; // 🐕 单只野狗血量（世界恶意/遭遇战各�
 export const DOG_TURNS = 3; // 🐕 野狗寿命（世界回合数，含出生窗：出生那窗=第 1 个世界回合）
 export const DOG_FIGHT_DC = DC_TIERS.mid; // 🐕 遭遇战力检 DC（表五中档 12——无一色加值时通过率 45%）
 
+/** 警长查货窗（#26 T7，一页纸「警长查货窗」节）定案参数：
+ *  查验 ≤2 次（**6 人以上局** 3 次——按局人数，票面字面口径）；罚没/赔付无卡回退 3 格；
+ *  查验窗口=15s 不查即退化（每查验一次续期——「超时不查→自由转让」的时钟口径，绝不阻塞操作）。 */
+export const CUSTOMS_CHECKS = 2;
+export const CUSTOMS_CHECKS_BIG = 3;
+export const CUSTOMS_BIG_AT = 6;
+export const CUSTOMS_RETREAT = 3;
+export const CUSTOMS_CHECK_MS = 15_000;
+
+/** 明面正货清单（报备校验域/壳层报备名池共用——单一来源=data/items 的 LEGIT_ITEM_CARDS） */
+const LEGIT_ITEM_IDS: readonly string[] = LEGIT_ITEM_CARDS.map((c) => c.id);
+
 /** 单名玩家单窗抽卡上限（卡面引走格→落格重触发抽卡的连环熔断） */
 const EVENT_CHAIN_CAP = 4;
 
@@ -122,6 +135,8 @@ export class GameKernel {
   private rng: Rng;
   /** 🐕 当局野狗编号发号（DogState.id=壳层 token 稳定 key） */
   private dogSeq = 0;
+  /** 🚢 当局海关报备单号发号（CustomsShipment.id=查验意图的指单 key） */
+  private customsSeq = 0;
 
   private constructor(config: GameConfig, defs: PlayerDef[], now: number) {
     // 随机源先立：假人角色分派与暗牌抽取都消耗它（顺序固定=同种子全序流）
@@ -194,6 +209,7 @@ export class GameKernel {
       ground: [],
       ambient: null,
       deferred: [],
+      customs: null,
       malice: { timber: null, sink: null, rock: null, spawnQueue: [], dogs: [] },
       seq: 0,
       rngState: this.rngHost.s,
@@ -335,6 +351,18 @@ export class GameKernel {
         this.doPlayItem(intent.pid, intent.cardId, intent.target, now);
         break;
       }
+      case "customsShip": {
+        this.doCustomsShip(intent.pid, intent.cardId, intent.to, intent.declared);
+        break;
+      }
+      case "customsCheck": {
+        this.doCustomsCheck(intent.pid, intent.shipment, now);
+        break;
+      }
+      case "customsGive": {
+        this.doCustomsGive(intent.pid, intent.cardId, now);
+        break;
+      }
       case "chooseRoute": {
         this.doChooseRoute(intent.pid, intent.option, now);
         break;
@@ -417,6 +445,11 @@ export class GameKernel {
         this.dogCollisions(now); // 生成当拍撞上=遭遇战照打（与真波生成同口径）
         break;
       }
+      case "dev.customs": {
+        if (!this.config.allowDev) throw new KernelError("dev 意图未开放");
+        this.openCustoms(this.eventCard("e21"), now, intent.sheriff);
+        break;
+      }
       case "dev.setPos": {
         if (!this.config.allowDev) throw new KernelError("dev 意图未开放");
         const p = this.player(intent.pid);
@@ -447,6 +480,7 @@ export class GameKernel {
       this.resolveAsks(now);
       this.resolvePendingTimers(now);
       this.fireBots(now);
+      this.tickCustoms(now); // 海关风云（#26 T7）：假人报备排程/罚没代选/超时退化
       this.advanceWalks(now);
       this.maybeCloseWindow(now);
       if (now >= this.state.windowDeadline) {
@@ -536,6 +570,8 @@ export class GameKernel {
     // 世界恶意（#24 T6a，数值表 §5.5 管道）：气候之后、windowStart 之前——同为世界层「行动前」
     // 结算：先落旧账（木头砸落/塌陷计时），再按周期起新波。全程不打断操作。
     this.tickMalice(now);
+    // 海关风云（#26 T7）：休息期抽到的（走路跨窗尾）在本窗正式摆摊——计时/假人排程从此起算
+    if (this.state.customs && !this.state.customs.armed) this.armCustoms(now);
     this.emit({ type: "windowStart", turn: this.state.turn, deadline: this.state.windowDeadline });
     this.reserveBots(now);
   }
@@ -1008,6 +1044,243 @@ export class GameKernel {
     this.removeDeadDogs();
   }
 
+  // ---------- 警长查货窗（#26 T7，自由窗口唯一一张：事件卡「黑市开张」） ----------
+
+  /** 海关风云开张（landOn 抽到「黑市开张」；dev.customs 钉位通道同走本收口）：
+   *  随机指派 1 名在场玩家当警长（淘汰者/通关席除外；dev 通道可钉定），其余为偷渡者；
+   *  本世界回合窗转为海关风云——报备转让随时可做、警长查验 ≤2 次（6 人在场及以上 3 次）。
+   *  假警长=不查验（直接退化自由转让，验收 AC5）；真人警长超时不查（CUSTOMS_CHECK_MS）也退化，绝不阻塞。
+   *  计时起算：窗内抽到=立即起算；走路跨窗尾（休息期）抽到=下个世界回合开窗时正式摆摊（armed）。
+   *  同窗二次抽到（牌堆洗回转出）不重开——海关风云仍在。 */
+  private openCustoms(card: EventCard, now: number, sheriffForce?: number): void {
+    if (this.state.customs) {
+      this.msg("system", `「${card.title}」——海关风云仍在，窗口不重开。`);
+      return;
+    }
+    const act = this.activePlayers();
+    if (act.length === 0) {
+      this.msg("system", `「${card.title}」夜市悄悄开张——可惜庄园里没人在场，作罢。`);
+      return;
+    }
+    let sheriff: PlayerState;
+    if (sheriffForce != null) {
+      const forced = this.player(sheriffForce);
+      if (forced.dead || forced.zone === "done") throw new KernelError("警长要在场（非淘汰/非通关席）");
+      sheriff = forced;
+    } else {
+      sheriff = act[Math.floor(this.draw() * act.length)]!;
+    }
+    const checks = this.state.players.length >= CUSTOMS_BIG_AT ? CUSTOMS_CHECKS_BIG : CUSTOMS_CHECKS; // 6 人以上局（局人数）
+    const botSheriff = sheriff.isBot;
+    const armed = this.state.phase === "acting";
+    this.state.customs = {
+      sheriff: sheriff.id,
+      armed,
+      checksLeft: checks,
+      degraded: botSheriff, // 假警长不查验=直接退化（验收 AC5）
+      checkDeadline: 0,
+      shipments: [],
+      pending: null,
+      botPlans: [],
+    };
+    this.msg(
+      "system",
+      armed
+        ? `🚢 海关风云！${sheriff.name} 被指命为警长——本窗玩家间可报备转让道具卡（明面只许运正货，违禁品只能谎报）；警长有 ${checks} 次查验，${Math.round(CUSTOMS_CHECK_MS / 1000)} 秒内不查就撤岗（退化为自由转让）。`
+        : `🚢 海关风云悄悄开张！${sheriff.name} 被指命为警长——正在休息间隙，下个世界回合正式摆摊（报备转让/查验从那时起）。`,
+      undefined,
+      { flavor: card.flavor, emphasis: "big" },
+    );
+    if (botSheriff) {
+      this.msg("system", `🚢 警长 ${sheriff.name}（系统）摆摆手不打算查验——本窗退化为自由转让（照常报备转让）。`);
+    }
+    if (armed) this.armCustoms(now);
+    this.emit({ type: "customsStart", sheriff: sheriff.id, checks });
+  }
+
+  /** 海关风云计时起算与假人排程（开窗当拍 or 下个世界回合正式开始共用）：查验截止
+   *  =now+CUSTOMS_CHECK_MS；假偷渡者各排一拍（0.2–1s 错峰——赶在假人自走自确认之前，
+   *  确认进等待区就没法出手了；到点执行一次规则化转让）。 */
+  private armCustoms(now: number): void {
+    const c = this.state.customs!;
+    c.armed = true;
+    c.checkDeadline = now + CUSTOMS_CHECK_MS;
+    c.botPlans = this.activePlayers()
+      .filter((q) => q.isBot && q.id !== c.sheriff)
+      .map((q) => ({ pid: q.id, at: now + 200 + Math.floor(this.draw() * 800) }));
+  }
+
+  /** 报备转让（#26 T7）：报备校验（明面只许正货——declared 必须是表一正货，报备违禁品即拒）→
+   *  报备单入册（谎报=declared≠实际箱货；运违禁品因报备校验必然成为谎报）→ 卡移交收货人。
+   *  黑市老板被动（表三 #3）：警长窗转让（报备合格）时摸 1 张——转让即兑现。 */
+  private doCustomsShip(pid: number, cardId: string, to: number, declared: string): void {
+    const gate = customsShipGate(this.state, pid, cardId, to);
+    if (!gate.ok) throw new KernelError(gate.reason);
+    const decl = ITEM_CARD_BY_ID.get(declared);
+    if (!decl) throw new KernelError(`报备货名 ${declared} 不在表一`);
+    if (decl.contraband) throw new KernelError(`「${decl.title}」是违禁品——明面只许运正货，运违禁品只能报个别的名`);
+    const p = this.player(pid);
+    const q = this.player(to);
+    p.hand.splice(p.hand.indexOf(cardId), 1);
+    q.hand.push(cardId);
+    const id = ++this.customsSeq;
+    this.state.customs!.shipments.push({ id, from: pid, to, cardId, declared, checked: false });
+    this.msg("system", `📦 ${p.name} 向 ${q.name} 报备转让 1 张道具卡——报备货名「${decl.title}」。`, pid, {
+      targets: [q.id],
+      emphasis: "normal",
+    });
+    if (roleDef(p.roleId).flags.customsTransferDraw) this.drawItems(p, 1, "黑市老板的门路");
+  }
+
+  /** 查验（#26 T7）：开箱对单——命中谎报=偷渡者交 1 张自选卡给警长（无卡回退 3 格）；
+   *  清白=警长赔 1 张（无卡回退 3 格）。谎报判读=declared≠实际箱货（contraband 字段驱动的报备
+   *  校验让违禁品无法如实报备——运违禁品必命中；正货报错名也是谎话，照罚）。查验成果走
+   *  customsChecked 事实（表四 #6 海关清白 / T8b1 找战犯「查验打脸」计数流）。 */
+  private doCustomsCheck(pid: number, shipmentId: number, now: number): void {
+    this.degradeCustomsIfDue(now); // 超时后再点查验=先撤岗再拒（时钟口径统一）
+    const gate = customsCheckGate(this.state, pid, shipmentId);
+    if (!gate.ok) throw new KernelError(gate.reason);
+    const c = this.state.customs!;
+    const s = c.shipments.find((x) => x.id === shipmentId)!;
+    const sheriff = this.player(pid);
+    const f = this.player(s.from);
+    c.checksLeft -= 1;
+    s.checked = true;
+    c.checkDeadline = now + CUSTOMS_CHECK_MS; // 查一次续期（下一个查验窗口）
+    const lied = s.declared !== s.cardId;
+    this.emit({ type: "customsChecked", pid, target: s.from, lied });
+    if (lied) {
+      this.msg("system", `🔎 警长 ${sheriff.name} 开箱查验——箱里是「${itemCard(s.cardId).title}」！报备的「${itemCard(s.declared).title}」是谎话。`, undefined, {
+        emphasis: "highlight",
+      });
+      this.msg("system", `⚖ ${f.name} 命中谎报——交 1 张自选道具卡给警长（无卡回退 ${CUSTOMS_RETREAT} 格）。`, f.id, {
+        targets: [sheriff.id],
+      });
+      this.scheduleCustomsGive(f, sheriff, "caught", now);
+    } else {
+      this.msg("system", `🔎 警长 ${sheriff.name} 开箱查验——箱里确实是「${itemCard(s.cardId).title}」，报备清白。`, undefined, {
+        emphasis: "highlight",
+      });
+      this.msg("system", `⚖ 查错了要赔——警长 ${sheriff.name} 赔 1 张自选道具卡给 ${f.name}（无卡回退 ${CUSTOMS_RETREAT} 格）。`, sheriff.id, {
+        targets: [f.id],
+      });
+      this.scheduleCustomsGive(sheriff, f, "clean", now);
+    }
+    if (c.checksLeft <= 0) {
+      this.msg("system", "🚢 警长的查验次数用尽——本窗只剩自由转让。");
+    }
+  }
+
+  /** 罚没/赔付移交发起：有卡=自选（真人挂账等 customsGive 应答、到点/收窗代选；假人即刻随机代选）；
+   *  无卡=按海关规矩回退 CUSTOMS_RETREAT 格（startWalk 沿来路栈，走格占用即入队——绝不阻塞）。 */
+  private scheduleCustomsGive(from: PlayerState, to: PlayerState, reason: CustomsGiveReason, now: number): void {
+    if (from.hand.length === 0) {
+      this.msg("system", `🚢 ${from.name} 手头无卡——按海关规矩回退 ${CUSTOMS_RETREAT} 格。`, from.id, { emphasis: "target" });
+      this.startWalk(from, -CUSTOMS_RETREAT, now);
+      return;
+    }
+    if (from.isBot) {
+      this.customsGivePick(from, to, reason, now, true);
+      return;
+    }
+    this.state.customs!.pending = { from: from.id, to: to.id, reason, deadline: now + this.config.routeAskMs };
+  }
+
+  /** 罚没移交落账（自选/代选唯一收口）：human=本人点的卡；auto=随机薅一张（超时/假人）；
+   *  挂账期间把最后一张转走/打掉（或自选时手已空）＝按「无卡回退 CUSTOMS_RETREAT 格」落账
+   *  （无卡判定在落账时复校——挂账人转移资产是合法躲法，绝不阻塞也绝不崩）；
+   *  收方已不在对局=卡收归弃牌堆（单池守恒）。落账即清挂账。 */
+  private customsGivePick(giver: PlayerState, to: PlayerState, reason: CustomsGiveReason, now: number, auto: boolean, cardId?: string): void {
+    let id: string | null = null;
+    if (giver.hand.length === 0) {
+      id = null; // 无卡：走回退
+    } else if (auto) {
+      id = giver.hand.splice(Math.floor(this.draw() * giver.hand.length), 1)[0]!;
+    } else {
+      if (cardId == null || !giver.hand.includes(cardId)) throw new KernelError("这张卡不在待交者的手牌里");
+      id = giver.hand.splice(giver.hand.indexOf(cardId), 1)[0]!;
+    }
+    if (id === null) {
+      this.msg("system", `🚢 ${giver.name} 手头无卡——按海关规矩回退 ${CUSTOMS_RETREAT} 格。`, giver.id, { emphasis: "target" });
+      this.startWalk(giver, -CUSTOMS_RETREAT, now);
+    } else {
+      const why = reason === "caught" ? "海关罚没" : "海关赔账";
+      if (to.dead) {
+        this.state.itemDiscard.push(id);
+        this.msg("system", `🚢 ${why}——${to.name} 已不在对局，「${itemCard(id).title}」收归牌堆。`, giver.id);
+      } else {
+        to.hand.push(id);
+        this.msg("system", `🚢 ${auto ? "系统替" : ""}${giver.name} ${auto ? "代选" : "交出"}「${itemCard(id).title}」交给 ${to.name}（${why}）。`, giver.id, {
+          targets: [to.id],
+        });
+      }
+    }
+    if (this.state.customs) this.state.customs.pending = null;
+  }
+
+  /** 海关罚没·自选交卡（#26 T7）：仅挂账人本人可应答（同一时刻至多一单，一人一单互不干扰；
+   *  挂账期间转走/打掉仅剩的卡＝落账时按无卡回退——见 customsGivePick 复校） */
+  private doCustomsGive(pid: number, cardId: string, now: number): void {
+    const c = this.state.customs;
+    if (!c?.pending) throw new KernelError("没有待交的罚没卡");
+    if (c.pending.from !== pid) throw new KernelError("这一单不是你要交的卡");
+    this.customsGivePick(this.player(pid), this.player(c.pending.to), c.pending.reason, now, false, cardId);
+  }
+
+  /** 海关风云时钟账（tick 行动拍）：罚没自选到点代选 → 超时/警长离场退化 → 假人报备排程执行。
+   *  全是「时间到了就自己了结」的账——绝不阻塞操作。未起算（休息期抽到）时整段跳过。 */
+  private tickCustoms(now: number): void {
+    const c = this.state.customs;
+    if (!c || !c.armed) return;
+    if (c.pending && now >= c.pending.deadline) {
+      this.customsGivePick(this.player(c.pending.from), this.player(c.pending.to), c.pending.reason, now, true);
+    }
+    this.degradeCustomsIfDue(now);
+    this.fireBotShipments(now);
+  }
+
+  /** 退化判读（tick 与查验前置共用的时钟口径）：警长离场=立即退化；已起算且余次未用尽而超时=退化 */
+  private degradeCustomsIfDue(now: number): void {
+    const c = this.state.customs;
+    if (!c || !c.armed || c.degraded) return;
+    const sheriff = this.player(c.sheriff);
+    if (sheriff.dead || sheriff.zone === "done") {
+      this.degradeCustoms(`警长 ${sheriff.name} 已不在对局`);
+      return;
+    }
+    if (c.checksLeft > 0 && now >= c.checkDeadline) {
+      this.degradeCustoms(`警长 ${sheriff.name} 迟迟没查验`);
+    }
+  }
+
+  private degradeCustoms(why: string): void {
+    this.state.customs!.degraded = true;
+    this.msg("system", `🚢 ${why}——本窗退化为自由转让（无查验），想运什么运什么。`, undefined, { emphasis: "highlight" });
+  }
+
+  /** 假偷渡者报备排程执行（开窗排 1–3s 错峰、到点一次）：随机抽 1 张手牌转让给随机一名在场玩家；
+   *  报备跟随规则——正货如实报、违禁品谎报为随机一张正货（明面校验只放行正货；假人跟规则走，验收 AC5）。
+   *  gate 不过（已确认/轮空/手牌空）＝放弃这单，不重试。 */
+  private fireBotShipments(now: number): void {
+    const c = this.state.customs!;
+    if (c.botPlans.length === 0) return;
+    const due = c.botPlans.filter((x) => x.at <= now);
+    if (due.length === 0) return;
+    c.botPlans = c.botPlans.filter((x) => x.at > now);
+    for (const plan of due) {
+      const p = this.player(plan.pid);
+      if (p.hand.length === 0) continue;
+      const cardId = p.hand[Math.floor(this.draw() * p.hand.length)]!;
+      const others = this.activePlayers().filter((q) => q.id !== p.id);
+      if (others.length === 0) continue;
+      const to = others[Math.floor(this.draw() * others.length)]!;
+      const card = itemCard(cardId);
+      const declared = card.contraband ? LEGIT_ITEM_IDS[Math.floor(this.draw() * LEGIT_ITEM_IDS.length)]! : cardId;
+      if (!customsShipGate(this.state, p.id, cardId, to.id).ok) continue;
+      this.doCustomsShip(p.id, cardId, to.id, declared);
+    }
+  }
+
   /** 窗内挂起抉择到点代选：超时未应答按卡面默认项结算并标注（事件定案 §1.7） */
   private resolvePendingTimers(now: number): void {
     for (const p of this.state.players) {
@@ -1050,6 +1323,18 @@ export class GameKernel {
   }
 
   private closeWindow(now: number, auto: boolean): void {
+    // 海关风云收窗即散（#26 T7）：挂账中的自选交卡先代选落账（绝不阻塞——「本世界回合窗」是海关的边界）
+    if (this.state.customs) {
+      const c = this.state.customs;
+      if (c.pending) {
+        const giver = this.player(c.pending.from);
+        const to = this.player(c.pending.to);
+        this.customsGivePick(giver, to, c.pending.reason, now, true);
+      }
+      this.state.customs = null;
+      this.msg("system", "🚢 海关风云散去——庄园回常规节奏。");
+      this.emit({ type: "customsEnd" });
+    }
     this.emit({ type: "windowEnd", turn: this.state.turn, auto });
     this.state.turn += 1;
     if (this.state.turn > this.config.turnCap) {
@@ -1510,8 +1795,8 @@ export class GameKernel {
         p.cardPending = { cardId: card.id, deadline: now + this.config.routeAskMs };
       }
     } else {
-      // kind='window'（警长查货窗）：M1 牌池不含，仅 dev 强发路径能到
-      this.msg("system", `「${card.title}」查货窗暂缓开张（T7 起接入），本格无事。`, p.id);
+      // kind='window'（#26 T7 警长查货窗）：抽到即把本世界回合窗变为海关风云
+      this.openCustoms(card, now);
     }
   }
 
@@ -1780,6 +2065,12 @@ export class GameKernel {
     p.talisman = 0;
     p.itemBan = 0; // itemBanned 由下窗 openWindow 从 itemBan 重导出（死于途中自然落 false），不另设值
     p.botSchedule = { rollAt: 0, confirmAt: 0 };
+    // 海关罚没挂账涉及死者（#26 T7）：作罢出声——手牌已散、罚无可罚（绝不阻塞；警长离场由 tickCustoms 退化）
+    const cp = this.state.customs?.pending;
+    if (cp && (cp.from === p.id || cp.to === p.id)) {
+      this.state.customs!.pending = null;
+      this.msg("system", `🚢 海关罚没作罢——${p.name} 已不在对局。`);
+    }
     if (p.hand.length > 0) {
       const n = p.hand.length;
       this.state.itemDiscard.push(...p.hand);
@@ -2144,4 +2435,52 @@ export function itemLegalTargets(state: GameState, pid: number, cardId: string):
     .filter((q) => !q.dead && q.zone !== "done" && q.id !== pid)
     .filter((q) => !swap || q.zone === "main")
     .map((q) => q.id);
+}
+
+/** 窗内动作资格阶梯（#26 T7 海关两闸共用；道具打出闸（itemPlayGate）阶梯序与拒因文案不同——不并）：
+ *  阶段在窗 → 出局观战／通关席／等待区／罚停轮空各拒。通过把玩家一并交出（省二次查找）。 */
+function windowActGate(state: GameState, pid: number, phaseReason: string): { ok: true; player: PlayerState } | { ok: false; reason: string } {
+  if (state.phase !== "acting") return { ok: false, reason: phaseReason };
+  const p = state.players[pid];
+  if (!p) return { ok: false, reason: `玩家 ${pid} 不存在` };
+  if (p.dead) return { ok: false, reason: "已淘汰观战，不能再出手" };
+  if (p.zone === "done") return { ok: false, reason: "通关席不再行动" };
+  if (p.confirmed) return { ok: false, reason: "已确认结束（等待区），本窗不能再操作" };
+  if (p.skipped) return { ok: false, reason: "本回合罚停轮空——不能出手" };
+  return { ok: true, player: p };
+}
+
+/** 海关报备转让闸（#26 T7；内核执行 + 壳层置灰共用一份口径）：海关风云在窗 + 窗内动作资格 +
+ *  卡在手 + 收货方在场。**明面只许正货的报备货名校验**在结算侧（违禁品报备即拒）。
+ *  沙困行囊（禁道具）不管转让——那是「打不出卡」，不是「运不了货」（实现期定案，实玩复查回表）。 */
+export function customsShipGate(state: GameState, pid: number, cardId: string, to: number): PlayGate {
+  if (!state.customs) return { ok: false, reason: "当前没有海关风云（先抽到「黑市开张」）" };
+  const act = windowActGate(state, pid, "只有世界回合窗内可以报备转让");
+  if (!act.ok) return act;
+  if (!act.player.hand.includes(cardId)) return { ok: false, reason: "这张卡不在你的手牌里" };
+  const q = state.players[to];
+  if (!q || q.id === pid) return { ok: false, reason: "转让对象要选别人" };
+  if (q.dead) return { ok: false, reason: `${q.name} 已淘汰——不能再收货` };
+  if (q.zone === "done") return { ok: false, reason: `${q.name} 已在通关席——不着陆` };
+  return { ok: true };
+}
+
+/** 海关查验闸（#26 T7）：警长本人（先判身份再走资格阶梯）+ 未退化、有余次、无未了结罚没；
+ *  目标报备单未查过、非警长自己经手、报备人仍在场（一单限查一次）。 */
+export function customsCheckGate(state: GameState, pid: number, shipment: number): PlayGate {
+  const c = state.customs;
+  if (!c) return { ok: false, reason: "当前没有海关风云" };
+  if (pid !== c.sheriff) return { ok: false, reason: "只有警长可以查验" };
+  const act = windowActGate(state, pid, "只有世界回合窗内可以查验");
+  if (!act.ok) return act;
+  if (c.degraded) return { ok: false, reason: "警长已撤岗——本窗退化为自由转让（无查验）" };
+  if (c.checksLeft <= 0) return { ok: false, reason: "查验次数已用尽" };
+  if (c.pending) return { ok: false, reason: "上一单的罚没了结前不能再查" };
+  const s = c.shipments.find((x) => x.id === shipment);
+  if (!s) return { ok: false, reason: "没有这张报备单" };
+  if (s.checked) return { ok: false, reason: "这单已经查过了" };
+  if (s.from === pid) return { ok: false, reason: "不能查验自己经手的报备" };
+  const f = state.players[s.from];
+  if (!f || f.dead || f.zone === "done") return { ok: false, reason: "报备人已不在对局——这单查不着了" };
+  return { ok: true };
 }

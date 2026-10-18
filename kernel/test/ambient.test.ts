@@ -50,6 +50,21 @@ const playThroughP0 = (k: GameKernel, when: number): void => {
   }
 };
 
+/** 窗 1 只行动不确认（把收窗留给 30s 整点 deadline）：牌池扩容后走停顿生抽卡会把窗提前收掉，
+ *  「钉位在跨窗前完成」的铁律要靠人间不确认来兜住（假人全确认也不收窗）。 */
+const playNoConfirmP0 = (k: GameKernel, when: number): void => {
+  const p0 = k.state.players[0]!;
+  if (p0.walk) walkOut(k, when);
+  if (!p0.skipped && !p0.rolled) {
+    try {
+      void k.apply({ type: "roll", pid: 0 }, when);
+    } catch {
+      // 走格未完成等边界——留窗口替掷兜底
+    }
+  }
+  if (p0.walk) walkOut(k, when);
+};
+
 /** 同生态位（优先带同生态邻居=退一步仍在同行），setPos 全员钉位用 */
 const ecoSpot = (zone: Eco): { pos: number; from: number } => {
   const c = BOARD.find((x) => x.zone === zone)!;
@@ -124,7 +139,7 @@ describe("雷暴（表一 #13，劈人系）三行地形表", () => {
       const k = bootFixed({ windowMs: 30_000 });
       ensureHand(k, 0, "i13");
       void k.apply({ type: "playItem", pid: 0, cardId: "i13" }, 0);
-      playThroughP0(k, 0); // 窗 1：roll/走/确认（走停即抽等等随机流按固定种子确定）
+      playNoConfirmP0(k, 0); // 窗 1：roll/走（人间不确认——把收窗留给 30s 整点）
       pinAll(k, zone, 2_000); // 窗 1 末钉位：窗 2 tickAmbient 按「所在生态」全体同行走行
       toNextWindow(k, 0, 30_000, 0);
       const struck = k.state.players.find((p) => p.walk?.remaining === -steps || p.walkQueue.includes(-steps));
@@ -258,7 +273,7 @@ describe("风暴（表一 #20，风压系）三行地形表", () => {
     const k = bootFixed({ windowMs: 60_000 });
     ensureHand(k, 0, "i20");
     void k.apply({ type: "playItem", pid: 0, cardId: "i20" }, 0);
-    playThroughP0(k, 0);
+    playNoConfirmP0(k, 0); // 窗 1：人间不确认——把收窗留给 60s 整点（钉位时序铁律同雷暴）
     pinAll(k, "gobi", 2_000); // 窗 1 行动完再钉到戈壁——窗 2 判定按位置=全员沙暴行
     const now2 = toNextWindow(k, 0, 60_000, 0);
     expect(k.state.players[0]!.checkMods).toEqual([{ mode: "flat", v: -4, src: "风暴·沙暴" }]);
@@ -267,9 +282,10 @@ describe("风暴（表一 #20，风压系）三行地形表", () => {
     void k.apply({ type: "dev.drawCard", pid: 0, cardId: "e13" }, now2 + 500);
     void k.apply({ type: "chooseCard", pid: 0, option: 1 }, now2 + 500);
     expect(k.state.messages.some((m) => m.turn === 2 && m.who === 0 && /前途骰掷出 \d+（−4）/.test(m.text))).toBe(true);
-    // 回合开始重刷（窗 3 tickAmbient 再挂=重置非叠加）
+    // 回合开始重刷（窗 3 tickAmbient 再挂=重置非叠加）：窗 2 走完重新钉回戈壁再跨窗
     playThroughP0(k, now2);
-    toNextWindow(k, now2, 60_000, 0);
+    pinAll(k, "gobi", now2 + 1_000);
+    toNextWindow(k, now2 + 2_000, 60_000, 0);
     expect(k.state.players[0]!.checkMods).toEqual([{ mode: "flat", v: -4, src: "风暴·沙暴" }]);
   });
 });

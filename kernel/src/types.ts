@@ -157,6 +157,64 @@ export interface DogSpawnReq {
   target: number;
 }
 
+/** 海关报备单（#26 T7 警长查货窗）：一次「报备转让」的完整账——警长查验的目标池。
+ *  M1 保密口径：cardId（真货）平铺 state（战报不点破）；M2 下发按玩家切片（他人不得收到 cardId）。 */
+export interface CustomsShipment {
+  /** 报备单号（发号单调增；查验意图按它指单） */
+  id: number;
+  /** 报备人（偷渡者；被查验命中谎报时受罚） */
+  from: number;
+  /** 收货人 */
+  to: number;
+  /** 箱中真货（道具卡 id；查验前对他人保密） */
+  cardId: string;
+  /** 明面报备的货名（道具卡 id；报备校验保证是正货——谎报=declared≠cardId） */
+  declared: string;
+  /** 已查验（一单最多查一次） */
+  checked: boolean;
+}
+
+/** 海关罚没因由：caught=命中谎报（偷渡者交卡给警长）／clean=查验清白（警长赔卡给报备人） */
+export type CustomsGiveReason = "caught" | "clean";
+
+/** 海关罚没挂账（查验落定后的自选交卡步）：等挂账人本人点「交哪张」；超时/假人随机代选。 */
+export interface CustomsPending {
+  /** 交卡方（自选） */
+  from: number;
+  /** 收卡方 */
+  to: number;
+  /** 因由：见 CustomsGiveReason */
+  reason: CustomsGiveReason;
+  /** 自选截止（沿用选路口径 routeAskMs；到点系统代选） */
+  deadline: number;
+}
+
+/**
+ * 警长查货窗（#26 T7；事件卡「黑市开张」）：本世界回合窗变为海关风云——系统随机指派 1 名
+ * 在场玩家当警长（淘汰者/通关席除外），其余为偷渡者；窗内玩家间可报备转让道具卡（明面只许
+ * 正货，运违禁品只能谎报）；警长 ≤2 次查验（6 人在场及以上 3 次）：命中谎报罚偷渡者 1 张自选
+ * 道具卡给警长、查验清白警长赔 1 张（均无卡回退 3 格）；警长超时不查/假警长=退化为自由转让。
+ * 生命周期=抽到卡所属的那个世界回合窗：收窗即散（closeWindow 清账）。M1 保密口径同报备单。
+ */
+export interface CustomsState {
+  /** 警长 pid（随机指派；警长经手的报备不可自查） */
+  sheriff: number;
+  /** 计时是否已起算（抽到当拍在世界回合窗内=立即起算；走路跨窗尾、休息期抽到=下个世界回合开窗时正式摆摊起算） */
+  armed: boolean;
+  /** 剩余查验次数 */
+  checksLeft: number;
+  /** 已退化为自由转让（警长超时不查/假警长/警长离场——无查验，绝不阻塞） */
+  degraded: boolean;
+  /** 查验截止（已起算后有效：超时不查即退化；每查验一次续期 CUSTOMS_CHECK_MS；未起算时置 0 不用） */
+  checkDeadline: number;
+  /** 报备单清单（查验目标池） */
+  shipments: CustomsShipment[];
+  /** 罚没挂账（自选交卡中；同一时刻至多一单——未了结前警长不再查验） */
+  pending: CustomsPending | null;
+  /** 假偷渡者的报备排程（开窗时排 1–3s 错峰，到点执行一次规则化转让） */
+  botPlans: Array<{ pid: number; at: number }>;
+}
+
 export interface GameState {
   turn: number;
   phase: GamePhase;
@@ -184,6 +242,8 @@ export interface GameState {
   ambient: { cardId: string; /** 剩余触发回合数（回合开始结算一次后 −1；0=到期失效） */ left: number } | null;
   /** 指向他人的卡面效果（world·即时）：下一世界回合开始时结算（窗口 openWindow 消费） */
   deferred: DeferredEffect[];
+  /** 警长查货窗（#26 T7）：抽到「黑市开张」当窗挂起，收窗即散；null=常规节奏 */
+  customs: CustomsState | null;
   /**
    * 世界恶意挂账（#24 T6a + #25 T6b）：木头=预警落点（下一世界回合开始砸落）／塌陷=裂开的格子与
    * 剩余存续世界回合数（踩入咬人、开窗递减到 0 复原）／滚石=本次滚过的 10 格路径（演出残留，
@@ -246,6 +306,13 @@ export type Intent =
   | { type: "chooseCard"; pid: number; option: number }
   /** 打道具卡（T4a）：确认结束之前的窗内任意时刻、张数不限；target 仅 chooseOther 类需要 */
   | { type: "playItem"; pid: number; cardId: string; target?: number }
+  /** 海关风云·报备转让（#26 T7）：把 1 张手牌报备转让给他人——declared=明面报备的货名（表一正货卡 id，
+   *  报备违禁品即拒=「明面只许运正货」；谎报=declared≠cardId，运违禁品必然谎报） */
+  | { type: "customsShip"; pid: number; cardId: string; to: number; declared: string }
+  /** 海关风云·查验（#26 T7，警长专用）：查验一单报备（shipment=报备单 id；一单限查一次） */
+  | { type: "customsCheck"; pid: number; shipment: number }
+  /** 海关风云·交卡（#26 T7，罚没自选）：把 pending 中自己名下的 1 张手牌交给对方 */
+  | { type: "customsGive"; pid: number; cardId: string }
   /** 测试/后接卡面效果专用的直调通道（allowDev=false 时拒绝） */
   | { type: "dev.back"; pid: number; steps: number }
   | { type: "dev.setPos"; pid: number; pos: number; from: number | null; net: number }
@@ -257,7 +324,10 @@ export type Intent =
   /** 直接吃 dmg 点伤害（走 applyHpDelta 完整通道：护身符/盾照拦；伤害链单测不绕弯路） */
   | { type: "dev.hit"; pid: number; dmg: number }
   /** 在指定格生成 1 只标准野狗（T6b 遭遇战/恶意互演链的确定性钉位通道；生成当拍同格=撞上照打遭遇战） */
-  | { type: "dev.spawnDog"; cell: number };
+  | { type: "dev.spawnDog"; cell: number }
+  /** 直接开海关风云（#26 T7 的确定性钉位通道）：可选钉定警长 pid（缺省同真抽路径=随机指派）；
+   *  已有海关风云未散时照常拒绝重开（与抽卡路径同闸） */
+  | { type: "dev.customs"; sheriff?: number };
 
 // ---------- 事实（下行：客户端据此动起来） ----------
 
@@ -290,7 +360,12 @@ export type Fact =
   /** 棋盘联动：说明性脉冲（界面呈现定案 §四 S1 描边） */
   | { type: "pulse"; pid: number; level: "normal" | "target" | "big" }
   /** 击毙野狗（#25 T6b 遭遇战成功/大成功；暗牌「打狗英雄 ≥2 只」表四 #7 走对局事件流计数，T8b1 消费） */
-  | { type: "dogKilled"; pid: number };
+  | { type: "dogKilled"; pid: number }
+  /** 海关风云（#26 T7）：开张（警长指派+查验次数）／散场（收窗）／查验落定
+   *  （lied=命中谎报——表四 #6「海关清白」与 T8b1 找战犯「查验打脸」走这枚事实计数） */
+  | { type: "customsStart"; sheriff: number; checks: number }
+  | { type: "customsEnd" }
+  | { type: "customsChecked"; pid: number; target: number; lied: boolean };
 
 export interface PlayerDef {
   name: string;

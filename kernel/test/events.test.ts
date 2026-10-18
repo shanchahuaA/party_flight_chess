@@ -63,7 +63,7 @@ describe("牌堆单池守恒（事件定案 §1.8）", () => {
     const fx = k.apply({ type: "roll", pid: 0 }, 0);
     expect(dieOf(fx)).toBe(1);
     k.tick(140); // 一步走到 (2,0)E → 落格抽卡（此刻假人未到 400ms+ 日程，无人抢牌）
-    expect(k.state.deck.length).toBe(19); // 洗回整堆后抽走一张
+    expect(k.state.deck.length).toBe(POOL_IDS.length - 1); // 洗回整堆后抽走一张
     // 守恒：deck + discard = 全池（抽出的卡已入弃牌堆，回归牌堆有账）
     expect(k.state.discard.length).toBe(1);
     const missing = POOL_IDS.filter((id) => !k.state.deck.includes(id));
@@ -274,11 +274,11 @@ describe("表二 21 张逐张对表（T3b 收账）", () => {
     expect(gambles.every((c) => c.kind === "choice")).toBe(true);
   });
 
-  it("M1 牌池 = 20 张且排除 window 卡（黑市开张 T7 放行）", () => {
+  it("M1 牌池 = 21 张全量（#26 T7 放行 window 卡「黑市开张」进池）", () => {
     const w = EVENT_CARDS.find((c) => c.kind === "window");
     expect(w?.title).toBe("黑市开张");
-    expect(M1_EVENT_POOL.length).toBe(20);
-    expect(M1_EVENT_POOL.includes(w!)).toBe(false);
+    expect(M1_EVENT_POOL.length).toBe(21);
+    expect(M1_EVENT_POOL.includes(w!)).toBe(true);
   });
 
   it("抉择 14 张每张 ≥2 选项 + 合法默认项；纯效果 6 张每张有 effect", () => {
@@ -308,10 +308,12 @@ describe("表二 21 张逐张对表（T3b 收账）", () => {
     }
   });
 
-  it("window 卡 dev 直发走占位播报（查货窗 T7 接入）", () => {
+  it("window 卡 dev 直发=开海关风云（#26 T7 真账：警长指派+查验次数挂账）", () => {
     const k = boot();
     k.apply({ type: "dev.drawCard", pid: 0, cardId: "e21" }, 0);
-    expect(k.state.messages.some((m) => m.text.includes("查货窗暂缓开张"))).toBe(true);
+    expect(k.state.customs).not.toBeNull();
+    expect(k.state.customs!.checksLeft).toBe(2); // 4 人局=≤2 次（6+ 人在场 3 次）
+    expect(k.state.messages.some((m) => m.text.includes("海关风云"))).toBe(true);
   });
 });
 

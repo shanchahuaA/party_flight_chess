@@ -7,6 +7,7 @@ import { computed } from "vue";
 import type { PlayerState } from "../../../kernel/src";
 import { gameStore } from "../game/store";
 import HandDock from "./HandDock.vue";
+import CustomsBar from "./CustomsBar.vue";
 
 const state = computed(() => {
   return gameStore.state.value;
@@ -35,6 +36,8 @@ function confirm(): void {
 
 <template>
   <div class="dock">
+    <!-- 海关风云任务条组（T7，抽到「黑市开张」时出现）：报备转让/查验/交卡按可用性点亮 -->
+    <CustomsBar />
     <!-- 手牌横滑+抽屉+打牌（T4a2）：dock 固定钮上方的一排情境手牌（含 targeting 任务条） -->
     <HandDock />
     <div id="btnRow">

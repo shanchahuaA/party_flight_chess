@@ -167,14 +167,16 @@ class GameStore {
 export const gameStore = new GameStore();
 
 /** 调试冒烟通道（?fast=）：免大厅直达一局短窗局（10s 窗/无休息），暗牌自动代选；
- *  追加 ?dev=1 时开局 allowDev 局并挂 window.__pzcard（强抽指定事件卡，浮层冒烟用） */
+ *  追加 ?dev=1 时开局 allowDev 局并挂 window.__pzcard（强抽指定事件卡，浮层冒烟用）；
+ *  ?win=秒 自定义窗长（冒烟多步交互防收窗——T7 海关窗任务条组冒烟用） */
 export function maybeBootFastPath(): void {
   if (gameStore.kernel.value) return;
   const params = new URLSearchParams(location.search);
   if (!params.has("fast")) return;
   const dev = params.has("dev");
-  // ?slow=1：60s 慢窗（壳层冒烟用——10s 快窗手速赛会与逐格走/替掷竞速）
-  const windowMs = params.has("slow") ? 60_000 : 10_000;
+  // ?slow=1：60s 慢窗（壳层冒烟用——10s 快窗手速赛会与逐格走/替掷竞速）；?win=秒 再放长（多步冒烟）
+  const winParam = Number(params.get("win"));
+  const windowMs = Number.isFinite(winParam) && winParam > 0 ? winParam * 1000 : params.has("slow") ? 60_000 : 10_000;
   gameStore.boot(
     { allowDev: dev, windowMs, restMs: 0, stepMs: 90, seed: (Math.random() * 2 ** 31) | 0 },
     [
@@ -191,13 +193,15 @@ export function maybeBootFastPath(): void {
 /** 调试卡牌通道（?dev=1）：window.__pzcard("e03", pid?) → dev.drawCard 强抽（抉择/效果/地区卡冒烟）；
  *  __pzgive(道具卡 id, pid?) 塞手牌；__pzplay(道具卡 id, target?) 打出手（T4a 打出链冒烟）；
  *  __pzdead(pid?) 出局占位（T4a2 淘汰观战态冒烟）；__pzdog(cell?) 生成野狗钉位（T6b 遭遇战/棋盘贴皮冒烟——
- *  缺省钉人间相邻格=过一拍就可能撞上） */
+ *  缺省钉人间相邻格=过一拍就可能撞上）；__pzcustoms(sheriff?) 钉位开海关风云（T7 警长窗冒烟——
+ *  缺省同真抽=随机警长，传 0 钉人间当警长） */
 function bindDevChannels(): void {
   const w = window as unknown as Record<string, unknown>;
   w.__pzcard = (cardId: string, pid = 0) => gameStore.apply({ type: "dev.drawCard", pid, cardId });
   w.__pzgive = (cardId: string, pid = 0) => gameStore.apply({ type: "dev.giveItem", pid, cardId });
   w.__pzplay = (cardId: string, target?: number) => gameStore.playItem(cardId, target);
   w.__pzdead = (pid = 0) => gameStore.apply({ type: "dev.setDead", pid });
+  w.__pzcustoms = (sheriff?: number) => gameStore.apply(sheriff == null ? { type: "dev.customs" } : { type: "dev.customs", sheriff });
   w.__pzdog = (cell?: number) => {
     const k = gameStore.kernel.value;
     if (!k) return;
@@ -223,6 +227,9 @@ function bindDevSnapshot(): void {
       hand: me.hand.join(","),
       ground: s.ground.map((g) => `${g.cell}:${g.cardId}`).join(" "),
       dogs: s.malice.dogs.map((d) => `${d.cell}:hp${d.hp}:life${d.left}`).join(" ") || "无", // T6b 狗账快照
+      customs: s.customs
+        ? `警长${s.customs.sheriff}·查${s.customs.checksLeft}${s.customs.degraded ? "·撤岗" : ""}·单${s.customs.shipments.length}${s.customs.pending ? `·挂账${s.customs.pending.from}→${s.customs.pending.to}` : ""}`
+        : "无", // T7 海关账快照
       items: `堆${s.itemDeck.length}/弃${s.itemDiscard.length}`,
       msgs: s.messages.slice(-8).map((m) => m.text),
     };
