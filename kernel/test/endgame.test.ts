@@ -40,29 +40,34 @@ const giveByRoute = (k: GameKernel, pid: number, route: string): string => {
 };
 
 describe("终局启动边界（局长打满）", () => {
-  it("默认局长 15：第 14 窗收口不启动，第 15 窗收口才启动（endgame 挂账+endgameStart/gameEnd 事实+大战报）", () => {
+  it("默认局长 15：第 14 窗收口不启动，第 15 窗收口才启动（endgame 挂账+endgameStart 事实+大战报+最后一波开张）", () => {
     const k = boot({ windowMs: 0, restMs: 0 });
     const now = advanceWorldTurns(k, 14);
     expect(k.state.turn).toBe(15);
     expect(k.state.phase).toBe("acting");
     expect(k.state.endgame).toBeNull();
-    const fx = k.tick(now); // 收第 15 窗 → 终局启动
-    expect(k.state.phase).toBe("over");
-    expect(k.state.endgame).toEqual({ turn: 16 });
+    const fx = k.tick(now); // 收第 15 窗 → 终局启动 → 最后一波开张（T8a2：年兽战接管，不再直通 over）
+    expect(k.state.phase).toBe("acting"); // 年兽战第 1 波（windowMs=0 时第 1 波已在本 tick 替砍收口、第 2 波开张）
+    expect(k.state.endgame!.turn).toBe(16);
+    expect(k.state.endgame!.beast).not.toBeNull();
+    expect(k.state.endgame!.groupFail).toBe(false);
     expect(fx.some((f) => f.type === "endgameStart" && f.turn === 16)).toBe(true);
-    expect(fx.some((f) => f.type === "gameEnd")).toBe(true);
     expect(msg(k, "终局流程启动")).toBe(true);
+    expect(msg(k, "年兽现身")).toBe(true);
     // 名册态域完整（具体 fight/seat/out 落账由受控场景钉死）
     expect(k.state.players.every((p) => p.endgame === "fight" || p.endgame === "seat" || p.endgame === "out")).toBe(true);
   });
 
-  it("可调生效：turnCap 5 → 第 5 窗收口启动；turnCap 30 → 16 窗后仍在局", () => {
+  it("可调生效：turnCap 5 → 第 5 窗收口启动年兽战；turnCap 30 → 16 窗后仍在局", () => {
     const k5 = boot({ turnCap: 5, windowMs: 0, restMs: 0 });
     const now = advanceWorldTurns(k5, 4);
     expect(k5.state.endgame).toBeNull();
     k5.tick(now);
-    expect(k5.state.phase).toBe("over");
-    expect(k5.state.endgame).toEqual({ turn: 6 });
+    expect(k5.state.endgame!.turn).toBe(6);
+    expect(k5.state.endgame!.beast).not.toBeNull(); // 最后一波开张（T8a2）
+    let guard = 60;
+    while (k5.state.phase !== "over" && guard-- > 0) k5.tick(Math.max(k5.state.windowDeadline, k5.state.restUntil) + 1);
+    expect(k5.state.phase).toBe("over"); // 年兽战打到收束（windowMs=0 一 tick 一波）
     const k30 = boot({ turnCap: 30, windowMs: 0, restMs: 0 });
     advanceWorldTurns(k30, 16);
     expect(k30.state.phase).not.toBe("over");
@@ -120,7 +125,7 @@ describe("无人被提前收束+入席先后序+分位", () => {
     expect(msg(k, "为第 2 位通关席（结算分位 +8）")).toBe(true);
   });
 
-  it("入席后照常走到局长打满才进终局：endgame 挂账+名册 seat/fight 落定", () => {
+  it("入席后照常走到局长打满才进终局：endgame 挂账+名册 seat/fight 落定+年兽战收束", () => {
     const { k } = bootTwoSeats();
     let guard = 30;
     while (k.state.phase !== "over" && guard-- > 0) {
@@ -128,7 +133,10 @@ describe("无人被提前收束+入席先后序+分位", () => {
       k.tick(now);
     }
     expect(k.state.phase).toBe("over");
-    expect(k.state.endgame).toEqual({ turn: 16 });
+    expect(k.state.endgame!.turn).toBe(16);
+    expect(k.state.endgame!.groupFail).toBe(false);
+    // 双通关席参战打赢了：种子搜索局的骰面流钉账（年兽 55 血、第 4 波收束、血条钳 0）
+    expect(k.state.endgame!.beast).toEqual({ hp: 0, maxHp: 55, wave: 4, waveDmg: 12 });
     expect(k.state.players[0]!.endgame).toBe("seat");
     expect(k.state.players[1]!.endgame).toBe("seat");
     expect(msg(k, "通关席 2")).toBe(true);

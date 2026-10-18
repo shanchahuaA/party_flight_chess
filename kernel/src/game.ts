@@ -14,7 +14,7 @@ import { AXIS_NAMES, ROLES, roleDef } from "./data/roles";
 import { SECRET_GOALS } from "./data/goals";
 import { CHECK_FACES, effectiveValue, netMods, resolveCheck, roleCheckMods, roleOneToCrit, rollD20, rollDice, type CheckGrade, type CheckMods, type CheckResolve } from "./check";
 import { rngFrom, type Rng, type RngState } from "./rng";
-import type { WalkState } from "./types";
+import type { BeastState, WalkState } from "./types";
 import {
   KernelError,
   type CustomsGiveReason,
@@ -119,6 +119,13 @@ export const FINISH_SCORES = [10, 8, 6];
 export function finishScore(rank: number): number {
   return FINISH_SCORES[rank - 1] ?? 0;
 }
+
+/** 最后一波·年兽战（#27 T8a2，数值表 §5.5「最后一波 B」用户拍）：共享血条按人数自平衡——
+ *  基础 25+每玩家 15（2 人=55／4 人=85／6 人=115／8 人=145）；伤害骰 1d12（爆 12 爽点）。
+ *  4 人期望 26/波 → 约 3–3.5 波收束。客户端文案（Dock/HandDock/大厅）引常量不硬编。 */
+export const BEAST_BASE_HP = 25;
+export const BEAST_HP_PER_PLAYER = 15;
+export const BEAST_DIE = 12;
 
 /** 明面正货清单（报备校验域/壳层报备名池共用——单一来源=data/items 的 LEGIT_ITEM_CARDS） */
 const LEGIT_ITEM_IDS: readonly string[] = LEGIT_ITEM_CARDS.map((c) => c.id);
@@ -330,10 +337,12 @@ export class GameKernel {
   apply(intent: Intent, now: number): Fact[] {
     switch (intent.type) {
       case "roll": {
+        if (this.fighting()) throw new KernelError("最后一波不走格——掷伤害骰砍年兽（strike）");
         this.doRollChecked(intent.pid, now, "human");
         break;
       }
       case "confirm": {
+        if (this.fighting()) throw new KernelError("最后一波无需确认——砍了就算完");
         const p = this.player(intent.pid);
         this.checkWindowAction(p);
         if (p.confirmed) throw new KernelError("已确认，本窗不能再操作");
@@ -370,6 +379,18 @@ export class GameKernel {
       }
       case "customsGive": {
         this.doCustomsGive(intent.pid, intent.cardId, now);
+        break;
+      }
+      case "strike": {
+        this.doStrikeChecked(intent.pid, "human");
+        break;
+      }
+      case "giveItem": {
+        this.doGiveItem(intent.pid, intent.cardId, intent.to);
+        break;
+      }
+      case "hitBeast": {
+        this.doHitBeast(intent.pid, intent.cardId);
         break;
       }
       case "chooseRoute": {
@@ -459,6 +480,15 @@ export class GameKernel {
         this.openCustoms(this.eventCard("e21"), now, intent.sheriff);
         break;
       }
+      case "dev.setBeast": {
+        if (!this.config.allowDev) throw new KernelError("dev 意图未开放");
+        const b = this.state.endgame?.beast;
+        if (!b) throw new KernelError("年兽战未开张——dev.setBeast 无处落账");
+        if (!Number.isInteger(intent.hp) || intent.hp < 0) throw new KernelError("年兽血量应为非负整数");
+        b.hp = intent.hp;
+        if (b.hp === 0) this.slayBeast(); // 钉 0=当场击杀（胜利收束的确定性通道）
+        break;
+      }
       case "dev.setPos": {
         if (!this.config.allowDev) throw new KernelError("dev 意图未开放");
         const p = this.player(intent.pid);
@@ -494,7 +524,8 @@ export class GameKernel {
       this.maybeCloseWindow(now);
       // 全员确认已被 maybeCloseWindow 收走的窗不再二次收口（一 tick 双吞世界回合——T8a1 收局边界实测踩中）
       if (this.state.phase === "acting" && now >= this.state.windowDeadline) {
-        this.autoFillAndClose(now);
+        if (this.fighting()) this.autoStrikeAndClose(now); // 年兽战波窗：超时替砍（T8a2）
+        else this.autoFillAndClose(now);
       }
     } else {
       this.resolveAsks(now);
@@ -587,9 +618,15 @@ export class GameKernel {
   }
 
   private fireBots(now: number): void {
+    const fight = this.fighting(); // 年兽战（T8a2）：假人日程=到点砍击（无走格无确认——砍了就算完）；通关席假人也必参战
     for (const p of this.state.players) {
-      if (!p.isBot || p.dead || p.zone === "done") continue;
+      if (!p.isBot || p.dead || (!fight && p.zone === "done")) continue;
       if (!p.rolled && now >= p.botSchedule.rollAt) {
+        if (fight) {
+          this.doStrike(p.id, "bot");
+          if (this.state.phase !== "acting") break; // 这一刀砍死了年兽——收束已落，后续假人不再补刀
+          continue;
+        }
         if (p.walk || p.walkQueue.length > 0) {
           // 卡面/指认造成的续走在路上：稍候重试，不让掷骰撞 KernelError
           p.botSchedule.rollAt = now + BOT_WALK_RETRY_MS;
@@ -597,7 +634,7 @@ export class GameKernel {
           this.doRollChecked(p.id, now, "bot");
         }
       }
-      if (p.rolled && !p.confirmed && !p.walk && p.cardPending == null && now >= p.botSchedule.confirmAt) {
+      if (!fight && p.rolled && !p.confirmed && !p.walk && p.cardPending == null && now >= p.botSchedule.confirmAt) {
         this.doConfirm(p, now, "bot");
       }
     }
@@ -1325,6 +1362,12 @@ export class GameKernel {
 
   private maybeCloseWindow(now: number): void {
     if (this.state.phase !== "acting") return;
+    if (this.fighting()) {
+      // 年兽战（T8a2）：全员砍完即收波（无需确认——砍了就算完；act 空=理论边角照收）
+      const fighters = this.waveFighters();
+      if (fighters.every((p) => p.rolled)) this.closeWave(now, false);
+      return;
+    }
     const act = this.activePlayers();
     // act 空（全员淘汰/全入席）时 every 本真=照常收窗——血尽横扫后回合钟不卡死（T5c）
     if (act.every((p) => p.confirmed)) {
@@ -1348,7 +1391,7 @@ export class GameKernel {
     this.emit({ type: "windowEnd", turn: this.state.turn, auto });
     this.state.turn += 1;
     if (this.state.turn > this.config.turnCap) {
-      this.startEndgame();
+      this.startEndgame(now);
       return;
     }
     if (this.config.restMs <= 0) {
@@ -1364,10 +1407,10 @@ export class GameKernel {
    * 终局流程启动（#35 T8a1）：局长打满即启动——没有「首名冲线提前结束」，常规回合钟走完才算数。
    * 全桌成批落终局名册态（p.endgame：通关席必参最后一波／淘汰者不参战——T9 轮班·限时跳过消费；
    * 局中淘汰已在 retirePlayer 即时翻 out，此处成批为幂等重落）。
-   * 最后一波年兽战本体归 T8a2（挂 state.endgame）；本票先直通收束进结算（T8b1 消费 finishers 分位）。
+   * 最后一波年兽战本体在 T8a2 接入（startLastWave）：开战即挂 state.endgame.beast。
    */
-  private startEndgame(): void {
-    this.state.endgame = { turn: this.state.turn };
+  private startEndgame(now: number): void {
+    this.state.endgame = { turn: this.state.turn, beast: null, groupFail: false };
     for (const p of this.state.players) {
       p.endgame = p.dead ? "out" : p.zone === "done" ? "seat" : "fight";
     }
@@ -1383,7 +1426,205 @@ export class GameKernel {
       },
     );
     this.emit({ type: "endgameStart", turn: this.state.turn });
-    // 最后一波（T8a2 接入）前的直通：终局名册已落账，收束进结算
+    this.startLastWave(now);
+  }
+
+  // ---------- 最后一波·年兽战（#27 T8a2，数值表 §5.5「最后一波 B」+一页纸「群体失败闸门」） ----------
+
+  /** 年兽战进行中（开战到收束之间）——波窗复用 acting 相位，靠它分流掷骰/打牌/收窗三处语义 */
+  private fighting(): boolean {
+    return this.state.endgame?.beast != null;
+  }
+
+  /** 参战名册（最后一波的波窗主角）：名册态 fight+seat 且活着——seat 必参战（T8a1 口径）、淘汰者 out 不参战（T5c） */
+  private waveFighters(): PlayerState[] {
+    return this.state.players.filter((p) => !p.dead && (p.endgame === "fight" || p.endgame === "seat"));
+  }
+
+  /** 年兽反噬伤害（数值表 §5.5「反噬：每波全体 −1（猛 −2）」）：猛 −2、其余 −1——**不吃 off 档**
+   *  （年兽=终局本体，世界恶意的整局关断不豁免它的兽性；与世界恶意 maliceDmg 分开单列=口径显式）。 */
+  private beastRoarDmg(): number {
+    return this.config.maliceLevel === "fierce" ? 2 : 1;
+  }
+
+  /** 最后一波开战（T8a2）：年兽现身挂共享血条（基础 25+每玩家 15）；行走定格在脚下（终局一至，
+   *  半路的那步不再落格结算——走到一半=停住，末窗的落格收益让位给年兽战）。全员已出局=没开打就输了
+   *  （群体失败直通，无死结）。 */
+  private startLastWave(now: number): void {
+    // 行走定格：清走格与续走队列（含未决选路条——walk 置 null 即散），落格结算不触发
+    for (const p of this.state.players) {
+      p.walk = null;
+      p.walkQueue = [];
+    }
+    if (this.waveFighters().length === 0) {
+      this.state.endgame!.groupFail = true;
+      this.msg("beast", `🐉 年兽的咆哮在庄园上空回荡——但已无人应战。全员出局，直接盖棺「群体失败」。`, undefined, {
+        emphasis: "big",
+      });
+      this.emit({ type: "groupFail" });
+      this.finishEndgame();
+      return;
+    }
+    const n = this.state.players.length;
+    const hp = BEAST_BASE_HP + BEAST_HP_PER_PLAYER * n;
+    const beast: BeastState = { hp, maxHp: hp, wave: 0, waveDmg: 0 };
+    this.state.endgame!.beast = beast;
+    this.msg(
+      "beast",
+      `🐉 最后一波——年兽现身！全员合力合砍它的共享血条 ${hp}（基础 ${BEAST_BASE_HP}+每玩家 ${BEAST_HP_PER_PLAYER}×${n} 人）：人人掷伤害骰 1d${BEAST_DIE}，砍出面值就是伤害；年兽每波反噬全场。`,
+      undefined,
+      { emphasis: "big" },
+    );
+    this.openWave(now);
+  }
+
+  /** 开一波（T8a2）：参战者掷/确认/轮空态按波重刷；罚停逐波消耗（轮空=本波不砍——与 openWindow
+   *  同序同账）；假人排到点砍击日程；**安慰奖**=每个存活参战者摸 1 张道具卡（胜负皆有 Loot——
+   *  群体失败打完的这波照发，卡随淘汰散回牌堆=单池守恒；死人摸卡被 T5c 天然拦下）。 */
+  private openWave(now: number): void {
+    const beast = this.state.endgame!.beast!;
+    beast.wave += 1;
+    beast.waveDmg = 0;
+    this.state.phase = "acting";
+    this.state.windowDeadline = now + this.config.windowMs; // 波=一个世界回合窗（超时替砍，绝不阻塞）
+    for (const p of this.state.players) {
+      if (p.dead || p.endgame === "out") continue;
+      p.rolled = false;
+      p.confirmed = false;
+      p.skipped = false;
+      if (p.stun > 0) {
+        p.stun -= 1;
+        p.rolled = true;
+        p.skipped = true;
+        this.msg("beast", `${p.name} 罚停生效——本波轮空（年兽面前动弹不得）。`, p.id, { emphasis: "normal" });
+      }
+      if (p.isBot) {
+        p.botSchedule = { rollAt: now + 400 + p.id * 350 + Math.floor(this.draw() * 700), confirmAt: Number.POSITIVE_INFINITY };
+      }
+    }
+    for (const p of this.waveFighters()) {
+      this.drawItems(p, 1, "波间补给（安慰奖——输了也有 Loot）");
+    }
+    this.msg("beast", `⚔ 第 ${beast.wave} 波——参战 ${this.waveFighters().length} 人，砍！`, undefined, { emphasis: "highlight" });
+    this.emit({ type: "beastWave", wave: beast.wave, hp: beast.hp, maxHp: beast.maxHp });
+  }
+
+  /** 砍击闸（内核执行+壳层置灰共用一份口径，strikeGate 落在文件尾的闸门区） */
+  private doStrikeChecked(pid: number, mode: "human" | "bot" | "replacement"): void {
+    const gate = strikeGate(this.state, pid);
+    if (!gate.ok) throw new KernelError(gate.reason);
+    this.doStrike(pid, mode);
+  }
+
+  /** 一刀落账：伤害骰 1d12（爆 12 爽点）→ 年兽共享血条递减 → 击杀即收束。 */
+  private doStrike(pid: number, mode: "human" | "bot" | "replacement"): void {
+    const p = this.player(pid);
+    p.rolled = true;
+    const d = Math.floor(this.draw() * BEAST_DIE) + 1;
+    const auto = mode !== "human";
+    this.msg("beast", `${auto ? "系统替 " : ""}${p.name} 掷伤害骰——砍出 ${d} 伤！`, pid, {
+      emphasis: d === BEAST_DIE ? "highlight" : "normal",
+    });
+    this.beastDamage(p, d);
+  }
+
+  /** 递卡给队友（T8a2）：T7 转让管线同源接口——手→手平移（单池守恒自动成立），无海关无报备。
+   *  战场合作口：递治疗/护身符给前排、递加倍骰给大刀。闸门=giveItemGate（文件尾闸门区）。 */
+  private doGiveItem(pid: number, cardId: string, to: number): void {
+    const gate = giveItemGate(this.state, pid, cardId, to);
+    if (!gate.ok) throw new KernelError(gate.reason);
+    const p = this.player(pid);
+    const q = this.player(to);
+    p.hand.splice(p.hand.indexOf(cardId), 1);
+    q.hand.push(cardId);
+    this.msg("beast", `🎁 ${p.name} 把「${itemCard(cardId).title}」递给 ${q.name}——生死与共。`, pid, {
+      targets: [q.id],
+      emphasis: "normal",
+    });
+  }
+
+  /** 直砸年兽（T8a2）：任意道具卡砸向年兽=当场多掷一次伤害骰 1d12（票面列举的治疗/护身符/
+   *  加倍骰/弹弓/加倍卡全数可用=通用口子的例证——爽点=多掷一刀，卡回弃牌堆单池守恒）。
+   *  砍死的收束与普通砍击同账（beastDamage→slayBeast）。 */
+  private doHitBeast(pid: number, cardId: string): void {
+    const gate = hitBeastGate(this.state, pid, cardId);
+    if (!gate.ok) throw new KernelError(gate.reason);
+    const p = this.player(pid);
+    p.hand.splice(p.hand.indexOf(cardId), 1);
+    this.state.itemDiscard.push(cardId);
+    const d = Math.floor(this.draw() * BEAST_DIE) + 1;
+    this.msg("beast", `💥 ${p.name} 把「${itemCard(cardId).title}」砸向年兽——轰出 ${d} 伤！`, pid, {
+      emphasis: d === BEAST_DIE ? "highlight" : "normal",
+    });
+    this.beastDamage(p, d);
+  }
+
+  /** 年兽吃刀唯一收口：血条递减+战报+事实；血尽=击杀收束（死兽不反噬——当波已砍的其余人不再挨咬）。 */
+  private beastDamage(p: PlayerState, d: number): void {
+    const beast = this.state.endgame!.beast!;
+    beast.hp = Math.max(0, beast.hp - d);
+    beast.waveDmg += d;
+    this.emit({ type: "beastHit", pid: p.id, dmg: d, hp: beast.hp });
+    if (beast.hp <= 0) this.slayBeast();
+  }
+
+  /** 胜利收束（T8a2）：年兽倒在庄园门口——phase over+gameEnd（结算 T8b1 消费 finishers 分位）。 */
+  private slayBeast(): void {
+    const beast = this.state.endgame!.beast!;
+    beast.hp = 0;
+    this.msg("beast", `🐉 年兽轰然倒地——最后一波赢了！（第 ${beast.wave} 波收束）`, undefined, {
+      emphasis: "big",
+    });
+    this.emit({ type: "beastSlain", wave: beast.wave });
+    this.finishEndgame();
+  }
+
+  /** 波收口（T8a2）：年兽还活着就反噬全场（温和 −1／猛 −2——走 applyHpDelta 单入口，
+   *  护身符/皮糙肉厚盾照拦，扣血行分色 malice）；反噬后全灭=群体失败闸门落库+盖棺；
+   *  还有人站着=开下一波。波间无休息（一鼓作气）。 */
+  private closeWave(now: number, auto: boolean): void {
+    const beast = this.state.endgame!.beast!;
+    const roar = this.beastRoarDmg();
+    this.emit({ type: "beastRoar", dmg: roar });
+    this.msg(
+      "beast",
+      `🐉 年兽反噬全场——第 ${beast.wave} 波${auto ? "（超时替砍）" : ""}合计砍出 ${beast.waveDmg} 伤，没砍倒它，它怒吼着扑回来（每人 −${roar}）！`,
+      undefined,
+      { emphasis: "highlight" },
+    );
+    for (const p of this.waveFighters()) {
+      this.applyHpDelta(p, -roar, "beast");
+      this.emit({ type: "pulse", pid: p.id, level: "target" });
+    }
+    if (this.waveFighters().length === 0) {
+      this.state.endgame!.groupFail = true;
+      this.msg(
+        "beast",
+        `💀 全员倒下——群体失败！全员暗牌目标作废，结算盖章「群体失败」，进入找战犯环节。`,
+        undefined,
+        { emphasis: "big" },
+      );
+      this.emit({ type: "groupFail" });
+      this.finishEndgame();
+      return;
+    }
+    this.openWave(now);
+  }
+
+  /** 波窗超时替砍（T8a2 对 autoFillAndClose 的年兽战版）：没砍的逐一替砍（波内必有伤害——不替=拖延坐大），
+   *  然后收波。替砍砍死年兽=收束已落（phase over），不再收波。 */
+  private autoStrikeAndClose(now: number): void {
+    for (const p of this.waveFighters()) {
+      if (!p.rolled) {
+        this.doStrike(p.id, "replacement");
+        if (this.state.phase !== "acting") return; // 这一刀砍死了年兽——slayBeast 已盖棺
+      }
+    }
+    this.closeWave(now, true);
+  }
+
+  /** 终局盖棺（T8a2 胜利/群体失败共用）：phase over+gameEnd——结算（T8b1）接棒。 */
+  private finishEndgame(): void {
     this.state.phase = "over";
     this.emit({ type: "gameEnd" });
   }
@@ -2439,6 +2680,9 @@ export function itemPlayGate(state: GameState, pid: number, cardId: string): Pla
   const p = state.players[pid];
   if (!p) return { ok: false, reason: `玩家 ${pid} 不存在` };
   if (state.phase !== "acting") return { ok: false, reason: "只有世界回合窗内可以打道具卡" };
+  if (state.endgame?.beast != null) {
+    return { ok: false, reason: "最后一波——道具卡递给队友或直砸年兽，不按常规打法" };
+  }
   if (p.dead) return { ok: false, reason: "已淘汰观战，不能再出手" };
   const card = ITEM_CARD_BY_ID.get(cardId);
   if (!card) return { ok: false, reason: `道具卡 ${cardId} 不在表一` };
@@ -2522,4 +2766,56 @@ export function customsCheckGate(state: GameState, pid: number, shipment: number
   const f = state.players[s.from];
   if (!f || f.dead || f.zone === "done") return { ok: false, reason: "报备人已不在对局——这单查不着了" };
   return { ok: true };
+}
+
+// ---------- 最后一波·年兽战三闸（#27 T8a2；内核执行 + 壳层置灰共用一份口径） ----------
+
+/** 砍击闸（T8a2）：年兽战波窗内+参战名册（fight/seat——seat 必参战）+本波未砍+非罚停轮空——
+ *  资格阶梯与递卡/直砸同走 fighterActGate（三闸一套账）。 */
+export function strikeGate(state: GameState, pid: number): PlayGate {
+  const act = fighterActGate(state, pid);
+  if (!act.ok) return act;
+  if (act.player.rolled) return { ok: false, reason: "本波已砍过——等年兽反噬后下一波" };
+  return { ok: true };
+}
+
+/** 递卡闸（T8a2）：年兽战波窗内+递卡人参战+卡在手+收卡人=另一名参战者（通关席可收——
+ *  递治疗给通关席是正经合作；淘汰者不收货）。 */
+export function giveItemGate(state: GameState, pid: number, cardId: string, to: number): PlayGate {
+  if (state.phase !== "acting" || state.endgame?.beast == null) return { ok: false, reason: "只有最后一波的波窗内可以递卡" };
+  const act = fighterActGate(state, pid);
+  if (!act.ok) return act;
+  if (!act.player.hand.includes(cardId)) return { ok: false, reason: "这张卡不在你的手牌里" };
+  const q = state.players[to];
+  if (!q || q.id === pid) return { ok: false, reason: "递卡对象要选别人" };
+  if (q.dead) return { ok: false, reason: `${q.name} 已淘汰——不能再收货` };
+  if (q.endgame !== "fight" && q.endgame !== "seat") return { ok: false, reason: `${q.name} 不在参战名册` };
+  return { ok: true };
+}
+
+/** 递卡合法目标集合（T8a2，HandDock 递卡按钮消费）：活着且在参战名册的其他人 */
+export function giveTargets(state: GameState, pid: number): number[] {
+  return state.players
+    .filter((q) => !q.dead && q.id !== pid && (q.endgame === "fight" || q.endgame === "seat"))
+    .map((q) => q.id);
+}
+
+/** 直砸闸（T8a2）：年兽战波窗内+砸卡人参战+卡在手——任意卡通用（多掷一刀伤害骰）。 */
+export function hitBeastGate(state: GameState, pid: number, cardId: string): PlayGate {
+  if (state.phase !== "acting" || state.endgame?.beast == null) return { ok: false, reason: "当前没有年兽战" };
+  const act = fighterActGate(state, pid);
+  if (!act.ok) return act;
+  if (!act.player.hand.includes(cardId)) return { ok: false, reason: "这张卡不在你的手牌里" };
+  return { ok: true };
+}
+
+/** 年兽战动作资格（giveItem/hitBeast 共用的前置阶梯）：波窗内+活着+参战名册+非罚停轮空 */
+function fighterActGate(state: GameState, pid: number): { ok: true; player: PlayerState } | { ok: false; reason: string } {
+  if (state.phase !== "acting" || state.endgame?.beast == null) return { ok: false, reason: "当前没有年兽战" };
+  const p = state.players[pid];
+  if (!p) return { ok: false, reason: `玩家 ${pid} 不存在` };
+  if (p.dead) return { ok: false, reason: "已淘汰观战——不参战" };
+  if (p.endgame !== "fight" && p.endgame !== "seat") return { ok: false, reason: "不在参战名册" };
+  if (p.skipped) return { ok: false, reason: "本波罚停轮空——不能出手" };
+  return { ok: true, player: p };
 }

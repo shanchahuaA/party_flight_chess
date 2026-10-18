@@ -11,10 +11,14 @@
 import { computed, ref, watchEffect } from "vue";
 import {
   AXIS_NAMES,
+  BEAST_DIE,
   DOG_HP,
   DOG_TURNS,
   ECO_NAMES,
   ITEM_CARD_BY_ID,
+  giveItemGate,
+  giveTargets,
+  hitBeastGate,
   itemPlayGate,
   type CheckSpec,
   type DiceMod,
@@ -31,6 +35,8 @@ import BaseSheet from "./BaseSheet.vue";
 
 const state = computed<GameState | null>(() => gameStore.state.value);
 const me = computed<PlayerState | null>(() => state.value?.players[0] ?? null);
+/** 年兽战进行中（T8a2）：手牌入口换战场打法——直砸年兽/递给队友（常规打出被 itemPlayGate 拒） */
+const fight = computed(() => !!state.value?.endgame?.beast && state.value?.phase === "acting");
 
 type HandView = { id: string; card: ItemCard };
 const handViews = computed<HandView[]>(() =>
@@ -56,12 +62,21 @@ watchEffect(() => {
 const drawerCard = ref<string | null>(null);
 const drawerItem = computed<ItemCard | null>(() => (drawerCard.value ? (ITEM_CARD_BY_ID.get(drawerCard.value) ?? null) : null));
 const gate = computed<PlayGate | null>(() => (drawerCard.value ? itemPlayGate(state.value!, 0, drawerCard.value) : null));
+/** 年兽战动作闸（T8a2）：抽屉开着的卡能砸/能递同前置（参战+卡在手）——单一来源=内核 hitBeastGate；
+ *  递卡收货人那步再逐个过 giveItemGate 终校验 */
+const slamGate = computed<PlayGate | null>(() => (fight.value && drawerCard.value ? hitBeastGate(state.value!, 0, drawerCard.value) : null));
+/** 递卡目标池：参战名册里能收货的人（点名字即递出——不进棋盘 targeting） */
+const receivers = computed<number[]>(() => (fight.value ? giveTargets(state.value!, 0) : []));
+/** 递卡暂存：先点「递给队友」再点收货人（两步内联，不走棋盘点选） */
+const giving = ref(false);
 
 function openDrawer(cardId: string): void {
   drawerCard.value = cardId;
+  giving.value = false;
 }
 function closeDrawer(): void {
   drawerCard.value = null;
+  giving.value = false;
 }
 /** 打牌入口的隐藏粒度：等待区/罚停轮空/淘汰不出手；通关席按一页纸「仍可打卡整蛊」与内核
  *  itemPlayGate 同口径——self/ground 两类入口隐藏（gate 拒），chooseOther/auto 两类整蛊卡保留出钮（口子不锁，T4b1 扩）。 */
@@ -74,6 +89,18 @@ function playDirect(): void {
 function goTargeting(): void {
   if (!drawerCard.value || !gate.value?.ok) return;
   gameStore.startTargeting(drawerCard.value);
+  closeDrawer();
+}
+/** 直砸年兽（T8a2）：一步出招——卡离手、多掷一刀伤害骰 */
+function slamBeast(): void {
+  if (!drawerCard.value || !slamGate.value?.ok) return;
+  gameStore.apply({ type: "hitBeast", pid: 0, cardId: drawerCard.value });
+  closeDrawer();
+}
+/** 递卡第二步：点中收货人落账（giveItemGate 终校验） */
+function giveTo(pid: number): void {
+  if (!drawerCard.value || !giveItemGate(state.value!, 0, drawerCard.value, pid).ok) return;
+  gameStore.apply({ type: "giveItem", pid: 0, cardId: drawerCard.value, to: pid });
   closeDrawer();
 }
 
@@ -217,6 +244,28 @@ const drawerLines = computed<string[]>(() => {
       <p v-if="drawerItem!.route === 'ambient'" class="hint">
         不用选目标——全桌气候 2 世界回合，各按所在地形行结算；《生物圈 3 号》：一场最多 1 个气候，后打顶掉旧气候（旧环境即时失效），打出者摸 1 张补偿。
       </p>
+
+      <!-- 年兽战动作区（T8a2）：常规打法被封（reason 在下），战场两式=直砸/递队友 -->
+      <template v-if="fight">
+        <div v-if="slamGate?.ok && !giving" class="actions">
+          <button type="button" class="playBtn slamBtn" @click="slamBeast">💥 直砸年兽（+1d{{ BEAST_DIE }} 伤害）</button>
+          <button type="button" class="ghostBtn" @click="giving = true">🎁 递给队友</button>
+        </div>
+        <div v-else-if="slamGate?.ok && giving" class="giveRow">
+          <span class="giveHint">递给谁？</span>
+          <button
+            v-for="r in receivers"
+            :key="r"
+            type="button"
+            class="giveBtn"
+            :disabled="!giveItemGate(state!, 0, drawerCard!, r).ok"
+            @click="giveTo(r)"
+          >
+            {{ state!.players[r]!.name }}
+          </button>
+          <button type="button" class="ghostBtn" @click="giving = false">算了</button>
+        </div>
+      </template>
 
       <!-- 打牌入口：gate 不给过就不出钮（reason 落字） -->
       <div v-if="gate?.ok" class="actions">
@@ -446,5 +495,32 @@ const drawerLines = computed<string[]>(() => {
   border-radius: 10px;
   padding: 10px 12px;
   text-align: center;
+}
+/* 年兽战动作（T8a2）：砸=红爽钮，递=内联点名字 */
+.slamBtn {
+  background: #e53935;
+}
+.giveRow {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  flex-wrap: wrap;
+}
+.giveHint {
+  font-size: 12px;
+  font-weight: 800;
+  color: #ffe0b2;
+}
+.giveBtn {
+  border: 1px solid #81d4fa;
+  background: rgba(84, 167, 213, 0.16);
+  color: #b3e5fc;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 800;
+  padding: 8px 13px;
+}
+.giveBtn:disabled {
+  opacity: 0.4;
 }
 </style>

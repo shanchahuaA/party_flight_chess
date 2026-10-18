@@ -16,6 +16,7 @@ const KIND_ICONS: Record<MessageKind, string> = {
   trap: "⚠️",
   item: "🎁",
   malice: "🌲",
+  beast: "🐉",
   system: "📣",
   summary: "📜",
   score: "📣",

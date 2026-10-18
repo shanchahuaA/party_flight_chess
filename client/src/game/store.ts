@@ -128,6 +128,10 @@ class GameStore {
         case "roll":
           if (f.pid === 0) this.lastFace.value = f.d;
           break;
+        case "beastHit":
+          // 年兽战砍面（T8a2）：dock 砍击钮上显示本刀伤害（与掷面同槽——都是「我掷出的点」）
+          if (f.pid === 0) this.lastFace.value = f.dmg;
+          break;
         case "itemPlayed":
           // 打出成功的事实收账（T4a2）：目卡不在手=已出袋；targeting 属于目卡即退场（内核拒时不发此事实）
           if (f.pid === 0 && this.targeting.value === f.cardId) this.cancelTargeting();
@@ -168,7 +172,8 @@ export const gameStore = new GameStore();
 
 /** 调试冒烟通道（?fast=）：免大厅直达一局短窗局（10s 窗/无休息），暗牌自动代选；
  *  追加 ?dev=1 时开局 allowDev 局并挂 window.__pzcard（强抽指定事件卡，浮层冒烟用）；
- *  ?win=秒 自定义窗长（冒烟多步交互防收窗——T7 海关窗任务条组冒烟用） */
+ *  ?win=秒 自定义窗长（冒烟多步交互防收窗——T7 海关窗任务条组冒烟用）；
+ *  ?turn=N 自定义局长（≥5，T8a2 年兽战冒烟用——短局快进到最后一波） */
 export function maybeBootFastPath(): void {
   if (gameStore.kernel.value) return;
   const params = new URLSearchParams(location.search);
@@ -177,8 +182,10 @@ export function maybeBootFastPath(): void {
   // ?slow=1：60s 慢窗（壳层冒烟用——10s 快窗手速赛会与逐格走/替掷竞速）；?win=秒 再放长（多步冒烟）
   const winParam = Number(params.get("win"));
   const windowMs = Number.isFinite(winParam) && winParam > 0 ? winParam * 1000 : params.has("slow") ? 60_000 : 10_000;
+  const turnParam = Number(params.get("turn"));
+  const turnCap = Number.isInteger(turnParam) && turnParam >= 5 ? turnParam : undefined;
   gameStore.boot(
-    { allowDev: dev, windowMs, restMs: 0, stepMs: 90, seed: (Math.random() * 2 ** 31) | 0 },
+    { allowDev: dev, windowMs, restMs: 0, stepMs: 90, seed: (Math.random() * 2 ** 31) | 0, ...(turnCap ? { turnCap } : {}) },
     [
       { name: "你", isBot: false, roleId: "light" },
       { name: "小黄", isBot: true },
@@ -194,7 +201,8 @@ export function maybeBootFastPath(): void {
  *  __pzgive(道具卡 id, pid?) 塞手牌；__pzplay(道具卡 id, target?) 打出手（T4a 打出链冒烟）；
  *  __pzdead(pid?) 出局占位（T4a2 淘汰观战态冒烟）；__pzdog(cell?) 生成野狗钉位（T6b 遭遇战/棋盘贴皮冒烟——
  *  缺省钉人间相邻格=过一拍就可能撞上）；__pzcustoms(sheriff?) 钉位开海关风云（T7 警长窗冒烟——
- *  缺省同真抽=随机警长，传 0 钉人间当警长） */
+ *  缺省同真抽=随机警长，传 0 钉人间当警长）；__pzbeast(hp) 钉年兽血量（T8a2 冒烟——钉 1=下一刀必杀、
+ *  钉大数=挂机看反噬/团灭） */
 function bindDevChannels(): void {
   const w = window as unknown as Record<string, unknown>;
   w.__pzcard = (cardId: string, pid = 0) => gameStore.apply({ type: "dev.drawCard", pid, cardId });
@@ -202,6 +210,7 @@ function bindDevChannels(): void {
   w.__pzplay = (cardId: string, target?: number) => gameStore.playItem(cardId, target);
   w.__pzdead = (pid = 0) => gameStore.apply({ type: "dev.setDead", pid });
   w.__pzcustoms = (sheriff?: number) => gameStore.apply(sheriff == null ? { type: "dev.customs" } : { type: "dev.customs", sheriff });
+  w.__pzbeast = (hp: number) => gameStore.apply({ type: "dev.setBeast", hp });
   w.__pzdog = (cell?: number) => {
     const k = gameStore.kernel.value;
     if (!k) return;

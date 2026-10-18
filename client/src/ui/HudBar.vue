@@ -15,6 +15,7 @@ const turnLabel = computed(() => {
   if (!s) return "";
   const cap = gameStore.kernel.value?.config.turnCap ?? 15;
   if (s.phase === "drafting") return "开局 · 抽暗牌";
+  if (s.phase !== "over" && s.endgame?.beast) return `🐉 最后一波 · 第 ${s.endgame.beast.wave} 波`;
   return s.phase === "over" ? "终局" : `回合 ${s.turn}/${cap}`;
 });
 

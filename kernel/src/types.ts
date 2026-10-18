@@ -9,7 +9,7 @@ import type { Axis, RoleId } from "./data/roles";
 
 // ---------- 战报（界面呈现定案 §三 MessageEntry，结构不动） ----------
 
-export type MessageKind = "event" | "trap" | "item" | "malice" | "system" | "summary" | "score";
+export type MessageKind = "event" | "trap" | "item" | "malice" | "beast" | "system" | "summary" | "score";
 
 export interface MessageEntry {
   id: number;
@@ -200,11 +200,28 @@ export interface CustomsPending {
  */
 export type EndgameStance = "fight" | "seat" | "out";
 
-/** 终局流程挂账（#35 T8a1 骨架）：null=终局未启动（常规对局节奏）。局长打满即启动——
- *  没有「首名冲线提前结束」；最后一波年兽战与群体失败标记由 T8a2 落此，结算（T8b1）在其收束后。 */
+/** 🐉 年兽战挂账（#27 T8a2，数值表 §5.5「最后一波 B」）：局长打满即开战——全员合砍共享血条。 */
+export interface BeastState {
+  /** 年兽当前血量（被砍递减；收束后定格——胜利=0，供 T8b1 读） */
+  hp: number;
+  /** 年兽血量上限（基础 25+每玩家 15——开战时按局人数定谳，战报/壳层血条读它） */
+  maxHp: number;
+  /** 当前是第几波（1 起；收束后定格=收束波数——「收束轮数可测」的账面） */
+  wave: number;
+  /** 本波已砍出的合计伤害（波收口播报与收束数学对账用；开波清零） */
+  waveDmg: number;
+}
+
+/** 终局流程挂账（#35 T8a1 骨架 + #27 T8a2 最后一波）：null=终局未启动（常规对局节奏）。局长打满即启动——
+ *  没有「首名冲线提前结束」；最后一波年兽战（beast 挂账，每波=一个世界回合窗）与群体失败标记（groupFail）
+ *  都落这里，结算（T8b1）在其收束后。 */
 export interface EndgameState {
   /** 启动所在的世界回合号（=局长打满后的下一号，与战报分节一致） */
   turn: number;
+  /** 🐉 最后一波年兽战（T8a2）：开战即挂、收束后保留供 T8b1 读；null=年兽战未开张（全员出局直通群体失败的边角） */
+  beast: BeastState | null;
+  /** 群体失败闸门（T8a2）：最后一波全员没撑过=true——结算盖章「群体失败」+全员暗牌目标作废（T8b1/T8b2 消费） */
+  groupFail: boolean;
 }
 
 /**
@@ -334,6 +351,12 @@ export type Intent =
   | { type: "customsCheck"; pid: number; shipment: number }
   /** 海关风云·交卡（#26 T7，罚没自选）：把 pending 中自己名下的 1 张手牌交给对方 */
   | { type: "customsGive"; pid: number; cardId: string }
+  /** 最后一波·砍击（#27 T8a2）：掷伤害骰 1d12 合砍年兽——参战名册（fight/seat）本波一次；波窗内任意时刻 */
+  | { type: "strike"; pid: number }
+  /** 最后一波·递卡（#27 T8a2）：把手牌递给一名队友（T7 转让管线同源=手→手平移；无海关无报备——战场不讲黑市规矩） */
+  | { type: "giveItem"; pid: number; cardId: string; to: number }
+  /** 最后一波·直砸年兽（#27 T8a2）：把一张道具卡砸向年兽=当场多掷一次伤害骰 1d12（任意卡通用——爽点=多掷一刀） */
+  | { type: "hitBeast"; pid: number; cardId: string }
   /** 测试/后接卡面效果专用的直调通道（allowDev=false 时拒绝） */
   | { type: "dev.back"; pid: number; steps: number }
   | { type: "dev.setPos"; pid: number; pos: number; from: number | null; net: number }
@@ -346,6 +369,8 @@ export type Intent =
   | { type: "dev.hit"; pid: number; dmg: number }
   /** 在指定格生成 1 只标准野狗（T6b 遭遇战/恶意互演链的确定性钉位通道；生成当拍同格=撞上照打遭遇战） */
   | { type: "dev.spawnDog"; cell: number }
+  /** 直接改年兽当前血量（T8a2 确定性通道：胜利/群体失败/收束波数的测试钉位） */
+  | { type: "dev.setBeast"; hp: number }
   /** 直接开海关风云（#26 T7 的确定性钉位通道）：可选钉定警长 pid（缺省同真抽路径=随机指派）；
    *  已有海关风云未散时照常拒绝重开（与抽卡路径同闸） */
   | { type: "dev.customs"; sheriff?: number };
@@ -388,7 +413,18 @@ export type Fact =
   | { type: "customsEnd" }
   | { type: "customsChecked"; pid: number; target: number; lied: boolean }
   /** 终局流程启动（#35 T8a1）：局长打满——壳层据此换终局布景（横幅/布景 M3 找齐，战报先行） */
-  | { type: "endgameStart"; turn: number };
+  | { type: "endgameStart"; turn: number }
+  // ---------- 最后一波·年兽战（#27 T8a2）：战报（kind=malice）承载叙事，事实供壳层血条/砍击反馈 ----------
+  /** 一波开张：波数+年兽血条快照（壳层任务条/血条读它；world 模式下伴随本波窗 deadline） */
+  | { type: "beastWave"; wave: number; hp: number; maxHp: number }
+  /** 一刀落账：dmg=本刀伤害（含直砸的加掷）；hp=年兽被砍后血量（钳 0） */
+  | { type: "beastHit"; pid: number; dmg: number; hp: number }
+  /** 反噬全场：年兽每波收口时怒吼（dmg=每人扣血量——温和 −1／猛 −2，走 applyHpDelta 单通道） */
+  | { type: "beastRoar"; dmg: number }
+  /** 年兽被击杀（胜利收束）：wave=收束波数 */
+  | { type: "beastSlain"; wave: number }
+  /** 群体失败闸门（#27 T8a2）：最后一波全员没撑过——壳层据此进「群体失败」布景（T8b2 结算页呈现） */
+  | { type: "groupFail" };
 
 export interface PlayerDef {
   name: string;
