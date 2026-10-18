@@ -149,15 +149,22 @@ function partText(p: EffectPart): string {
       return `清掉当前格起前方 ${p.v} 格内的香蕉皮/地雷`;
     case "dogSpawn":
       return `系统在指定玩家相邻格生成 1 只标准野狗（${DOG_HP} 血/${DOG_TURNS} 世界回合寿命；撞上=强制遭遇战）`;
+    case "mark":
+      return ""; // 对局计数标记（赌狗得手……）：结算记账位，卡面说明不渲染
     default:
       return "无效果";
   }
 }
+/** 分支行文本（计数标记空渲染后过滤——免得「无效果，前进 3 格」的尾巴） */
+function fxText(parts: EffectPart[] | undefined, fallback = "安全无事"): string {
+  const segs = (parts ?? []).map(partText).filter((s) => s !== "");
+  return segs.length > 0 ? segs.join("，") : fallback;
+}
 function checkText(spec: CheckSpec): string {
   const axis = spec.axis ? AXIS_NAMES[spec.axis] : "前途";
   const dc = spec.dc != null ? ` DC${spec.dc}` : "";
-  const fail = spec.onFail?.length ? spec.onFail.map(partText).join("，") : "安全无事";
-  const pass = spec.onPass?.length ? `；通过 ${spec.onPass.map(partText).join("，")}` : "；通过 安全无事";
+  const fail = spec.onFail?.length ? fxText(spec.onFail) : "安全无事";
+  const pass = `；通过 ${spec.onPass?.length ? fxText(spec.onPass) : "安全无事"}`;
   return `${axis}判定${dc}：失败 ${fail}${pass}`;
 }
 /** 环境卡三行地形表 → 机械投影（按所在生态分行；每行摊平到「判定/上账」真话） */
@@ -172,8 +179,7 @@ function weatherText(w: WeatherSpec): string[] {
       const row = w.slip[e];
       if (!row) continue;
       const pct = `${Math.round((row.guard / row.faces) * 100)}% 摔倒`;
-      const fx = row.onFall.map(partText).join("，");
-      lines.push(`${ECO_NAMES[e]}：判定 d${row.faces}≤${row.guard}（${pct}）→ ${fx}`);
+      lines.push(`${ECO_NAMES[e]}：判定 d${row.faces}≤${row.guard}（${pct}）→ ${fxText(row.onFall)}`);
     }
   }
   if (w.wind) {
@@ -186,7 +192,7 @@ function weatherText(w: WeatherSpec): string[] {
       }
       if (row.check) {
         const pct = `${Math.round((row.check.guard / row.check.faces) * 100)}% 摔倒`;
-        lines.push(`${ECO_NAMES[e]}：判定 d${row.check.faces}≤${row.check.guard}（${pct}）→ ${row.check.onFall.map(partText).join("，")}`);
+        lines.push(`${ECO_NAMES[e]}：判定 d${row.check.faces}≤${row.check.guard}（${pct}）→ ${fxText(row.check.onFall)}`);
       }
       if (row.checkMod) lines.push(`${ECO_NAMES[e]}：本回合所有检定 ${row.checkMod.v < 0 ? `−${-row.checkMod.v}` : `+${row.checkMod.v}`}`);
     }

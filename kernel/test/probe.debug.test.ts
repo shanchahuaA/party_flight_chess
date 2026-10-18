@@ -171,4 +171,25 @@ ddescribe("探针（npm run probe 直跑才启用）", () => {
     console.log(`开局手牌含 ${want} 的种子（前 5 个）:`, hits.join(", "));
     expect(hits.length).toBeGreaterThan(0);
   });
+
+  dit("环境账诊断：雷暴打出后的逐窗 tickAmbient/劈人账（T8b1 环境双账测试配准用）", () => {
+    const k = boot({ seed: 1, maliceLevel: "off" });
+    const tryGive = (cardId: string) => {
+      try {
+        k.apply({ type: "dev.giveItem", pid: 0, cardId }, 0);
+        return true;
+      } catch {
+        return false;
+      }
+    };
+    tryGive("i13");
+    k.apply({ type: "playItem", pid: 0, cardId: "i13" }, 0);
+    console.log("== 雷暴打出:", JSON.stringify(k.state.ambient));
+    let t = toNextWindow(k, 0, 30_000, 0);
+    console.log("after toNextWindow#1 (t=" + t + "):", JSON.stringify(k.state.ambient));
+    t = toNextWindow(k, t, 30_000, 0);
+    console.log("after toNextWindow#2 (t=" + t + "):", JSON.stringify(k.state.ambient));
+    console.log("劈人条目:", k.state.messages.filter((m) => m.tags?.includes("ambientDown")).map((m) => `${m.who}:${m.text}`).join(" / "));
+    expect(true).toBe(true);
+  });
 });

@@ -427,7 +427,7 @@ describe("三类目标路由（self / chooseOther / ground）", () => {
     const k = bootFixed({ seed, windowMs: 4_000, restMs: 0 });
     ensureHand(k, 0, "i10");
     k.apply({ type: "playItem", pid: 0, cardId: "i10", target: 1 }, 0);
-    expect(k.state.deferred).toEqual([{ pid: 1, parts: [{ type: "back", v: 2 }], kind: "item", srcPid: 0 }]);
+    expect(k.state.deferred).toEqual([{ pid: 1, parts: [{ type: "back", v: 2 }], kind: "item", srcPid: 0, grudgeLabel: "弹弓" }]);
     expect(k.state.messages.some((m) => m.text.includes("下一世界回合开始时结算：小黄"))).toBe(true);
     let t = 0;
     while (k.state.turn === 1 && t <= 4_000) {
@@ -826,7 +826,7 @@ describe("偷天换日（与目标互换位置）", () => {
     const k = bootFixed({ restMs: 0 });
     ensureHand(k, 0, "i08");
     k.apply({ type: "playItem", pid: 0, cardId: "i08", target: 1 }, 0);
-    expect(k.state.deferred).toEqual([{ pid: 1, parts: [{ type: "swap" }], kind: "item", srcPid: 0 }]);
+    expect(k.state.deferred).toEqual([{ pid: 1, parts: [{ type: "swap" }], kind: "item", srcPid: 0, grudgeLabel: "偷天换日" }]);
     k.apply({ type: "dev.setDead", pid: 1 }, 0);
     playThroughP0(k, 100);
     void k.tick(30_000); // 窗 2 开窗：挂账目标已死 → 落空散去
@@ -993,7 +993,7 @@ describe("狗笛（表一 #16=T6b 野狗生成原语：打出链照 chooseOther 
     k.apply({ type: "playItem", pid: 0, cardId: "i16", target: 1 }, 0);
     expect(me(k).hand).not.toContain("i16");
     expect(k.state.itemDiscard).toContain("i16"); // 晒牌照常回池
-    expect(k.state.deferred).toEqual([{ pid: 1, parts: [{ type: "dogSpawn" }], kind: "item", srcPid: 0 }]);
+    expect(k.state.deferred).toEqual([{ pid: 1, parts: [{ type: "dogSpawn" }], kind: "item", srcPid: 0, grudgeLabel: "狗笛" }]);
     expect(k.state.malice.dogs).toHaveLength(0); // world·即时：未到结算时刻不生成
     expect(k.state.messages.some((m) => m.text.includes("打出「狗笛」"))).toBe(true);
     expect(k.state.messages.some((m) => m.kind === "item" && m.text.includes("下一世界回合开始时结算"))).toBe(true);

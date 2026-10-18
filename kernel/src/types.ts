@@ -12,6 +12,24 @@ import type { Axis, RoleId } from "./data/roles";
 
 export type MessageKind = "event" | "trap" | "item" | "malice" | "beast" | "system" | "summary" | "score";
 
+/**
+ * 对局计数标签（#36 T8b1）：发射点打在承载该行为的战报条目上，终局结算**对战报流聚合一次**折算
+ * 五项积分／十条称号／找战犯——战报流 append-only 可完整重建=唯一计数真源，不散接线
+ * （「结构化事实替代文案正则」纪律的战报侧落地：计数读 tags，禁解析中文文案）。
+ */
+export type MsgTag =
+  | "grudge" // 整蛊成功：指认/违禁卡/场地卡手段在目标身上实际生效（who=整蛊者）——整蛊王计数×整蛊分
+  | "gambleWin" // 赌狗卡（表二 3 张）赢一局（who=赌者）——赌狗计数
+  | "dogKilled" // 击毙野狗（who=击毙者；事实 dogKilled 同账——战报流是保留的历史）
+  | "customsOpen" // 海关风云开张（who=警长）——海关清白的「窗存在过」判据
+  | "customsLied" // 查验命中谎报（who=谎报者）——海关清白反证
+  | "customsClean" // 查验清白=警长查错人（who=警长）——找战犯「查验查错人」
+  | "ambientPlayed" // 打出环境卡（who=打出者）——风调雨顺计数
+  | "ambientDown" // 吃到环境负面（who=受害者）——风调雨顺的「未吃负面」干净判据
+  | "hpLost" // 承受一次扣血（who=受害者；护身符/盾拦下的不落标签）——硬骨头计数
+  | "itemPlayed" // 打出一张道具卡（who=出手者）——找战犯「没打过卡」
+  | "retiredHand"; // 出局手牌散落归还牌堆（cards=归还卡 id，公开信息）——找战犯「治疗吞到死」证据源
+
 export interface MessageEntry {
   id: number;
   /** 世界回合号（分节线依据） */
@@ -22,6 +40,10 @@ export interface MessageEntry {
   text: string;
   flavor?: string;
   emphasis?: "normal" | "highlight" | "target" | "big";
+  /** 对局计数标签（可多挂——环境卡同时是「出手」；终局结算聚合的唯一计数位） */
+  tags?: MsgTag[];
+  /** 条目涉及的道具卡 id（仅公开信息落账：出局手牌散落——找战犯证据源；摸牌不落它=手牌保密口径） */
+  cards?: string[];
 }
 
 // ---------- 玩家与局状态 ----------
@@ -122,7 +144,9 @@ export interface WalkState {
 export type GamePhase = "drafting" | "acting" | "rest" | "over";
 
 /** 指向他人的卡面效果挂账：下一世界回合开始时结算（openWindow 消费；M2 随协议下发）。
- *  kind/srcPid 记效果来源（道具卡/事件卡 + 打出者）——小圆盾「免疫他人卡牌效果」的拦截判据（T4b1）。 */
+ *  kind/srcPid 记效果来源（道具卡/事件卡 + 打出者）——小圆盾「免疫他人卡牌效果」的拦截判据（T4b1）。
+ *  grudgeLabel=整蛊手段的卡名（T8b1 三通道之一）：event 卡必带、道具卡仅违禁品带（表五 §5.1 整蛊分口径）——
+ *  落账当拍用它归因出「整蛊得手」计数条目。 */
 export interface DeferredEffect {
   pid: number;
   parts: EffectPart[];
@@ -130,6 +154,8 @@ export interface DeferredEffect {
   kind: "item" | "event";
   /** 打出者/触发者 pid（小圆盾拦截同源不拦） */
   srcPid: number;
+  /** 整蛊通道激活（卡名；缺省=非整蛊手段不计数） */
+  grudgeLabel?: string;
 }
 
 /** 场地型附着（香蕉皮/地雷……T4a）：打出即钉在格上，下一踩上者（含铺设者本人）触发判定后消失 */
@@ -213,9 +239,9 @@ export interface BeastState {
   waveDmg: number;
 }
 
-/** 终局流程挂账（#35 T8a1 骨架 + #27 T8a2 最后一波）：null=终局未启动（常规对局节奏）。局长打满即启动——
- *  没有「首名冲线提前结束」；最后一波年兽战（beast 挂账，每波=一个世界回合窗）与群体失败标记（groupFail）
- *  都落这里，结算（T8b1）在其收束后。 */
+/** 终局流程挂账（#35 T8a1 骨架 + #27 T8a2 最后一波 + #36 T8b1 结算）：null=终局未启动（常规对局节奏）。局长打满即启动——
+ *  没有「首名冲线提前结束」；最后一波年兽战（beast 挂账，每波=一个世界回合窗）、群体失败标记（groupFail）
+ *  与终局结算（settlement，收束当拍落账）都落这里。 */
 export interface EndgameState {
   /** 启动所在的世界回合号（=局长打满后的下一号，与战报分节一致） */
   turn: number;
@@ -223,6 +249,49 @@ export interface EndgameState {
   beast: BeastState | null;
   /** 群体失败闸门（T8a2）：最后一波全员没撑过=true——结算盖章「群体失败」+全员暗牌目标作废（T8b1/T8b2 消费） */
   groupFail: boolean;
+  /** 终局结算（#36 T8b1）：收束当拍计算落账（呈现=T8b2 结算页消费）；缺省=未收束 */
+  settlement?: SettlementResult;
+}
+
+// ---------- 结算（#36 T8b1：积分五项+称号十条+找战犯；呈现=T8b2 结算页消费） ----------
+
+/** 结算单行（数值表 §5.1 五项分账逐条） */
+export interface SettlementRow {
+  pid: number;
+  /** 进度分：净步 ÷10 向下取整（负净步 0 保底不倒扣——实现期定案，回账点=数值表 §5.1 注记） */
+  progress: number;
+  /** 通关名次（1 起按入席先后；null=未入席） */
+  finishRank: number | null;
+  /** 通关分：FINISH_SCORES=[10,8,6] 分位、第四位起无分位（淘汰通关席也保留=已达成事实） */
+  finish: number;
+  /** 存活分：活到结算 +4（终局里倒下=0） */
+  survive: number;
+  /** 达成的称号（表四 no 序，称号名见 SECRET_GOALS）；群体失败=全员空表 */
+  goalNos: number[];
+  /** 群体失败=暗牌目标作废（含已达成的一并作废——T8a2 战报口径） */
+  goalsVoided: boolean;
+  /** 称号分：+8×达成数（作废=0） */
+  titleScore: number;
+  /** 成功整蛊次数（战报流 grudge 标签按落账目标逐次计数） */
+  grudgeCount: number;
+  /** 整蛊分：+2×次数（群体失败只作废暗牌目标，不折损它） */
+  grudgeScore: number;
+  total: number;
+}
+
+/** 找战犯条目（只给数据不做裁决——GLOSSARY）：evidence=可溯源的战报条目 id（跳转回看用；缺席型为空） */
+export interface CulpritReport {
+  kind: "noCardsPlayed" | "healedToDeath" | "wrongCheck";
+  pid: number;
+  detail: string;
+  evidence: number[];
+}
+
+export interface SettlementResult {
+  /** 群体失败盖章（T8a2 闸门消费的账——T8b2 呈现「全员称号作废」页） */
+  groupFail: boolean;
+  rows: SettlementRow[];
+  culprits: CulpritReport[];
 }
 
 /**
@@ -425,7 +494,9 @@ export type Fact =
   /** 年兽被击杀（胜利收束）：wave=收束波数 */
   | { type: "beastSlain"; wave: number }
   /** 群体失败闸门（#27 T8a2）：最后一波全员没撑过——壳层据此进「群体失败」布景（T8b2 结算页呈现） */
-  | { type: "groupFail" };
+  | { type: "groupFail" }
+  /** 终局结算（#36 T8b1）：收束当拍计算落账——五项积分/称号/找战犯的完整账（result 同落 state.endgame.settlement；呈现=T8b2） */
+  | { type: "settlement"; result: SettlementResult };
 
 export interface PlayerDef {
   name: string;

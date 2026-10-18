@@ -11,7 +11,8 @@ import { DC_TIERS, M1_EVENT_POOL, EVENT_CARD_BY_ID, type CardEffect, type CheckS
 import { ITEM_CARD_BY_ID, LEGIT_ITEM_CARDS, M1_ITEM_POOL, itemCard, itemHasPart } from "./data/items";
 import { trapDefAt } from "./data/traps";
 import { AXIS_NAMES, ROLES, roleDef } from "./data/roles";
-import { SECRET_GOALS } from "./data/goals";
+import { SECRET_GOALS, secretGoal } from "./data/goals";
+import { computeSettlement, finishScore } from "./settle";
 import { CHECK_FACES, effectiveValue, netMods, resolveCheck, roleCheckMods, roleOneToCrit, rollD20, rollDice, type CheckGrade, type CheckMods, type CheckResolve } from "./check";
 import { rngStatesFrom, rngStream, RNG_STREAM_NAMES, type Rng, type RngStates, type RngStreamName, type RngState } from "./rng";
 import type { BeastState, WalkState } from "./types";
@@ -25,6 +26,7 @@ import {
   type Intent,
   type MessageEntry,
   type MessageKind,
+  type MsgTag,
   type PlayerDef,
   type PlayerState,
   type RouteOption,
@@ -113,12 +115,9 @@ export const CUSTOMS_BIG_AT = 6;
 export const CUSTOMS_RETREAT = 3;
 export const CUSTOMS_CHECK_MS = 15_000;
 
-/** 通关分分位（#35 T8a1，数值表 §5.1 真源）：首通 +10／次通 +8／第三 +6，第四位起无分位。
- *  入席先后序=state.finishers（踩进先后，T1 基座）；T8b1 结算按 finishScore(名次) 消费。 */
-export const FINISH_SCORES = [10, 8, 6];
-export function finishScore(rank: number): number {
-  return FINISH_SCORES[rank - 1] ?? 0;
-}
+/** 通关分分位（#35 T8a1 落定、#36 T8b1 迁位——数值表 §5.1 真源现居 settle.ts 单一导出，
+ *  game.ts 经它消费 finishAtSeat 的 flavor 分位）：首通 +10／次通 +8／第三 +6，第四位起无分位。
+ *  入席先后序=state.finishers（踩进先后，T1 基座）。 */
 
 /** 最后一波·年兽战（#27 T8a2，数值表 §5.5「最后一波 B」用户拍）：共享血条按人数自平衡——
  *  基础 25+每玩家 15（2 人=55／4 人=85／6 人=115／8 人=145）；伤害骰 1d12（爆 12 爽点）。
@@ -311,7 +310,7 @@ export class GameKernel {
     kind: MessageKind,
     text: string,
     who?: number,
-    extra: { targets?: number[]; flavor?: string; emphasis?: MessageEntry["emphasis"] } = {},
+    extra: { targets?: number[]; flavor?: string; emphasis?: MessageEntry["emphasis"]; tags?: MsgTag[]; cards?: string[] } = {},
   ): void {
     this.state.messages.push({
       id: ++this.state.seq,
@@ -322,6 +321,8 @@ export class GameKernel {
       targets: extra.targets,
       flavor: extra.flavor,
       emphasis: extra.emphasis ?? "normal",
+      ...(extra.tags?.length ? { tags: extra.tags } : {}),
+      ...(extra.cards?.length ? { cards: extra.cards } : {}),
     });
   }
 
@@ -591,7 +592,9 @@ export class GameKernel {
         });
         continue;
       }
-      this.applyParts(p, d.parts, now, { kind: d.kind, srcPid: d.srcPid });
+      const landed = this.applyParts(p, d.parts, now, { kind: d.kind, srcPid: d.srcPid });
+      // 自我整蛊守卫与 turn 分支同款（当前调用图不可达——挂账仅自 dispatchToOthers 的排除后目标；护栏保一致）
+      if (landed && d.grudgeLabel && d.srcPid !== p.id) this.grudgeLanded(d.srcPid, p, d.kind, d.grudgeLabel);
     }
     // 罚停：消耗并轮空（不掷不确认，不占窗；T3a 卡面挂点）
     for (const p of this.state.players) {
@@ -667,6 +670,7 @@ export class GameKernel {
         if (steps > 0) {
           this.msg("item", `⛈ 雷暴劈下——${victim.name} 在${ECO_NAMES[eco]}被劈中，回退 ${steps} 步。`, victim.id, {
             emphasis: "target",
+            tags: ["ambientDown"],
           });
           this.startWalk(victim, -steps, now);
         }
@@ -682,12 +686,14 @@ export class GameKernel {
       if (wind) {
         if (wind.walkMod) {
           this.addWalkMods(p, [wind.walkMod]);
-          this.msg("item", `🌪 「${card.title}」狂风扑面——${p.name} 在${ECO_NAMES[eco]}的下次走格骰 ${modSigned(wind.walkMod.v)}（顶风逆行）。`, p.id);
+          this.msg("item", `🌪 「${card.title}」狂风扑面——${p.name} 在${ECO_NAMES[eco]}的下次走格骰 ${modSigned(wind.walkMod.v)}（顶风逆行）。`, p.id, {
+            ...(wind.walkMod.v < 0 ? { tags: ["ambientDown" as const] } : {}),
+          });
         }
         if (wind.checkMod) {
           p.checkMods.push(wind.checkMod);
           this.msg("item", `🌪 「${card.title}」沙暴漫天——${p.name} 在${ECO_NAMES[eco]}本回合所有检定 ${modSigned(wind.checkMod.v)}。`, p.id, {
-            emphasis: "normal",
+            ...(wind.checkMod.v < 0 ? { tags: ["ambientDown" as const] } : {}),
           });
         }
         if (wind.check) this.weatherCheck(p, card.title, wind.check, now);
@@ -709,6 +715,7 @@ export class GameKernel {
     if (raw > row.guard) return;
     this.msg("item", `⚖ 「${cardTitle}」摔倒判定 d${row.faces}(${raw})≤${row.guard}——${p.name} 摔倒了！`, p.id, {
       emphasis: "target",
+      tags: ["ambientDown"],
     });
     if (row.onFall.length > 0) this.applyParts(p, row.onFall, now);
   }
@@ -1027,6 +1034,9 @@ export class GameKernel {
       this.removeDeadDogs();
       this.emit({ type: "dogKilled", pid: p.id });
     };
+    const killMsg = (text: string, extra: { emphasis: MessageEntry["emphasis"] }): void => {
+      this.msg("malice", text, p.id, { targets: [p.id], tags: ["dogKilled"], ...extra });
+    };
     const bite = (): void => {
       // 野性直觉被动（表三 #5）：被咬 −1 血改弃 1 张道具卡（随机薅手牌进弃牌堆=贼赃房同口径；无卡才扣血）
       const dodge = roleDef(p.roleId).flags.dogBiteDiscard === true ? this.snatchCards(p, 1) : null;
@@ -1046,17 +1056,14 @@ export class GameKernel {
     switch (res.grade) {
       case "crit": {
         kill();
-        this.msg("malice", `🐕 ${p.name} 大成功——一击毙命，野狗当场被打死，还翻出额外战利品！`, p.id, {
-          targets: [p.id],
-          emphasis: "target",
-        });
+        killMsg(`🐕 ${p.name} 大成功——一击毙命，野狗当场被打死，还翻出额外战利品！`, { emphasis: "target" });
         this.drawItems(p, 1, "狗嘴里掉落的"); // 击毙掉落卡捡走
         this.drawItems(p, 1, "搜出的额外战利品"); // 大成功：额外战利品再摸 1
         break;
       }
       case "pass": {
         kill();
-        this.msg("malice", `🐕 ${p.name} 击毙了野狗——狗嘴里掉出 1 张道具卡。`, p.id, { targets: [p.id], emphasis: "target" });
+        killMsg(`🐕 ${p.name} 击毙了野狗——狗嘴里掉出 1 张道具卡。`, { emphasis: "target" });
         this.drawItems(p, 1, "狗嘴里掉落的");
         break;
       }
@@ -1142,8 +1149,8 @@ export class GameKernel {
       armed
         ? `🚢 海关风云！${sheriff.name} 被指命为警长——本窗玩家间可报备转让道具卡（明面只许运正货，违禁品只能谎报）；警长有 ${checks} 次查验，${Math.round(CUSTOMS_CHECK_MS / 1000)} 秒内不查就撤岗（退化为自由转让）。`
         : `🚢 海关风云悄悄开张！${sheriff.name} 被指命为警长——正在休息间隙，下个世界回合正式摆摊（报备转让/查验从那时起）。`,
-      undefined,
-      { flavor: card.flavor, emphasis: "big" },
+      sheriff.id,
+      { flavor: card.flavor, tags: ["customsOpen"], emphasis: "big" },
     );
     if (botSheriff) {
       this.msg("system", `🚢 警长 ${sheriff.name}（系统）摆摆手不打算查验——本窗退化为自由转让（照常报备转让）。`);
@@ -1209,6 +1216,7 @@ export class GameKernel {
       });
       this.msg("system", `⚖ ${f.name} 命中谎报——交 1 张自选道具卡给警长（无卡回退 ${CUSTOMS_RETREAT} 格）。`, f.id, {
         targets: [sheriff.id],
+        tags: ["customsLied"],
       });
       this.scheduleCustomsGive(f, sheriff, "caught", now);
     } else {
@@ -1217,6 +1225,7 @@ export class GameKernel {
       });
       this.msg("system", `⚖ 查错了要赔——警长 ${sheriff.name} 赔 1 张自选道具卡给 ${f.name}（无卡回退 ${CUSTOMS_RETREAT} 格）。`, sheriff.id, {
         targets: [f.id],
+        tags: ["customsClean"],
       });
       this.scheduleCustomsGive(sheriff, f, "clean", now);
     }
@@ -1552,7 +1561,7 @@ export class GameKernel {
 
   /** 直砸年兽（T8a2）：任意道具卡砸向年兽=当场多掷一次伤害骰 1d12（票面列举的治疗/护身符/
    *  加倍骰/弹弓/加倍卡全数可用=通用口子的例证——爽点=多掷一刀，卡回弃牌堆单池守恒）。
-   *  砍死的收束与普通砍击同账（beastDamage→slayBeast）。 */
+   *  砍死的收束与普通砍击同账（beastDamage→slayBeast）。出手=打过卡（T8b1 itemPlayed 计数通道）。 */
   private doHitBeast(pid: number, cardId: string): void {
     const gate = hitBeastGate(this.state, pid, cardId);
     if (!gate.ok) throw new KernelError(gate.reason);
@@ -1561,6 +1570,7 @@ export class GameKernel {
     this.state.itemDiscard.push(cardId);
     const d = Math.floor(this.draw("dice") * BEAST_DIE) + 1;
     this.msg("beast", `💥 ${p.name} 把「${itemCard(cardId).title}」砸向年兽——轰出 ${d} 伤！`, pid, {
+      tags: ["itemPlayed"],
       emphasis: d === BEAST_DIE ? "highlight" : "normal",
     });
     this.beastDamage(p, d);
@@ -1630,9 +1640,39 @@ export class GameKernel {
     this.closeWave(now, true);
   }
 
-  /** 终局盖棺（T8a2 胜利/群体失败共用）：phase over+gameEnd——结算（T8b1）接棒。 */
+  /** 终局盖棺（T8a2 胜利/群体失败共用）+终局结算（#36 T8b1）：phase over → 纯聚合一次
+   *  （五项积分/称号十条/找战犯——计数真源=战报流 MsgTag 折叠，见 settle.ts）落账：
+   *  result 先行 settlement 事实与 state.endgame.settlement（呈现=T8b2 结算页消费），
+   *  战报分行留史（GLOSSARY「找战犯的素材源」），gameEnd 压尾=「进结算页」的最后一枚事实。 */
   private finishEndgame(): void {
     this.state.phase = "over";
+    const result = computeSettlement(this.state);
+    this.state.endgame!.settlement = result;
+    this.emit({ type: "settlement", result });
+    const ranked = [...result.rows].sort((a, b) => b.total - a.total || a.pid - b.pid);
+    const top = ranked[0]!;
+    const stamp = result.groupFail ? "（群体失败盖章——全员称号作废）" : "";
+    this.msg("score", `🏁 终局结算——「${this.player(top.pid).name}」以 ${top.total} 分登顶！${stamp}`, top.pid, {
+      emphasis: "big",
+    });
+    for (const r of ranked) {
+      const titles = r.goalNos.map((no) => secretGoal(no).title).join("、");
+      const titleSeg = r.goalsVoided ? "称号——（作废）" : titles ? `称号 ${r.titleScore}（${titles}）` : `称号 0`;
+      this.msg(
+        "score",
+        `🧮 ${this.player(r.pid).name} 总分 ${r.total}＝进度 ${r.progress}＋通关 ${r.finish}${r.finishRank ? `（第 ${r.finishRank} 位）` : ""}＋存活 ${r.survive}＋${titleSeg}＋整蛊 ${r.grudgeScore}（${r.grudgeCount} 次）`,
+        r.pid,
+        { emphasis: "highlight" },
+      );
+    }
+    if (result.culprits.length === 0) {
+      this.msg("score", "🧾 找战犯——查无战犯，皆大欢喜。", undefined, { emphasis: "highlight" });
+    } else {
+      for (const c of result.culprits) {
+        const ev = c.evidence.length > 0 ? `（证据：战报 #${c.evidence.join("、#")}）` : "（整局无出手记录）";
+        this.msg("score", `🧾 找战犯——${c.detail}${ev}`, c.pid, { emphasis: "highlight" });
+      }
+    }
     this.emit({ type: "gameEnd" });
   }
 
@@ -2072,7 +2112,7 @@ export class GameKernel {
       emphasis: "highlight",
     });
     if (card.kind === "effect") {
-      this.applyCardEffect(p, card.effect!, now);
+      this.applyCardEffect(p, card.effect!, now, card.title);
     } else if (card.kind === "choice") {
       if (p.isBot) {
         this.resolveChoice(p, card.id, card.defaultOption ?? 0, now, true);
@@ -2112,24 +2152,40 @@ export class GameKernel {
       this.msg("event", `${p.name} 超时未选，按默认项代选：「${opt.label}」(代选)`, p.id);
     }
     this.emit({ type: "cardResolved", pid: p.id, cardId: card.id, option, auto });
-    if (opt.effect) this.applyCardEffect(p, opt.effect, now);
+    if (opt.effect) this.applyCardEffect(p, opt.effect, now, card.title);
   }
 
-  /** 指认/指向他人的卡面效果统一按计时模式出发（#22 T4b1 收口）：轮班·限时=立刻生效（无同时行动，无竞态；M1 未接线 T9，口径先立）；world·即时=挂账下一窗开窗结算（被整蛊者有预判窗口）。 */
-  private dispatchToOthers(targets: PlayerState[], parts: EffectPart[], now: number, ctx: GuardCtx): void {
+  /** 指认/指向他人的卡面效果统一按计时模式出发（#22 T4b1 收口）：轮班·限时=立刻生效（无同时行动，无竞态；M1 未接线 T9，口径先立）；world·即时=挂账下一窗开窗结算（被整蛊者有预判窗口）。
+   *  grudgeLabel=整蛊手段的卡名（T8b1 计数通道：event 卡必指认、道具卡仅违禁品——落账当拍出「整蛊得手」条目）。 */
+  private dispatchToOthers(targets: PlayerState[], parts: EffectPart[], now: number, ctx: GuardCtx, grudgeLabel?: string): void {
     if (this.config.timerMode === "turn") {
-      for (const q of targets) this.applyParts(q, parts, now, ctx);
+      for (const q of targets) {
+        const landed = this.applyParts(q, parts, now, ctx);
+        if (landed && grudgeLabel && ctx.srcPid !== q.id) this.grudgeLanded(ctx.srcPid, q, ctx.kind, grudgeLabel);
+      }
       return;
     }
-    for (const q of targets) this.state.deferred.push({ pid: q.id, parts, kind: ctx.kind, srcPid: ctx.srcPid });
+    for (const q of targets) this.state.deferred.push({ pid: q.id, parts, kind: ctx.kind, srcPid: ctx.srcPid, ...(grudgeLabel ? { grudgeLabel } : {}) });
     this.msg(ctx.kind, `下一世界回合开始时结算：${targets.map((q) => q.name).join("、")}。`, ctx.srcPid, {
       targets: targets.map((q) => q.id),
     });
   }
 
+  /** 整蛊得手收口（#36 T8b1 三通道同一条计数账：指认/违禁卡/场地卡——手段在目标身上实际生效）：
+   *  战报出「得手」条目挂 grudge 标签（who=整蛊者）——终局整蛊王计数 × 整蛊分折算的真源。 */
+  private grudgeLanded(srcPid: number, victim: PlayerState, kind: MessageKind, label: string): void {
+    const src = this.player(srcPid);
+    this.msg(kind, `😈 「${label}」在 ${victim.name} 身上生效——${src.name} 整蛊得手！`, srcPid, {
+      targets: [victim.id],
+      tags: ["grudge"],
+      emphasis: "target",
+    });
+  }
+
   /** 卡面效果：self 即时；others 系统指认后按计时模式分流（world=下回合生效挂 deferred）。
-   *  指认通路带 GuardCtx（kind/srcPid）——小圆盾「免疫他人卡牌效果」按打出者判他我（T4b1）。 */
-  private applyCardEffect(p: PlayerState, eff: CardEffect, now: number): void {
+   *  指认通路带 GuardCtx（kind/srcPid）——小圆盾「免疫他人卡牌效果」按打出者判他我（T4b1）。
+   *  label=手段卡名（T8b1 整蛊通道归因——event 卡=「系统指认」通道、道具卡仅违禁品传入）。 */
+  private applyCardEffect(p: PlayerState, eff: CardEffect, now: number, label?: string): void {
     if (eff.self?.length) this.applyParts(p, eff.self, now);
     for (const t of eff.others ?? []) {
       let targets = this.identifyTargets(p, t.target);
@@ -2143,7 +2199,7 @@ export class GameKernel {
         targets = targets.filter((q) => q.id !== p.id);
         if (targets.length === 0) continue;
       }
-      this.dispatchToOthers(targets, t.parts, now, { kind: "event", srcPid: p.id });
+      this.dispatchToOthers(targets, t.parts, now, { kind: "event", srcPid: p.id }, label);
     }
   }
 
@@ -2170,9 +2226,10 @@ export class GameKernel {
   /**
    * 原语结算：一类一个出口，血量/罚停/走格/摸卡/走格骰修正都走统一通道（T5 陷阱/T6 遭遇战复用）。
    * ctx=卡牌效果来源（kind/srcPid，T4b1）：小圆盾按它拦「他人卡牌效果」；恶意/陷阱/野怪等非卡通路不传。
+   * 返回**效果真落账**=true（目标在场且未被小圆盾拦下——T8b1 整蛊成功的「生效」判据，调用方归因计数）。
    */
-  private applyParts(p: PlayerState, parts: EffectPart[], now: number, ctx?: GuardCtx): void {
-    if (p.dead || p.zone === "done") return;
+  private applyParts(p: PlayerState, parts: EffectPart[], now: number, ctx?: GuardCtx): boolean {
+    if (p.dead || p.zone === "done") return false;
     if (ctx && p.cardGuard === this.state.turn && ctx.srcPid !== p.id) {
       // 小圆盾（表一 #9）：下一世界回合免疫他人卡牌效果——整批效果拦下（触发者自己的卡牌不拦）
       const src = this.player(ctx.srcPid);
@@ -2180,7 +2237,7 @@ export class GameKernel {
         targets: [ctx.srcPid],
         emphasis: "highlight",
       });
-      return;
+      return false;
     }
     for (const part of parts) {
       switch (part.type) {
@@ -2216,6 +2273,10 @@ export class GameKernel {
           break;
         case "check":
           this.runCheck(p, part.spec, now, ctx);
+          break;
+        case "mark":
+          // 对局计数标记（T8b1）：打一条 tag 战报承载「得手」——结算对战报流聚合计数（行为级，无副作用）
+          this.msg(ctx?.kind ?? "event", part.text, p.id, { tags: [part.tag], emphasis: "highlight" });
           break;
         case "reroll":
           // 时光怀表（表一 #2）：重掷本次走格骰（骰走在路上才可重掷——gate 前置校验，此为数据兜底）
@@ -2292,6 +2353,7 @@ export class GameKernel {
           break;
       }
     }
+    return true;
   }
 
   /**
@@ -2320,7 +2382,7 @@ export class GameKernel {
     p.hp = Math.max(0, Math.min(this.config.maxHp, p.hp + delta));
     const real = p.hp - before; // 播报实际生效量（削顶/兜底按真账记「逐笔落账」，#23 T5a review）
     if (delta < 0) {
-      this.msg(tone, `${p.name} 扣 ${-real} 血（剩 ${p.hp}/${this.config.maxHp}）`, p.id, { emphasis: "target" });
+      this.msg(tone, `${p.name} 扣 ${-real} 血（剩 ${p.hp}/${this.config.maxHp}）`, p.id, { tags: ["hpLost"], emphasis: "target" });
       if (before > 0 && p.hp === 0) {
         this.retirePlayer(p);
       }
@@ -2360,9 +2422,14 @@ export class GameKernel {
     }
     if (p.hand.length > 0) {
       const n = p.hand.length;
+      const titles = p.hand.map((id) => itemCard(id).title);
       this.state.itemDiscard.push(...p.hand);
+      this.msg("system", `${p.name} 手牌 ${n} 张散落归还牌堆：${titles.join("、")}。`, p.id, {
+        // 散落=公开信息（卡进全桌弃牌堆）——落 cards 供找战犯「治疗吞到死」按条目溯源（摸牌不落它=手牌保密口径）
+        cards: [...p.hand],
+        tags: ["retiredHand"],
+      });
       p.hand = [];
-      this.msg("system", `${p.name} 手牌 ${n} 张散落归还牌堆。`, p.id);
     }
     this.msg("system", `☠ ${p.name} 血尽出局——死了就死了，进入观战（不再掷骰、打卡，不再被指认）。`, p.id, {
       emphasis: "big",
@@ -2468,16 +2535,12 @@ export class GameKernel {
       this.msg("item", `${p.name} 打出「${card.title}」→ 指向 ${q!.name}`, pid, {
         targets: [q!.id],
         flavor: card.flavor,
+        tags: ["itemPlayed"],
         emphasis: "target",
       });
-      if (this.config.timerMode === "turn") {
-        // 轮班·限时：立刻生效（无同时行动，无竞态）
-        this.applyParts(q!, card.parts!, now, { kind: "item", srcPid: pid });
-      } else {
-        // world·即时：下一世界回合开始时结算（被整蛊者有预判窗口——与事件卡同口径）
-        this.state.deferred.push({ pid: q!.id, parts: card.parts!, kind: "item", srcPid: pid });
-        this.msg("item", `下一世界回合开始时结算：${q!.name}。`, pid, { targets: [q!.id] });
-      }
+      // 计时模式分流在 dispatchToOthers 收口（轮班=立刻生效；world·即时=挂账下一窗开窗结算——被整蛊者有预判窗口）；
+      // 违禁品才走整蛊计数通道（表五 §5.1 整蛊分：明面正货的指认不算整蛊——当前池内自选卡全是违禁品）
+      this.dispatchToOthers([q!], card.parts!, now, { kind: "item", srcPid: pid }, card.contraband ? card.title : undefined);
       return;
     }
     if (card.route === "auto") {
@@ -2488,13 +2551,14 @@ export class GameKernel {
       this.msg("item", `${p.name} 打出「${card.title}」（系统指认）${targets.length > 0 ? `→ ${names}` : "——落空"}`, pid, {
         ...(targets.length > 0 ? { targets: targets.map((t) => t.id) } : {}),
         flavor: card.flavor,
+        tags: ["itemPlayed"],
         emphasis: "target",
       });
       if (targets.length === 0) {
         this.msg("item", "指认落空——没有可指认的目标，效果散去。", pid);
         return;
       }
-      this.dispatchToOthers(targets, card.parts!, now, { kind: "item", srcPid: pid });
+      this.dispatchToOthers(targets, card.parts!, now, { kind: "item", srcPid: pid }, card.contraband ? card.title : undefined);
       return;
     }
     if (card.route === "ambient") {
@@ -2508,6 +2572,7 @@ export class GameKernel {
         : `${p.name} 打出「${card.title}」——全桌气候 ${AMBIENT_TURNS} 世界回合`;
       this.msg("item", `${scene}（下一回合起按所在生态逐行结算）。`, pid, {
         flavor: card.flavor,
+        tags: ["itemPlayed", "ambientPlayed"],
         emphasis: old ? "big" : "highlight",
       });
       this.drawItems(p, 1, "打出环境补偿");
@@ -2515,7 +2580,7 @@ export class GameKernel {
     }
     if (card.route === "self") {
       this.state.itemDiscard.push(cardId);
-      this.msg("item", `${p.name} 打出「${card.title}」`, pid, { flavor: card.flavor, emphasis: "highlight" });
+      this.msg("item", `${p.name} 打出「${card.title}」`, pid, { flavor: card.flavor, tags: ["itemPlayed"], emphasis: "highlight" });
       this.applyParts(p, card.parts!, now);
       return;
     }
@@ -2524,6 +2589,7 @@ export class GameKernel {
     this.state.ground.push({ cell: p.pos, cardId, owner: pid });
     this.msg("item", `${p.name} 把「${card.title}」搁在脚下——下一踩上的人要吃苦头了。`, pid, {
       flavor: card.flavor,
+      tags: ["itemPlayed"],
       emphasis: "highlight",
     });
   }
@@ -2543,6 +2609,9 @@ export class GameKernel {
         ...(g.owner === p.id ? {} : { targets: [g.owner] }),
       });
       this.state.itemDiscard.push(g.cardId); // 触发即消耗：卡片回池（弃牌堆）
+      // 踩中=整蛊通道（表五 §5.1 整蛊分三通道之一：「场地卡被踩中」——踩上判定才走判定骰；
+      // 自铺自踩不算得手，铺设者出局后的遗留手段照样记账=已达成事实保留口径）
+      if (g.owner !== p.id) this.grudgeLanded(g.owner, p, "item", card.title);
       // 踩上判定=他人卡牌效果（小圆盾拦；自铺不拦——srcPid=owner 同源不拦）
       this.runCheck(p, card.ground!.check, now, { kind: "item", srcPid: g.owner });
     }

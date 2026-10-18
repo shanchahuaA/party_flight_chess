@@ -5,14 +5,16 @@
  * - EffectPart 原语：move/back/skip/hp/drawItem/trial/check/none；check 内含检定三态
  *   （1d20+对应轴 vs 卡面 DC）+ 骰 20/骰 1 极值分支（当卡自带行为级分支，缺省回落过/败）。
  * - 骰面修正四原语（cut 削面／raise 升面／floor 保底／flat 加值）：同一次检定先互相抵消再结算。
- * - gamble 标签：赌狗时刻 3 张（表二显式卡牌类型兑现），T8 暗牌「赌狗」计数走战报流。
+ * - gamble 标签：赌狗时刻 3 张（表二显式卡牌类型兑现），T8 暗牌「赌狗」计数走战报流——
+ *   赢分支打 mark("gambleWin") 计数标记（T8b1 落账）。
  * - 地区特殊卡：region 挂生态——抽卡者不在该生态时洗牌堆重抽（事件定案 §1.8）。
  * - kind='window'（黑市开张/警长查货窗）：M1 牌池不含，T7 起接入。
  * 目标六类/道具卡表（ItemCard）T4a 起落在 data/items.ts，共用本文件的 EffectPart/DiceMod 原语。
  */
 import type { Eco } from "../board";
+import type { MsgTag } from "../types";
 import type { Axis } from "./roles";
-import { back, drawItem, hp, move, noEffect, skip } from "./primitives";
+import { back, drawItem, gambleWin, hp, mark, move, noEffect, skip } from "./primitives";
 
 export type { Axis } from "./roles";
 
@@ -84,6 +86,8 @@ export type EffectPart =
   | { type: "itemBan"; v: number }
   /** 狗笛生成（表一 #16，T6b）：受指向者相邻格生成 1 只标准野狗（4 血/3 世界回合寿命）+生成当拍同格照打遭遇战 */
   | { type: "dogSpawn" }
+  /** 对局计数标记（#36 T8b1）：卡面行为级别的「得手」标记——赌狗卡赢分支用；结算对战报流聚合计数 */
+  | { type: "mark"; tag: MsgTag; text: string }
   | { type: "none" };
 
 export interface TargetedEffect {
@@ -235,8 +239,9 @@ export const EVENT_CARDS: readonly EventCard[] = [
             spec: {
               axis: "luck",
               dc: 10,
-              onPass: [move(3)],
-              onCrit: [move(6)],
+              // 赌狗赢=过（含大成功）；mark 标记=T8b1 赌狗计数的赢分支（败分支不打）
+              onPass: [gambleWin(), move(3)],
+              onCrit: [gambleWin(), move(6)],
               onFail: [back(2)],
             },
           },
@@ -318,10 +323,10 @@ export const EVENT_CARDS: readonly EventCard[] = [
             spec: {
               // 前途检定：表二裸 1d20 无轴（20=前进 6／1=回退 4／≥11=前进 4／≤10=回退 3）
               bands: [
-                { min: 11, parts: [move(4)] },
+                { min: 11, parts: [gambleWin(), move(4)] },
                 { parts: [back(3)] },
               ],
-              onCrit: [move(6)],
+              onCrit: [gambleWin(), move(6)],
               onCritFail: [back(4)],
             },
           },
@@ -342,11 +347,17 @@ export const EVENT_CARDS: readonly EventCard[] = [
       {
         label: "压上赌运",
         effect: selfFx([
-          {
-            type: "check",
-            // 表二未标轴：T3a 实装按赌运定（=DC16 难档，参考 §5.2 高险高收益捷径）；过表可改
-            spec: { axis: "luck", dc: 16, tier: "hard", onPass: [move(5), drawItem(1)], onFail: [hp(-2), skip(1)] },
+        {
+          type: "check",
+          // 表二未标轴：T3a 实装按赌运定（=DC16 难档，参考 §5.2 高险高收益捷径）；过表可改
+          spec: {
+            axis: "luck",
+            dc: 16,
+            tier: "hard",
+            onPass: [mark("gambleWin", "🎲 赌狗得手——押中了！"), move(5), drawItem(1)],
+            onFail: [hp(-2), skip(1)],
           },
+        },
         ]),
       },
     ],

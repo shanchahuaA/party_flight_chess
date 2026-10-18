@@ -284,6 +284,11 @@ export const LEGIT_ITEM_CARDS: readonly ItemCard[] = ITEM_CARDS.filter((c) => !c
 /** 表一违禁 7 张全池清单（走私弹药；本批落的 6 张必在其列——数据校验兜底） */
 export const CONTRABAND_TITLES: readonly string[] = ["香蕉皮", "脚镣", "偷天换日", "弹弓", "雷暴", "狗笛", "地雷"].sort();
 
+/** 治疗类道具 id（hp 原语为正的数据深扫派生——找战犯「治疗吞到死」的卡域，禁手抄卡名，#36 T8b1） */
+export const HEALING_ITEM_IDS: readonly string[] = ITEM_CARDS.filter(
+  (c) => c.parts?.some((p) => p.type === "hp" && p.v > 0) === true,
+).map((c) => c.id);
+
 /**
  * 测试卡注册通道（仅测试/冒烟）：把表一之外的临时卡挂进卡面查询表。
  * 不进 M1_ITEM_POOL（不进对局抽卡池）、不进 CONTRABAND 校验域——内核公开能力，M2 协议测试同源消费。
