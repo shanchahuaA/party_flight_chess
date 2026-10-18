@@ -13,7 +13,7 @@ import { trapDefAt } from "./data/traps";
 import { AXIS_NAMES, ROLES, roleDef } from "./data/roles";
 import { SECRET_GOALS } from "./data/goals";
 import { CHECK_FACES, effectiveValue, netMods, resolveCheck, roleCheckMods, roleOneToCrit, rollD20, rollDice, type CheckGrade, type CheckMods, type CheckResolve } from "./check";
-import { rngFrom, type Rng, type RngState } from "./rng";
+import { rngStatesFrom, rngStream, RNG_STREAM_NAMES, type Rng, type RngStates, type RngStreamName, type RngState } from "./rng";
 import type { BeastState, WalkState } from "./types";
 import {
   KernelError,
@@ -145,25 +145,31 @@ export class GameKernel {
     this.state = swap(this.state);
   }
 
-  private rngHost: RngState;
-  private rng: Rng;
+  /** 五条命名 RNG 流（rng.ts）：setup=开局分发／deck=事件牌堆／items=道具牌堆／dice=走格骰+检定／world=世界恶意+野狗 */
+  private rngHosts: Record<RngStreamName, RngState>;
+  private rngs: Record<RngStreamName, Rng>;
   /** 🐕 当局野狗编号发号（DogState.id=壳层 token 稳定 key） */
   private dogSeq = 0;
   /** 🚢 当局海关报备单号发号（CustomsShipment.id=查验意图的指单 key） */
   private customsSeq = 0;
 
   private constructor(config: GameConfig, defs: PlayerDef[], now: number) {
-    // 随机源先立：假人角色分派与暗牌抽取都消耗它（顺序固定=同种子全序流）
+    // 随机源先立：假人角色分派与暗牌抽取都消耗它（顺序固定=同种子全序流；五流拆分见 rng.ts）
     this.config = config;
-    this.rngHost = { s: config.seed >>> 0 };
-    this.rng = rngFrom(config.seed, this.rngHost);
+    this.rngHosts = {} as Record<RngStreamName, RngState>;
+    this.rngs = {} as Record<RngStreamName, Rng>;
+    for (const n of RNG_STREAM_NAMES) {
+      const { rng, host } = rngStream(config.seed, n);
+      this.rngs[n] = rng;
+      this.rngHosts[n] = host;
+    }
     // 人数域与落座菜单都在 create（2..8 校验+spawnMenu 档位）先行拦截，此处不再重复
     const menu = spawnMenu(defs.length);
     /** 暗牌逐人独立抽（10 条池内抽 2 且必不相同；不同玩家之间可同条——不互斥） */
     const draftPair = (): [number, number] => {
-      const a = SECRET_GOALS[this.rng.int(SECRET_GOALS.length)]!.no;
-      let b = SECRET_GOALS[this.rng.int(SECRET_GOALS.length)]!.no;
-      while (b === a) b = SECRET_GOALS[this.rng.int(SECRET_GOALS.length)]!.no;
+      const a = SECRET_GOALS[this.rngs.setup.int(SECRET_GOALS.length)]!.no;
+      let b = SECRET_GOALS[this.rngs.setup.int(SECRET_GOALS.length)]!.no;
+      while (b === a) b = SECRET_GOALS[this.rngs.setup.int(SECRET_GOALS.length)]!.no;
       return [a, b];
     };
     this.state = {
@@ -173,7 +179,7 @@ export class GameKernel {
       windowDeadline: 0,
       restUntil: 0,
       players: defs.map((d, i) => {
-        const rd = roleDef(d.roleId ?? (d.isBot ? ROLES[this.rng.int(ROLES.length)]!.id : "light"));
+        const rd = roleDef(d.roleId ?? (d.isBot ? ROLES[this.rngs.setup.int(ROLES.length)]!.id : "light"));
         return {
           id: i,
           name: d.name,
@@ -198,7 +204,7 @@ export class GameKernel {
           dead: false,
           spawnCell: SPAWN_SLOTS[menu[i]!]!.cell,
           secretOptions: draftPair(),
-          secretPick: d.isBot ? this.rng.int(2) : null,
+          secretPick: d.isBot ? this.rngs.setup.int(2) : null,
           botSchedule: { rollAt: now, confirmAt: 0 },
           walk: null,
           walkQueue: [],
@@ -216,10 +222,10 @@ export class GameKernel {
       finishers: [],
       messages: [],
       // 事件牌堆：单池洗匀（表二 20 张；'window' 卡 T7 放行——事件定案 §1.8 抽完即洗回弃牌堆）
-      deck: this.rng.shuffle(M1_EVENT_POOL.map((c) => c.id)),
+      deck: this.rngs.deck.shuffle(M1_EVENT_POOL.map((c) => c.id)),
       discard: [],
       // 道具牌堆：单池洗匀（表一 20 张全量，T4b2 收口——事件定案 §1.8 同口径）
-      itemDeck: this.rng.shuffle(M1_ITEM_POOL.map((c) => c.id)),
+      itemDeck: this.rngs.items.shuffle(M1_ITEM_POOL.map((c) => c.id)),
       itemDiscard: [],
       ground: [],
       ambient: null,
@@ -228,7 +234,7 @@ export class GameKernel {
       endgame: null,
       malice: { timber: null, sink: null, rock: null, spawnQueue: [], dogs: [] },
       seq: 0,
-      rngState: this.rngHost.s,
+      rngStates: rngStatesFrom(config.seed),
     };
     const bots = this.state.players.filter((p) => p.isBot);
     this.msg(
@@ -255,7 +261,7 @@ export class GameKernel {
       }
       if (got > 0) this.msg("system", `${p.name} 轻装上阵被动：开局手牌 +${got}。`, p.id);
     }
-    this.state.rngState = this.rngHost.s;
+    this.syncRng();
   }
 
   static create(
@@ -319,16 +325,17 @@ export class GameKernel {
     });
   }
 
-  /** 消耗随机源；每次消耗都同步进 state（快照可恢复随机流） */
-  private draw(): number {
-    const v = this.rng.next();
-    this.state.rngState = this.rngHost.s;
+  /** 消耗指定流的随机源；每次消耗都同步进 state（快照可恢复随机流）。
+   *  流必填=新增消费点必须自觉归流（五流口径见 rng.ts：骰=dice、牌堆序=deck/items、其余世界层随机=world）。 */
+  private draw(stream: RngStreamName): number {
+    const v = this.rngs[stream].next();
+    this.state.rngStates[stream] = this.rngHosts[stream].s;
     return v;
   }
 
-  /** 批量消耗后的一次性同步（走 rollD20/shuffle 等直接吃 rng 的路径用） */
+  /** 批量消耗后的一次性同步（走 rollDice/shuffle 等直接吃流的路径用） */
   private syncRng(): void {
-    this.state.rngState = this.rngHost.s;
+    for (const n of RNG_STREAM_NAMES) this.state.rngStates[n] = this.rngHosts[n].s;
   }
 
   // ---------- 公开 API ----------
@@ -554,7 +561,7 @@ export class GameKernel {
   private reserveBots(now: number): void {
     for (const p of this.state.players) {
       if (!p.isBot || p.dead || p.zone === "done") continue;
-      p.botSchedule.rollAt = now + 400 + p.id * 350 + Math.floor(this.draw() * 700);
+      p.botSchedule.rollAt = now + 400 + p.id * 350 + Math.floor(this.draw("world") * 700);
       p.botSchedule.confirmAt = Number.POSITIVE_INFINITY;
     }
   }
@@ -653,7 +660,7 @@ export class GameKernel {
     if (w.strike) {
       // 雷暴：随机劈 1 名在场者（含打出者自己——天灾无主）；回退步数按被劈者所在格生态取行
       const act = this.state.players.filter((q) => !q.dead && q.zone !== "done");
-      const victim = act[Math.floor(this.draw() * act.length)];
+      const victim = act[Math.floor(this.draw("world") * act.length)];
       if (victim) {
         const eco = this.cell(victim.pos).zone; // 支路里的人 pos=出生格（平原）——行军地貌按所在格统一口径
         const steps = w.strike[eco] ?? 0;
@@ -697,7 +704,7 @@ export class GameKernel {
 
   /** 环境判定骰（暴雨/风暴摔倒行共用）：掷 faces 面骰 ≤guard=摔倒；没摔不出声，摔了后果走 applyParts 原通道 */
   private weatherCheck(p: PlayerState, cardTitle: string, row: { faces: number; guard: number; onFall: EffectPart[] }, now: number): void {
-    const raw = rollDice(this.rng, { adv: 0, advCount: 0 }, row.faces);
+    const raw = rollDice(this.rngs.dice, { adv: 0, advCount: 0 }, row.faces);
     this.syncRng();
     if (raw > row.guard) return;
     this.msg("item", `⚖ 「${cardTitle}」摔倒判定 d${row.faces}(${raw})≤${row.guard}——${p.name} 摔倒了！`, p.id, {
@@ -775,7 +782,7 @@ export class GameKernel {
     // 遇免预警悬挂到结算的死账；狗/塌陷挂到终局也无人再结——同账全体让位。终局份量由 T8 的「最后一波」加强档接管。
     // 四型=下标 0..3 一张共表（木头/滚石/塌陷/野狗，rng 均分）；末回合取滚石=下标 1，无魔法数字散落。
     const timberable = this.state.turn < this.config.turnCap;
-    const kind = timberable ? this.rng.int(4) : 1;
+    const kind = timberable ? this.rngs.world.int(4) : 1;
     this.syncRng();
     const kinds: Array<(now: number) => void> = [
       () => this.waveTimber(),
@@ -804,9 +811,9 @@ export class GameKernel {
       this.msg("malice", `🐕 ${dissipated.length} 只野狗游荡期满——溜回林子深处没了踪影。`);
     }
     for (const d of survivors) {
-      if (this.rng.int(2) === 0) continue; // 留守：趴着不走（各半，实现期定案）
+      if (this.rngs.world.int(2) === 0) continue; // 留守：趴着不走（各半，实现期定案）
       const links = this.cell(d.cell).links;
-      d.cell = links[Math.floor(this.draw() * links.length)]!;
+      d.cell = links[Math.floor(this.draw("world") * links.length)]!;
     }
     this.dogCollisions(now);
   }
@@ -843,7 +850,7 @@ export class GameKernel {
 
   /** 🪵 木头：落点提前定并挂预警阴影（3 个 主网可落格），下一世界回合开始砸落。 */
   private waveTimber(): void {
-    const cells = this.rng.shuffle([...MAIN_PLAYABLE_CELLS]).slice(0, TIMBER_CELLS).sort((a, b) => a - b);
+    const cells = this.rngs.world.shuffle([...MAIN_PLAYABLE_CELLS]).slice(0, TIMBER_CELLS).sort((a, b) => a - b);
     this.syncRng();
     this.state.malice.timber = cells;
     this.msg(
@@ -860,8 +867,8 @@ export class GameKernel {
    *  猎手不适用，蛮力/狡运对应轴不沾）。滚到的格上有野狗=世界层互击（狗也挨砸，dogHit 随路判）。 */
   private waveRock(now: number): void {
     const runs = STREET_RUNS.filter((r) => r.cells.length >= ROCK_LEN);
-    const run = runs[this.rng.int(runs.length)]!;
-    const offset = this.rng.int(run.cells.length - ROCK_LEN + 1);
+    const run = runs[this.rngs.world.int(runs.length)]!;
+    const offset = this.rngs.world.int(run.cells.length - ROCK_LEN + 1);
     const path = run.cells.slice(offset, offset + ROCK_LEN);
     this.syncRng();
     this.state.malice.rock = path;
@@ -909,7 +916,7 @@ export class GameKernel {
 
   /** 选塌陷区：洗匀的种子池从首个能凑满 SINK_CELLS 的种子格 BFS（邻域扩时跳过环岛与出生格）。 */
   private sinkCells(): number[] {
-    const pool = this.rng.shuffle([...MAIN_PLAYABLE_CELLS]);
+    const pool = this.rngs.world.shuffle([...MAIN_PLAYABLE_CELLS]);
     for (const seed of pool) {
       const seen = new Set<number>([seed]);
       const cells = [seed];
@@ -948,7 +955,7 @@ export class GameKernel {
   /** 🐕 野狗出没：一波生成 DOGS_PER_WAVE 只标准野狗——落点=主网可落格洗匀（同木头池照片矩：
    *  排环岛与出生格——出生格是开局/传送回复位不动点）。生成当拍同格撞上=当场遭遇战（强制）。 */
   private waveDogs(now: number): void {
-    const cells = this.rng.shuffle([...MAIN_PLAYABLE_CELLS]).slice(0, DOGS_PER_WAVE);
+    const cells = this.rngs.world.shuffle([...MAIN_PLAYABLE_CELLS]).slice(0, DOGS_PER_WAVE);
     this.syncRng();
     for (const c of cells) this.spawnDogAt(c);
     this.msg(
@@ -996,7 +1003,7 @@ export class GameKernel {
   private snatchCards(p: PlayerState, v: number): string[] {
     const titles: string[] = [];
     while (p.hand.length > 0 && titles.length < v) {
-      const id = p.hand.splice(Math.floor(this.draw() * p.hand.length), 1)[0]!;
+      const id = p.hand.splice(Math.floor(this.draw("world") * p.hand.length), 1)[0]!;
       this.state.itemDiscard.push(id);
       titles.push(itemCard(id).title);
     }
@@ -1115,7 +1122,7 @@ export class GameKernel {
       if (forced.dead || forced.zone === "done") throw new KernelError("警长要在场（非淘汰/非通关席）");
       sheriff = forced;
     } else {
-      sheriff = act[Math.floor(this.draw() * act.length)]!;
+      sheriff = act[Math.floor(this.draw("world") * act.length)]!;
     }
     const checks = this.state.players.length >= CUSTOMS_BIG_AT ? CUSTOMS_CHECKS_BIG : CUSTOMS_CHECKS; // 6 人以上局（局人数）
     const botSheriff = sheriff.isBot;
@@ -1154,7 +1161,7 @@ export class GameKernel {
     c.checkDeadline = now + CUSTOMS_CHECK_MS;
     c.botPlans = this.activePlayers()
       .filter((q) => q.isBot && q.id !== c.sheriff)
-      .map((q) => ({ pid: q.id, at: now + 200 + Math.floor(this.draw() * 800) }));
+      .map((q) => ({ pid: q.id, at: now + 200 + Math.floor(this.draw("world") * 800) }));
   }
 
   /** 报备转让（#26 T7）：报备校验（明面只许正货——declared 必须是表一正货，报备违禁品即拒）→
@@ -1242,7 +1249,7 @@ export class GameKernel {
     if (giver.hand.length === 0) {
       id = null; // 无卡：走回退
     } else if (auto) {
-      id = giver.hand.splice(Math.floor(this.draw() * giver.hand.length), 1)[0]!;
+      id = giver.hand.splice(Math.floor(this.draw("world") * giver.hand.length), 1)[0]!;
     } else {
       if (cardId == null || !giver.hand.includes(cardId)) throw new KernelError("这张卡不在待交者的手牌里");
       id = giver.hand.splice(giver.hand.indexOf(cardId), 1)[0]!;
@@ -1317,12 +1324,12 @@ export class GameKernel {
     for (const plan of due) {
       const p = this.player(plan.pid);
       if (p.hand.length === 0) continue;
-      const cardId = p.hand[Math.floor(this.draw() * p.hand.length)]!;
+      const cardId = p.hand[Math.floor(this.draw("world") * p.hand.length)]!;
       const others = this.activePlayers().filter((q) => q.id !== p.id);
       if (others.length === 0) continue;
-      const to = others[Math.floor(this.draw() * others.length)]!;
+      const to = others[Math.floor(this.draw("world") * others.length)]!;
       const card = itemCard(cardId);
-      const declared = card.contraband ? LEGIT_ITEM_IDS[Math.floor(this.draw() * LEGIT_ITEM_IDS.length)]! : cardId;
+      const declared = card.contraband ? LEGIT_ITEM_IDS[Math.floor(this.draw("world") * LEGIT_ITEM_IDS.length)]! : cardId;
       if (!customsShipGate(this.state, p.id, cardId, to.id).ok) continue;
       this.doCustomsShip(p.id, cardId, to.id, declared);
     }
@@ -1499,7 +1506,7 @@ export class GameKernel {
         this.msg("beast", `${p.name} 罚停生效——本波轮空（年兽面前动弹不得）。`, p.id, { emphasis: "normal" });
       }
       if (p.isBot) {
-        p.botSchedule = { rollAt: now + 400 + p.id * 350 + Math.floor(this.draw() * 700), confirmAt: Number.POSITIVE_INFINITY };
+        p.botSchedule = { rollAt: now + 400 + p.id * 350 + Math.floor(this.draw("world") * 700), confirmAt: Number.POSITIVE_INFINITY };
       }
     }
     for (const p of this.waveFighters()) {
@@ -1520,7 +1527,7 @@ export class GameKernel {
   private doStrike(pid: number, mode: "human" | "bot" | "replacement"): void {
     const p = this.player(pid);
     p.rolled = true;
-    const d = Math.floor(this.draw() * BEAST_DIE) + 1;
+    const d = Math.floor(this.draw("dice") * BEAST_DIE) + 1;
     const auto = mode !== "human";
     this.msg("beast", `${auto ? "系统替 " : ""}${p.name} 掷伤害骰——砍出 ${d} 伤！`, pid, {
       emphasis: d === BEAST_DIE ? "highlight" : "normal",
@@ -1552,7 +1559,7 @@ export class GameKernel {
     const p = this.player(pid);
     p.hand.splice(p.hand.indexOf(cardId), 1);
     this.state.itemDiscard.push(cardId);
-    const d = Math.floor(this.draw() * BEAST_DIE) + 1;
+    const d = Math.floor(this.draw("dice") * BEAST_DIE) + 1;
     this.msg("beast", `💥 ${p.name} 把「${itemCard(cardId).title}」砸向年兽——轰出 ${d} 伤！`, pid, {
       emphasis: d === BEAST_DIE ? "highlight" : "normal",
     });
@@ -1654,7 +1661,7 @@ export class GameKernel {
     const net = netMods(toCheckMods(mods));
     // 脚镣削面：1d10→1d9（cut 1）；加倍骰升面：1d10→1d12（raise 2，T4b1 落卡）——面数通道同一出口
     const faces = Math.max(2, WALK_DIE + net.face);
-    const raw = rollDice(this.rng, net, faces);
+    const raw = rollDice(this.rngs.dice, net, faces);
     this.syncRng();
     return { raw, d: effectiveValue(raw, net.bonus, net.floor) }; // 顺风靴 +3 → 幸运骰保底 ≥6
   }
@@ -1802,10 +1809,10 @@ export class GameKernel {
 
   private botPickAtJunction(p: PlayerState, opts: number[]): number {
     const straight = this.straightId(p.pos, p.from);
-    if (straight !== null && opts.includes(straight) && this.draw() < 0.6) {
+    if (straight !== null && opts.includes(straight) && this.draw("world") < 0.6) {
       return straight; // 顺直行偏好（六成概率）
     }
-    return opts[Math.floor(this.draw() * opts.length)]!;
+    return opts[Math.floor(this.draw("world") * opts.length)]!;
   }
 
   /** 主网前进一步 */
@@ -1920,7 +1927,7 @@ export class GameKernel {
     }
     if (p.isBot && !p.dead && p.zone !== "done") {
       // 假人：走完一小拍后自动确认（到点由 fireBots 消费）
-      p.botSchedule.confirmAt = now + 500 + Math.floor(this.draw() * 400);
+      p.botSchedule.confirmAt = now + 500 + Math.floor(this.draw("world") * 400);
     }
   }
 
@@ -2045,7 +2052,7 @@ export class GameKernel {
           card = drawn;
         } else {
           this.msg("event", `「${drawn.title}」在${ECO_NAMES[this.cell(p.pos).zone]}不适用，洗回牌堆重抽。`, p.id);
-          const at = Math.floor(this.draw() * (this.state.deck.length + 1));
+          const at = Math.floor(this.draw("deck") * (this.state.deck.length + 1));
           this.state.deck.splice(at, 0, drawn.id);
         }
       }
@@ -2082,7 +2089,7 @@ export class GameKernel {
   /** 从牌堆顶抽一张（空则弃牌堆整堆洗回——单池守恒：deck+discard 恒等价于 M1_EVENT_POOL） */
   private popCard(): EventCard | null {
     if (this.state.deck.length === 0) {
-      this.state.deck = this.rng.shuffle([...this.state.discard]);
+      this.state.deck = this.rngs.deck.shuffle([...this.state.discard]);
       this.state.discard = [];
       this.syncRng();
     }
@@ -2148,7 +2155,7 @@ export class GameKernel {
       case "all":
         return act;
       case "random":
-        return [act[Math.floor(this.draw() * act.length)]!];
+        return [act[Math.floor(this.draw("world") * act.length)]!];
       case "nearestToGoal":
         return [act.slice().sort((a, b) => b.net - a.net || a.id - b.id)[0]!];
       case "farthestFromGoal":
@@ -2277,7 +2284,7 @@ export class GameKernel {
           // （出队结算在 tickDogs 之后=出生窗不减寿、标准 3 世界回合）。
           const links = this.cell(p.pos).links;
           if (links.length === 0) break; // 理论不可达（每格 ≥1 邻）——落空无害
-          const to = links[Math.floor(this.draw() * links.length)]!;
+          const to = links[Math.floor(this.draw("world") * links.length)]!;
           this.state.malice.spawnQueue.push({ cell: to, target: p.id });
           break;
         }
@@ -2382,7 +2389,7 @@ export class GameKernel {
     ];
     const net = netMods(mods); // 互抵：先全量合账（D&D 原则）
     const faces = Math.max(3, CHECK_FACES + net.face);
-    const raw = rollD20(this.rng, { adv: net.adv, advCount: net.advCount }, faces);
+    const raw = rollD20(this.rngs.dice, { adv: net.adv, advCount: net.advCount }, faces);
     this.syncRng(); // 批量消耗后的状态回账（draw() 的逐粒同步在此批量化）
     const res = resolveCheck({
       raw,
@@ -2562,7 +2569,7 @@ export class GameKernel {
   /** 从道具牌堆顶抽一张（空则弃牌堆整堆洗回——单池守恒：deck+discard+手牌 恒等于 M1 池） */
   private popItem(): string | null {
     if (this.state.itemDeck.length === 0) {
-      this.state.itemDeck = this.rng.shuffle([...this.state.itemDiscard]);
+      this.state.itemDeck = this.rngs.items.shuffle([...this.state.itemDiscard]);
       this.state.itemDiscard = [];
       this.syncRng();
     }

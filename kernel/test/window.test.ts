@@ -1,7 +1,7 @@
 /** 世界回合窗：全员同窗、确认等待区、提前开窗、超窗替掷、休息期 */
 import { describe, expect, it } from "vitest";
 import { KernelError, type GameKernel } from "../src";
-import { boot, bootWithDie, bootWithDiesPure, cell, dieOf, DRAW_MOVE_TITLES, me, walkOut } from "./helpers";
+import { boot, bootWithDie, bootWithDiesPure, cell, dieOf, DRAW_MOVE_IDS, me, walkOut } from "./helpers";
 
 describe("世界回合窗（世界·即时）", () => {
   it("开局即窗：turn1、默认窗 30s、全员待掷", () => {
@@ -23,7 +23,7 @@ describe("世界回合窗（世界·即时）", () => {
       walkOut(k, 0);
       return [dieOf(fx)];
     };
-    const k = bootWithDiesPure(firstRoll, [3], {}, DRAW_MOVE_TITLES);
+    const k = bootWithDiesPure(firstRoll, [3], {}, DRAW_MOVE_IDS);
     firstRoll(k);
     k.apply({ type: "confirm", pid: 0 }, 2_000);
     // 假人按日程 ~1-3s 掷 + 走完 + 0.5s 拍确认——推到全员确认触发提前开窗
@@ -40,6 +40,29 @@ describe("世界回合窗（世界·即时）", () => {
     k.tick(k.state.restUntil + 1);
     expect(k.state.turn).toBe(2);
     expect(k.state.phase).toBe("acting");
+  });
+
+  it("双吞世界回合回归（T8a1 收口边界）：收窗 tick 恰是窗截止——一 tick 只吞一窗", () => {
+    // 预定位+首掷同上（零位移卡种子）；假人早完事，人间拖到截止时刻才交最后一张确认
+    const firstRoll = (k: GameKernel): number[] => {
+      k.apply({ type: "dev.setPos", pid: 0, pos: cell(7, 0), from: cell(8, 0), net: 0 }, 0);
+      const fx = k.apply({ type: "roll", pid: 0 }, 0);
+      walkOut(k, 0);
+      return [dieOf(fx)];
+    };
+    const k = bootWithDiesPure(firstRoll, [3], {}, DRAW_MOVE_IDS);
+    firstRoll(k);
+    let t = 3_000;
+    while (!k.state.players[1]!.confirmed && t <= 30_000) {
+      k.tick(t);
+      t += 500;
+    }
+    expect(k.state.players[1]!.confirmed).toBe(true);
+    expect(k.state.turn).toBe(1); // 人间没确认——窗还开着
+    k.apply({ type: "confirm", pid: 0 }, 30_000); // 恰在截止时刻凑齐全员确认
+    k.tick(30_000); // 同一时刻 tick：maybeCloseWindow 收窗开下一窗——旧缺陷在这口 tick 里 autoFillAndClose 再收一次=turn 直跳 3
+    expect(k.state.turn).toBe(2);
+    expect(k.state.phase).toBe("rest");
   });
 
   it("超窗替掷：没掷的人被替掷并自动确认，windowEnd.auto=true（含播报）", () => {
@@ -84,7 +107,7 @@ describe("世界回合窗（世界·即时）", () => {
       walkOut(k, 0);
       return [dieOf(fx)];
     };
-    const k = bootWithDiesPure(firstRoll, [3], {}, DRAW_MOVE_TITLES);
+    const k = bootWithDiesPure(firstRoll, [3], {}, DRAW_MOVE_IDS);
     // 硬规格 ①：掷骰与确认分离——没掷骰不能先确认（防静默吞骰）
     expect(() => k.apply({ type: "confirm", pid: 0 }, 0)).toThrow(KernelError);
     firstRoll(k);

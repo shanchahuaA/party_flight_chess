@@ -167,16 +167,17 @@ describe("反噬与安慰奖", () => {
     // 再挂一波：温和平账
     strikeWave(k, now + 6);
     expect(k.state.players.map((p) => p.hp)).toEqual([8, 8, 8, 8]);
-    // 猛档对照：−2/波
+    // 猛档对照：−2/波（同样清前路账——猛档世界 15 凝滞窗里恶意真咬人，别让它混进反噬账）
     const { k: kf, now: nf } = bootFight({ maliceLevel: "fierce" });
+    for (const p of kf.state.players) kf.apply({ type: "dev.setHp", pid: p.id, hp: 10 }, nf);
     kf.apply({ type: "dev.setBeast", hp: 999 }, nf);
     strikeWave(kf, nf);
     expect(kf.state.players.map((p) => p.hp)).toEqual([8, 8, 8, 8]);
   });
 
   it("反噬走 applyHpDelta 单入口：战前打出的护身符拦下反噬（触发即消耗），队友照扣", () => {
-    const k = bootCrew({ windowMs: 5, restMs: 0 });
-    // 种子 7：pid0 开局手牌恰为「护身符」（开局手牌+1 的骰面流钉账）——第 1 窗常规打出
+    const k = bootCrew({ windowMs: 5, restMs: 0, seed: 16 });
+    // 种子 16（五流拆分后重钉）：pid0 开局手牌恰为「护身符」——第 1 窗常规打出
     expect(k.state.players[0]!.hand.includes("i14")).toBe(true);
     k.apply({ type: "playItem", pid: 0, cardId: "i14" }, 0);
     expect(k.state.players[0]!.talisman).toBe(1);

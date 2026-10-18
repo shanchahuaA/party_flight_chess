@@ -135,8 +135,8 @@ describe("无人被提前收束+入席先后序+分位", () => {
     expect(k.state.phase).toBe("over");
     expect(k.state.endgame!.turn).toBe(16);
     expect(k.state.endgame!.groupFail).toBe(false);
-    // 双通关席参战打赢了：种子搜索局的骰面流钉账（年兽 55 血、第 4 波收束、血条钳 0）
-    expect(k.state.endgame!.beast).toEqual({ hp: 0, maxHp: 55, wave: 4, waveDmg: 12 });
+    // 双通关席参战打赢了：种子搜索局的骰面流钉账（年兽 55 血、第 4 波收束、血条钳 0；五流拆分后重钉 waveDmg）
+    expect(k.state.endgame!.beast).toEqual({ hp: 0, maxHp: 55, wave: 4, waveDmg: 11 });
     expect(k.state.players[0]!.endgame).toBe("seat");
     expect(k.state.players[1]!.endgame).toBe("seat");
     expect(msg(k, "通关席 2")).toBe(true);

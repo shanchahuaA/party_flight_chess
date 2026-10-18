@@ -1,5 +1,6 @@
-import { GAME_DEFAULTS, GameKernel } from "../src";
+import { GAME_DEFAULTS, GameKernel, KernelError } from "../src";
 import type { Fact, GameConfig, PlayerState } from "../src";
+import { DISPLACING_EVENT_IDS } from "../src";
 import { cellAt } from "../src";
 
 /** 开局暗牌抽 2 选 1（boot 默认替真人选第 0 条；泛用） */
@@ -14,6 +15,38 @@ export function boot(over: Partial<GameConfig> = {}, now = 0): GameKernel {
   return kernel;
 }
 
+/**
+ * 事实收集器：把 k 的 apply/tick 返回事实汇进一个数组（代理转发，脚本无感）。
+ * 搜种子的约束一律读这里头的事实（cardDrawn 等），**禁止解析战报中文文案**——文案会改，事实是协议。
+ */
+function factTee(k: GameKernel): { k: GameKernel; facts: Fact[] } {
+  const facts: Fact[] = [];
+  const proxy = new Proxy(k, {
+    get(target, prop) {
+      if (prop === "apply" || prop === "tick") {
+        return (...args: unknown[]) => {
+          const fx = (target[prop as "apply" | "tick"] as (...a: unknown[]) => Fact[])(...args);
+          facts.push(...fx);
+          return fx;
+        };
+      }
+      return Reflect.get(target, prop, target);
+    },
+  }) as GameKernel;
+  return { k: proxy, facts };
+}
+
+/** 搜种子 catch 纪律（T1..T8a2 回顾定案）：只吞 KernelError（业务拒绝=换种子），其余异常原样抛
+ *  ——内核真缺陷绝不允许伪装成「没搜到种子」（T8a1 教训：吞掉的运行时炸被误读成概率问题）。 */
+function swallowKernelRejection(e: unknown): void {
+  if (!(e instanceof KernelError)) throw e;
+}
+
+/**
+ * 种子搜索纪律（同上）：搜索约束必须机械可判定（读结构化事实/状态），
+ * 禁止解析战报文案（T3b 教训：改播报措辞即碎）；脚本须对任意种子合法（选路选固定项）。
+ */
+
 /** 搜种子：使人间（pid 0，可选先 setPos）首掷恰好为 target 面的种子 */
 export function seedForFirstDie(target: number, pre: { pos: number; from: number | null; net: number } | null = null): number {
   for (let seed = 1; seed < 5000; seed++) {
@@ -27,64 +60,44 @@ export function seedForFirstDie(target: number, pre: { pos: number; from: number
   throw new Error(`找不到首掷为 ${target} 的种子（1..4999）`);
 }
 
-/**
- * 搜种子：跑一段完全确定的意图/时钟脚本，人间各次掷面依次命中 targets。
- * 脚本必须对任意种子都合法执行完成（选路请选固定项）。
- */
+/** 搜种子：跑一段完全确定的意图/时钟脚本，人间各次掷面依次命中 targets */
 export function seedForScript(script: (k: GameKernel) => number[], targets: number[]): number {
   for (let seed = 1; seed < 5000; seed++) {
     try {
       const k = boot({ seed });
       const faces = script(k);
       if (faces.length === targets.length && faces.every((f, i) => f === targets[i])) return seed;
-    } catch {
-      // 该种子下脚本中断（不应发生：脚本需全种子安全），换下一粒
+    } catch (e) {
+      swallowKernelRejection(e);
+      continue; // 该种子下脚本被业务规则拒绝，换下一粒
     }
   }
   throw new Error(`找不到骰面流为 [${targets.join(",")}] 的种子（1..4999）`);
 }
 
 /**
- * 会造成位移的事件卡清单（抽卡必先播「踩上事件格，抽到「卡名」」——按卡名探测）。
- * 用途：机械走格测试搜种子时排除它们；其余卡抽到也不动位置（默认位=无事/摸道具/扣血/罚停）。
- */
-export const DRAW_MOVE_TITLES: readonly string[] = [
-  "断桥",
-  "醉酒的守卫",
-  "岔路口·宝箱与陷阱",
-  "岔路口·近路与远路",
-  "一路顺风",
-  "全员拜年",
-  "全员大扫除",
-  "庄园鼠横行",
-];
-
-/**
  * 搜种子：同 seedForScript，外加事件卡约束（T3a 起走停即抽）。
- * banTitles 给出 → 允许安全卡，只排除位移卡（抽到也不会改停位——断言可保持机械语义）；
- * 不给 → 全程零事件抽卡（最严档）。极值/检定路径另在 events.test 用 dev 通道精确驱动。
+ * banIds 给出 → 允许安全卡，只排除位移卡（DISPLACING_EVENT_IDS，数据深扫派生——抽到也不改停位，
+ * 断言可保持机械语义）；不给 → 全程零事件抽卡（最严档）。极值/检定路径另在 events.test 用 dev 通道精确驱动。
  */
 export function seedForScriptNoDraws(
   script: (k: GameKernel) => number[],
   targets: number[],
-  banTitles?: readonly string[],
+  banIds?: readonly string[],
 ): number {
   for (let seed = 1; seed < 5000; seed++) {
+    const { k, facts } = factTee(boot({ seed }));
     try {
-      const k = boot({ seed });
-      const before = k.state.messages.length;
       const faces = script(k);
-      const drewTitles = k.state.messages
-        .slice(before)
-        .map((m) => /踩上事件格，抽到「(.+?)」/.exec(m.text)?.[1])
-        .filter((t): t is string => !!t);
-      const okDraws = banTitles ? drewTitles.every((t) => !banTitles.includes(t)) : drewTitles.length === 0;
+      const drewIds = facts.filter((f) => f.type === "cardDrawn").map((f) => (f.type === "cardDrawn" ? f.cardId : ""));
+      const okDraws = banIds ? drewIds.every((id) => !banIds.includes(id)) : drewIds.length === 0;
       if (okDraws && faces.length === targets.length && faces.every((f, i) => f === targets[i])) return seed;
-    } catch {
-      // 该种子下脚本中断（含抽到卡后挂起闸拒绝原路径），换下一粒
+    } catch (e) {
+      swallowKernelRejection(e);
+      continue; // 该种子下脚本被业务规则拒绝（含抽到卡后挂起闸拒绝原路径），换下一粒
     }
   }
-  throw new Error(`找不到骰面流为 [${targets.join(",")}] 且${banTitles ? "零位移卡" : "零事件抽卡"}的种子（1..4999）`);
+  throw new Error(`找不到骰面流为 [${targets.join(",")}] 且${banIds ? "零位移卡" : "零事件抽卡"}的种子（1..4999）`);
 }
 
 /** 建"骰面流 = targets 且满足事件卡约束"的新盘（脚本按同样时序重放） */
@@ -92,9 +105,9 @@ export function bootWithDiesPure(
   script: (k: GameKernel) => number[],
   targets: number[],
   over: Partial<GameConfig> = {},
-  banTitles?: readonly string[],
+  banIds?: readonly string[],
 ): GameKernel {
-  return boot({ ...over, seed: seedForScriptNoDraws(script, targets, banTitles) });
+  return boot({ ...over, seed: seedForScriptNoDraws(script, targets, banIds) });
 }
 
 /** 建"人间首掷面 = target"的一局（含 setPos 回放） */
@@ -112,17 +125,21 @@ export function bootWithDies(
 ): GameKernel {
   for (let seed = 1; seed < 5000; seed++) {
     try {
-      const k = boot({ seed });
+      const { k } = factTee(boot({ seed }));
       const faces = script(k);
       if (faces.length === targets.length && faces.every((f, i) => f === targets[i])) {
         return boot({ ...over, seed });
       }
-    } catch {
-      // 该种子下脚本中断，换下一粒
+    } catch (e) {
+      swallowKernelRejection(e);
+      continue; // 该种子下脚本被业务规则拒绝，换下一粒
     }
   }
   throw new Error(`找不到骰面流为 [${targets.join(",")}] 的种子（1..4999）`);
 }
+
+/** 会造成位移的事件卡 id 清单（数据深扫派生，见 data/events.ts DISPLACING_EVENT_IDS——搜种子排除域用） */
+export const DRAW_MOVE_IDS: readonly string[] = DISPLACING_EVENT_IDS;
 
 /** 步进走完当前 walk（按时钟一格一格推，返回全部事实） */
 export function walkOut(k: GameKernel, now: number, extraTicks = 0): Fact[] {
@@ -167,7 +184,8 @@ export const tryGiveItem = (k: GameKernel, pid: number, cardId: string, now: num
   try {
     k.apply({ type: "dev.giveItem", pid, cardId }, now);
     return true;
-  } catch {
+  } catch (e) {
+    swallowKernelRejection(e);
     return false;
   }
 };

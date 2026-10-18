@@ -1,6 +1,6 @@
 /** 来路栈退格：沿原路退回、穿环岛不重弹选路条 */
 import { describe, expect, it } from "vitest";
-import { DRAW_MOVE_TITLES, boot, bootWithDie, cell, dieOf, me, seedForScriptNoDraws, walkOut } from "./helpers";
+import { DRAW_MOVE_IDS, boot, bootWithDie, cell, dieOf, me, seedForScriptNoDraws, walkOut } from "./helpers";
 import type { GameKernel } from "../src";
 
 /** 沿中横街西行 6 步（两次过环岛都选「← 中横街」直行），停在 (5,10)；
@@ -36,7 +36,7 @@ function runWest6Full(k: GameKernel): number[] {
 
 /** 先沿中横街西行 6 步的盘面（脚本按同种子重放；整流程零位移卡） */
 function setupWest6() {
-  const k = boot({ seed: seedForScriptNoDraws(runWest6Full, [6], DRAW_MOVE_TITLES) });
+  const k = boot({ seed: seedForScriptNoDraws(runWest6Full, [6], DRAW_MOVE_IDS) });
   runWest6(k);
   expect(me(k).pos).toBe(cell(5, 10)); // 6 步西侧标准位
   expect(me(k).trail.length).toBe(6);

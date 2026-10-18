@@ -13,6 +13,26 @@ Issues and specs for this repo live as GitHub issues. Use the `gh` CLI for all o
 
 Infer the repo from `git remote -v`; `gh` does this automatically when run inside a clone.
 
+## Closing an implemented ticket: the account comment
+
+Closing an implemented ticket = **one comment (the account) + close + frontier sweep** — all three, every time. The account comment records what the implementation settled; it is the reviewable trail. Structure:
+
+```markdown
+## 收账
+
+<一段：做了什么、怎么验收的（测试数/typecheck/冒烟路径）>
+
+## 实现期定案
+
+- **[需你表态]** <偏离票面/票面没写的决定，一句话+理由>（拿不准就标这条，别攒）
+- **[无需动作（默认追认）]** <纯执行口径，不反对即视为追认>
+```
+
+Rules:
+
+- Every decision made during implementation that the ticket text didn't pin down gets a line under 实现期定案, tagged either **需你表态** (deviates from the ticket, or genuinely needs the user's call) or **无需动作（默认追认）** (execution detail; silence = accepted). The user has twice asked "what am I supposed to do with these?" — the tags are the answer.
+- After closing, sweep the frontier (below) so newly unblocked dependents get `ready-for-agent`.
+
 ## Pull requests as a triage surface
 
 **PRs as a request surface: no.** _(Set to `yes` if this repo treats external PRs as feature requests; `/triage` reads this flag.)_

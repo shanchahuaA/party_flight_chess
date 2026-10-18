@@ -4,6 +4,7 @@
  * M2 时这批类型直接变成 WS 意图/事实协议（ADR 0001），形状不再变化。
  */
 import type { CellType, Eco, StreetKey } from "./board";
+import type { RngStates } from "./rng";
 import type { DiceMod, EffectPart } from "./data/events";
 import type { Axis, RoleId } from "./data/roles";
 
@@ -302,9 +303,9 @@ export interface GameState {
     /** 🐕 野狗花名册：活狗实时位置/血量/寿命（波次生成与狗笛生成共一条入册通道） */
     dogs: DogState[];
   };
-  /** 内部：战报 id 发号与 RNG 状态（随状态走，M2 快照恢复随机流） */
+  /** 内部：战报 id 发号与 RNG 各流状态（随状态走，M2 快照恢复随机流——五条命名流见 rng.ts） */
   seq: number;
-  rngState: number;
+  rngStates: RngStates;
 }
 
 // ---------- 意图（上行） ----------

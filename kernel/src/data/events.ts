@@ -417,6 +417,30 @@ export const EVENT_CARD_BY_ID = BY_ID;
 /** M1 牌池（表二 21 张全量：#26 T7 放行「黑市开张」window 卡——抽到即开警长查货窗） */
 export const M1_EVENT_POOL: readonly EventCard[] = EVENT_CARDS;
 
+// ---- 位移判定（T1..T8a2 回顾定案 C2）：搜种子排除域的单一真源，机械深扫派生、禁手抄卡名 ----
+
+/** 单原语是否位移（move 前进/back 退格/teleport 传送/swap 换位——四者都改落点） */
+const partDisplaces = (p: EffectPart): boolean => {
+  if (p.type === "move" || p.type === "back" || p.type === "teleport" || p.type === "swap") return true;
+  if (p.type === "check") {
+    const s = p.spec;
+    return (
+      [...(s.onPass ?? []), ...(s.onFail ?? []), ...(s.onCrit ?? []), ...(s.onCritFail ?? []), ...(s.bands?.flatMap((b) => b.parts) ?? [])].some(
+        partDisplaces,
+      )
+    );
+  }
+  return false;
+};
+
+const effectDisplaces = (fx?: CardEffect): boolean =>
+  !!fx && ((fx.self ?? []).some(partDisplaces) || (fx.others ?? []).some((t) => t.parts.some(partDisplaces)));
+
+/** 会造成任何位移的事件卡 id（含抉择分支/检定三态嵌套——过保守=搜种子排除域宁大勿小） */
+export const DISPLACING_EVENT_IDS: readonly string[] = M1_EVENT_POOL.filter(
+  (c) => (c.options ?? []).some((o) => effectDisplaces(o.effect)) || effectDisplaces(c.effect),
+).map((c) => c.id);
+
 // ---- 数据完整性校验（load 期执行，卡面坏账立刻炸） ----
 {
   if (BY_ID.size !== EVENT_CARDS.length) throw new Error("事件卡 id 重复");

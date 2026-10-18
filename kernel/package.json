@@ -5,7 +5,9 @@
   "scripts": {
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "probe": "vitest run test/probe.debug.test.ts",
+    "dump:board": "vitest run test/probe.debug.test.ts -t 棋盘全表"
   },
   "devDependencies": {
     "typescript": "~5.8.3",

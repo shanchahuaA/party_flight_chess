@@ -1,7 +1,7 @@
 /** 终点支路：入门（净步 ≥90 前向踩出生格）→ 尽头刚好踩进=通关席 / 超出反弹 */
 import { describe, expect, it } from "vitest";
 import { BRANCH_LEN, NET_GOAL } from "../src";
-import { bootWithDie, bootWithDies, bootWithDiesPure, cell, dieOf, DRAW_MOVE_TITLES, me, toNextWindow, walkOut } from "./helpers";
+import { bootWithDie, bootWithDies, bootWithDiesPure, cell, dieOf, DRAW_MOVE_IDS, me, toNextWindow, walkOut } from "./helpers";
 import type { GameKernel } from "../src";
 
 /** 支路门口：(7,0) from (8,0) net=NET_GOAL，掷 1 即前向踩上出生格 (6,0) */
@@ -71,7 +71,7 @@ describe("支路尽头与反弹", () => {
 
   it("超出反弹：门口掷 1 进支路，跨窗掷 9 → 撞旗折返，溢出步从家门口前向走出（(5,0)）", () => {
     // T3a 起落格即抽：搜种子时排除位移类事件卡（抽到安全卡默认位不动位置，不影响本断言）
-    const k = bootWithDiesPure(doorScript, [1, 9], {}, DRAW_MOVE_TITLES);
+    const k = bootWithDiesPure(doorScript, [1, 9], {}, DRAW_MOVE_IDS);
     const pre = doorPre();
     k.apply({ type: "dev.setPos", pid: 0, pos: pre.pos, from: pre.from, net: pre.net }, 0);
     k.apply({ type: "roll", pid: 0 }, 0);
