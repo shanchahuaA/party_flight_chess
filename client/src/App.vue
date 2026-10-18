@@ -1,5 +1,5 @@
 <script setup lang="ts">
-/** 单机壳（M1 T2）：未开局=大厅简版页（配置+角色明选）；开局=游戏页（满屏棋盘+战报让位带+抉择浮层） */
+/** 单机壳（M1 T2）：未开局=大厅简版页（配置+角色明选）；开局=游戏页（满屏棋盘+战报让位带+抉择浮层）；局终=结算页浮层（T8b2） */
 import { computed, onBeforeUnmount, onMounted } from "vue";
 import { maybeBootFastPath } from "./game/store";
 import Lobby from "./ui/Lobby.vue";
@@ -10,6 +10,7 @@ import WorldMessage from "./ui/WorldMessage.vue";
 import RouteBar from "./ui/RouteBar.vue";
 import SecretDraft from "./ui/SecretDraft.vue";
 import CardChoice from "./ui/CardChoice.vue";
+import Settlement from "./ui/Settlement.vue";
 import { gameStore } from "./game/store";
 
 const started = computed(() => !!gameStore.kernel.value);
@@ -36,6 +37,7 @@ const toast = computed(() => gameStore.toast.value);
     <Dock />
     <SecretDraft />
     <CardChoice />
+    <Settlement />
     <div v-if="toast" class="toast">{{ toast }}</div>
   </div>
 </template>

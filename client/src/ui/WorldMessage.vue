@@ -87,12 +87,71 @@ function toggleFlavor(m: MessageEntry): void {
 }
 
 const listEl = ref<HTMLElement | null>(null);
-watch(drawer, async (open) => {
-  if (!open) return;
-  limit.value = 50; // 每次开抽屉归位：从最近 50 条起步，上滑再放
-  await nextTick();
-  if (listEl.value) listEl.value.scrollTop = listEl.value.scrollHeight;
-});
+
+// ---------- 溯源跳转（T8b2）：结算页找战犯/回看战报——开抽屉定位到指定条目 ----------
+// pendingJump 三态：undefined=普通开启（滚到底）；null=跳转开启不定位（回看战报）；数字=定位到该条目。
+// 定位在 watch(drawer) 单点消费——与「开抽屉归位 limit=50」不同帧竞写 limit，无调度器顺序依赖。
+const raised = ref(false);
+const pendingJump = ref<number | null | undefined>(undefined);
+/** 跳转定位的条目正在闪光（2.5s 自灭） */
+const flashId = ref<number | null>(null);
+let flashTimer = 0;
+
+// 结算页的开启请求：同步落 pendingJump 再开抽屉（定位逻辑全在 watch(drawer) 里消费）
+watch(
+  () => gameStore.reportReq.value,
+  () => {
+    if (gameStore.reportReq.value === 0) return;
+    raised.value = true;
+    pendingJump.value = gameStore.reportJump.value;
+    drawer.value = true;
+  },
+);
+
+watch(
+  drawer,
+  async (open) => {
+    if (!open) return;
+    const jump = pendingJump.value;
+    if (jump === undefined) limit.value = 50; // 每次普通开抽屉归位：从最近 50 条起步，上滑再放
+    const all = msgs.value;
+    const target = typeof jump === "number" && all.some((m) => m.id === jump) ? jump : null;
+    if (target != null) {
+      const idx = all.findIndex((m) => m.id === target);
+      // 深处条目：把渲染窗拉到覆盖它（limit=最近 N 条——覆盖 index 需 N ≥ len−idx）
+      limit.value = Math.max(limit.value, all.length - idx);
+    }
+    await nextTick();
+    const el = target != null ? (listEl.value?.querySelector(`[data-mid="${target}"]`) as HTMLElement | null) : null;
+    if (el) {
+      el.scrollIntoView({ block: "center" });
+      flashId.value = target;
+      window.clearTimeout(flashTimer);
+      flashTimer = window.setTimeout(() => (flashId.value = null), 2500);
+    } else if (listEl.value) {
+      listEl.value.scrollTop = listEl.value.scrollHeight;
+    }
+    pendingJump.value = undefined; // 消费掉：下次普通开启不受污染
+  },
+);
+
+// 换局（boot/再来一局=内核换体）：抽屉收起、展开态与渲染窗归位——旧局的条目 id 会从 1 重排，不清理会跨局串味
+watch(
+  () => gameStore.kernel.value,
+  () => {
+    drawer.value = false;
+    raised.value = false;
+    pendingJump.value = undefined;
+    flavorOpen.value = new Set();
+    limit.value = 50;
+  },
+);
+
+function closeDrawer(): void {
+  drawer.value = false;
+  raised.value = false;
+  gameStore.reportJump.value = null;
+}
 </script>
 
 <template>
@@ -105,8 +164,8 @@ watch(drawer, async (open) => {
       </div>
     </TransitionGroup>
 
-    <!-- 全量战报抽屉（页内浮层，不路由切页） -->
-    <BaseSheet v-if="drawer" @close="drawer = false">
+    <!-- 全量战报抽屉（页内浮层，不路由切页）；raise=结算页溯源跳转时抬到结算页之上 -->
+    <BaseSheet v-if="drawer" :raise="raised" @close="closeDrawer">
       <div class="drawerBox">
         <h3>📜 战报 <small>{{ msgs.length }} 条 · 点条目看卡面文案</small></h3>
         <div ref="listEl" class="list" @scroll="loadEarlier">
@@ -114,7 +173,7 @@ watch(drawer, async (open) => {
             <div v-if="m.kind === 'summary'" class="turnLine">{{ body(m) }}</div>
             <template v-else>
               <div v-if="isTurnHead(m, i)" class="turnLine">📜 ── 回合 {{ m.turn }} ──</div>
-              <div class="drow" :class="`e-${m.emphasis}`" @click="toggleFlavor(m)">
+              <div class="drow" :class="[`e-${m.emphasis}`, { flash: m.id === flashId }]" :data-mid="m.id" @click="toggleFlavor(m)">
                 <div class="rowMain">
                   <span class="ic">{{ KIND_ICONS[m.kind] }}</span>
                   <span v-if="chip(m)" class="who">{{ chip(m) }}</span>
@@ -127,7 +186,7 @@ watch(drawer, async (open) => {
           <div v-if="msgs.length === 0" class="empty">这局还没有战报。</div>
           <div v-else-if="msgs.length > recent.length" class="moreHint">⬆ 上滑加载更早 {{ msgs.length - recent.length }} 条</div>
         </div>
-        <button class="close" type="button" @click="drawer = false">收 起</button>
+        <button class="close" type="button" @click="closeDrawer">收 起</button>
       </div>
     </BaseSheet>
   </section>
@@ -256,6 +315,20 @@ watch(drawer, async (open) => {
 .drow.e-big {
   background: rgba(255, 183, 77, 0.14);
   border-radius: 6px;
+}
+/* 溯源跳转定位闪光（T8b2）：落点条目闪两下收目光 */
+.drow.flash {
+  animation: jumpFlash 0.6s ease-in-out 2;
+  border-radius: 6px;
+}
+@keyframes jumpFlash {
+  0%,
+  100% {
+    background: transparent;
+  }
+  50% {
+    background: rgba(255, 213, 79, 0.45);
+  }
 }
 .drow .flavor {
   margin: 2px 0 3px 21px;

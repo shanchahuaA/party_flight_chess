@@ -8,6 +8,11 @@ import { reactive, ref, shallowRef } from "vue";
 import { BOARD, GameKernel } from "../../../kernel/src";
 import type { Fact, GameConfig, GameState, Intent, PlayerDef } from "../../../kernel/src";
 
+/** 新随机种子（单机局默认换新种子——内核默认种子留给测试）：三处同形表达式的单一来源 */
+export function newSeed(): number {
+  return (Math.random() * 2 ** 31) | 0;
+}
+
 export interface PulseLit {
   level: "normal" | "target" | "big";
   until: number;
@@ -28,6 +33,12 @@ class GameStore {
   toast = ref<string | null>(null);
   /** 道具卡目标选择中（T4a2）：chooseOther 打出即进入，棋盘点头像收口；null=未在选 */
   targeting = ref<string | null>(null);
+  /** 战报抽屉开启请求（T8b2）： Settlement 页跳转/回看用——计数器，WorldMessage watch 它开抽屉 */
+  reportReq = ref(0);
+  /** 跳转定位的目标条目 id（null=只开抽屉不定位）；抽屉关闭时清回 null */
+  reportJump = ref<number | null>(null);
+  /** 上一次开局的配置与名册快照（T8b2 再来一局：全套配置保留、只换种子） */
+  private lastBoot: { config: Partial<GameConfig>; defs: PlayerDef[] } | null = null;
   private toastSeq = 0;
 
   private perfBase = 0;
@@ -43,10 +54,41 @@ class GameStore {
     kernel.attachStateProxy((s) => reactive(s) as GameState);
     this.kernel.value = kernel;
     this.state.value = reactive(kernel.state) as GameState;
+    this.lastBoot = { config: { ...config }, defs: defs.map((d) => ({ ...d })) };
+    this.resetShellState();
     this.started = true;
     this.perfBase = performance.now();
     this.handle(facts);
     this.loop();
+  }
+
+  /** 再来一局（T8b2）：上一次的全套配置与名册原样重开，只换新随机种子——新内核即无状态残留。 */
+  restart(): void {
+    const last = this.lastBoot;
+    if (!last) return;
+    this.dispose();
+    this.boot({ ...last.config, seed: newSeed() }, last.defs);
+  }
+
+  /** 回大厅（T8b2）：弃局收摊，配置在大厅重调。 */
+  toLobby(): void {
+    this.dispose();
+  }
+
+  /** 壳层瞬时演出清零（开新局即清——上一局的掷面/选择态/脉冲不许带进新局） */
+  private resetShellState(): void {
+    for (const k of Object.keys(this.pulses)) delete this.pulses[Number(k)];
+    this.lastFace.value = null;
+    this.targeting.value = null;
+    this.toast.value = null;
+    this.reportReq.value = 0;
+    this.reportJump.value = null;
+  }
+
+  /** 战报抽屉开启请求（T8b2）：at=定位到指定条目（找战犯溯源），缺省只开抽屉滚到最新 */
+  openReport(at?: number): void {
+    this.reportJump.value = at ?? null;
+    this.reportReq.value++;
   }
 
   /** 单机本地钟：内核时间轴（ms，0 起单调） */
@@ -185,7 +227,7 @@ export function maybeBootFastPath(): void {
   const turnParam = Number(params.get("turn"));
   const turnCap = Number.isInteger(turnParam) && turnParam >= 5 ? turnParam : undefined;
   gameStore.boot(
-    { allowDev: dev, windowMs, restMs: 0, stepMs: 90, seed: (Math.random() * 2 ** 31) | 0, ...(turnCap ? { turnCap } : {}) },
+    { allowDev: dev, windowMs, restMs: 0, stepMs: 90, seed: newSeed(), ...(turnCap ? { turnCap } : {}) },
     [
       { name: "你", isBot: false, roleId: "light" },
       { name: "小黄", isBot: true },

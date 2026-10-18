@@ -23,6 +23,8 @@
 | 游戏推进「慢动作」 | 页签转后台后 `setInterval` 被节流 | 抓时机截图要算节流余量；能用 `__pz()` 就别抓帧 |
 | rAF 一个都不来 / setTimeout 被钳 ~1s | IAB 已知钳制（hasFocus=false） | 壳层已用 setTimeout 链驱动，别改依赖 rAF |
 | 长等待报超时 | 单次 js 调用 120s 硬顶 | 长跑计时拆多 cell，单 cell 等待 ≤10s |
+| 重开一局后卡在 drafting | `?fast` 的暗牌自动代选只在首局 `maybeBootFastPath` 注入，再来一局要手点 SecretDraft | 冒烟脚本重开后记得点 `.goal` → `.ok` |
+| 点 `.ok` 等按钮没生效 | Vue 重渲吞掉 evaluate 里的 click（点击后按钮被换掉） | 读回 `disabled`/浮层是否仍在，没生效就补点一次 |
 
 ## 冒烟后必做
 

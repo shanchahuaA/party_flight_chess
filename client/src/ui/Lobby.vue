@@ -10,7 +10,7 @@
  */
 import { computed, reactive, ref } from "vue";
 import { CONFIG_LIMITS, ROCK_LEN, ROLES, SINK_CELLS, TIMBER_CELLS, type GameConfig, type PlayerDef, type RoleId } from "../../../kernel/src";
-import { gameStore } from "../game/store";
+import { gameStore, newSeed } from "../game/store";
 import BaseSheet from "./BaseSheet.vue";
 
 const BOT_NAMES = ["小黄", "小绿", "小蓝", "小紫", "小橙", "小粉", "小青"];
@@ -42,7 +42,7 @@ function pickRole(id: RoleId): void {
 
 function start(): void {
   const config: Partial<GameConfig> = {
-    seed: (Math.random() * 2 ** 31) | 0, // 单机局默认换新种子（内核默认种子留给测试）
+    seed: newSeed(), // 单机局默认换新种子（内核默认种子留给测试）
     turnCap: cfg.turnCap,
     maxHp: cfg.maxHp,
     windowMs: cfg.windowSeconds * 1000,
