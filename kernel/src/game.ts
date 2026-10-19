@@ -176,6 +176,7 @@ export class GameKernel {
       // 开局暗牌抽 2 选 1 挂起（drafting）：真人选定后 openWindow 开第一窗
       phase: "drafting",
       windowDeadline: 0,
+      turnActor: null,
       restUntil: 0,
       players: defs.map((d, i) => {
         const rd = roleDef(d.roleId ?? (d.isBot ? ROLES[this.rngs.setup.int(ROLES.length)]!.id : "light"));
@@ -529,11 +530,13 @@ export class GameKernel {
       this.fireBots(now);
       this.tickCustoms(now); // 海关风云（#26 T7）：假人报备排程/罚没代选/超时退化
       this.advanceWalks(now);
+      // 轮班·限时（T9）：行动者不在对局（淘汰/入席）立刻让位；到点替掷+替确认再让位——都在收口前结算
+      if (!this.fighting() && this.config.timerMode === "turn") this.tickTurnMode(now);
       this.maybeCloseWindow(now);
       // 全员确认已被 maybeCloseWindow 收走的窗不再二次收口（一 tick 双吞世界回合——T8a1 收局边界实测踩中）
       if (this.state.phase === "acting" && now >= this.state.windowDeadline) {
         if (this.fighting()) this.autoStrikeAndClose(now); // 年兽战波窗：超时替砍（T8a2）
-        else this.autoFillAndClose(now);
+        else if (this.config.timerMode === "world") this.autoFillAndClose(now); // 轮班替掷走 tickTurnMode，不双发
       }
     } else {
       this.resolveAsks(now);
@@ -556,6 +559,10 @@ export class GameKernel {
   private checkWindowAction(p: PlayerState): void {
     if (this.state.phase !== "acting") throw new KernelError("窗已收口，需等下一窗");
     if (p.dead || p.zone === "done") throw new KernelError("通关席/出局者不再行动");
+    // 轮班·限时（T9）：没轮到你=不能掷不能确认（打卡闸在 itemPlayGate 同步收）
+    if (this.state.turnActor != null && this.state.turnActor !== p.id) {
+      throw new KernelError("轮班·限时——还没轮到你");
+    }
   }
 
   /** 机器人日程：开局错峰掷骰 + 走完一小拍后自动确认（#12/#26：不拖戏也不抢跑） */
@@ -624,13 +631,66 @@ export class GameKernel {
     // 海关风云（#26 T7）：休息期抽到的（走路跨窗尾）在本窗正式摆摊——计时/假人排程从此起算
     if (this.state.customs && !this.state.customs.armed) this.armCustoms(now);
     this.emit({ type: "windowStart", turn: this.state.turn, deadline: this.state.windowDeadline });
-    this.reserveBots(now);
+    if (this.config.timerMode === "turn") this.handTurnToNext(now); // 轮班：第一棒开表（world=全员同窗错峰日程）
+    else this.reserveBots(now);
+  }
+
+  /** 轮班·限时（#29 T9，一页纸「计时模式」）：按座次轮流行动 ---------- */
+
+  /** 让位：座次（pid 序）找下一位未行动的在场者——淘汰者/通关席/已确认（含罚停轮空）跳过；
+   *  轮到谁，谁的倒计时才开始走（windowDeadline 换成他自己的表）；无人可动=turnActor 清 null
+   *  （maybeCloseWindow 收轮）。假人 actor 排「思考一拍」的掷骰日程（confirmAt=∞，走完由 endWalk 排）。 */
+  private handTurnToNext(now: number): void {
+    const next = this.activePlayers().find((p) => !p.confirmed) ?? null;
+    this.state.turnActor = next?.id ?? null;
+    if (!next) return;
+    this.state.windowDeadline = now + this.config.windowMs;
+    if (next.isBot) {
+      next.botSchedule = { rollAt: now + 400 + Math.floor(this.draw("world") * 700), confirmAt: Number.POSITIVE_INFINITY };
+    }
+  }
+
+  /** 超时替掷的可替判据（替掷顺延的唯一口径）：没掷且走格没占用——walk 占用者本窗顺延，绝不替掷抛错。
+   *  轮班 tickTurnMode 与超窗 autoFillAndClose 共用，两处口径永不漂移。 */
+  private rollReplacable(p: PlayerState): boolean {
+    return !p.rolled && !p.walk && p.walkQueue.length === 0;
+  }
+
+  /** 名下挂起抉择按默认项代选（轮班到点与超窗收口共用的兜底步——抉择截止晚于窗截止时兜住） */
+  private resolveDefaultIfPending(p: PlayerState, now: number): void {
+    if (p.cardPending) {
+      const pend = p.cardPending;
+      this.resolveChoice(p, pend.cardId, this.eventCard(pend.cardId).defaultOption ?? 0, now, true);
+    }
+  }
+
+  /** 一个人的超时替掷收棒（代选→替掷→替确认）：轮班的「一棒」版；超窗 autoFillAndClose 的
+   *  三段式（先全桌代选再全桌替掷——指认走要让替掷顺延）语义不同，不走这里。 */
+  private replacementSteps(p: PlayerState, now: number): void {
+    this.resolveDefaultIfPending(p, now);
+    if (this.rollReplacable(p)) this.doRoll(p.id, now, "replacement");
+    if (!p.confirmed) this.doConfirm(p, now, "replacement");
+  }
+
+  /** 轮班的时钟账（tick 行动拍）：行动者已不在对局（淘汰/入席）=立刻让位（不耗完他的表）；
+   *  他的表到点=替掷三步再让位。绝不让任何一个人的表阻塞整局。 */
+  private tickTurnMode(now: number): void {
+    const a = this.state.turnActor != null ? this.player(this.state.turnActor) : null;
+    if (!a || a.dead || a.zone === "done") {
+      if (this.state.turnActor != null) this.handTurnToNext(now);
+      return;
+    }
+    if (now < this.state.windowDeadline) return;
+    this.replacementSteps(a, now); // 轮班：替确认即让位（doConfirm 分流 handTurnToNext）
   }
 
   private fireBots(now: number): void {
     const fight = this.fighting(); // 年兽战（T8a2）：假人日程=到点砍击（无走格无确认——砍了就算完）；通关席假人也必参战
+    // 轮班·限时（T9）：常规窗只喂当前行动者的假人（轮到谁谁走日程）；年兽战全员合砍照旧
+    const onlyActor = !fight && this.config.timerMode === "turn";
     for (const p of this.state.players) {
       if (!p.isBot || p.dead || (!fight && p.zone === "done")) continue;
+      if (onlyActor && p.id !== this.state.turnActor) continue;
       if (!p.rolled && now >= p.botSchedule.rollAt) {
         if (fight) {
           this.doStrike(p.id, "bot");
@@ -1354,19 +1414,12 @@ export class GameKernel {
     }
   }
 
-  /** 超窗收口：先按默认项代选仍挂起的抉择（代选），再替未掷者掷骰（walk 占用者顺延，绝不让替掷抛错）、替未确认者确认（不替打卡）；然后开下一窗 */
+  /** 超窗收口：先按默认项代选仍挂起的抉择（代选），再替未掷者掷骰（walk 占用者本窗顺延，绝不让替掷抛错）、替未确认者确认（不替打卡）；然后开下一窗 */
   private autoFillAndClose(now: number): void {
-    // 名下仍有挂起者按默认项代选（抉择截止晚于窗截止的兜底）
+    // 三段式有负载语义：先全桌代选（指认走先落账），再全桌替掷（被指认走让替掷顺延）——顺序不可并成逐人串行
+    for (const p of this.activePlayers()) this.resolveDefaultIfPending(p, now);
     for (const p of this.activePlayers()) {
-      if (p.cardPending) {
-        const pend = p.cardPending;
-        this.resolveChoice(p, pend.cardId, this.eventCard(pend.cardId).defaultOption ?? 0, now, true);
-      }
-    }
-    for (const p of this.activePlayers()) {
-      if (!p.rolled && !p.walk && p.walkQueue.length === 0) {
-        this.doRoll(p.id, now, "replacement"); // 替掷（walk 仍占用者本窗顺延，下一窗自然补掷）
-      }
+      if (this.rollReplacable(p)) this.doRoll(p.id, now, "replacement");
     }
     for (const p of this.activePlayers()) {
       if (!p.confirmed) {
@@ -1385,6 +1438,11 @@ export class GameKernel {
       return;
     }
     const act = this.activePlayers();
+    // 轮班·限时（T9）：轮内推进由 handTurnToNext 驱动，不看「全员确认」——turnActor=null（无人可动）才收轮
+    if (this.config.timerMode === "turn") {
+      if (this.state.turnActor == null) this.closeWindow(now, false);
+      return;
+    }
     // act 空（全员淘汰/全入席）时 every 本真=照常收窗——血尽横扫后回合钟不卡死（T5c）
     if (act.every((p) => p.confirmed)) {
       this.closeWindow(now, false);
@@ -1467,6 +1525,7 @@ export class GameKernel {
    *  半路的那步不再落格结算——走到一半=停住，末窗的落格收益让位给年兽战）。全员已出局=没开打就输了
    *  （群体失败直通，无死结）。 */
   private startLastWave(now: number): void {
+    this.state.turnActor = null; // 轮班的棒收掉：年兽战=全员同波合砍（两种计时模式同规则，不轮班）
     // 行走定格：清走格与续走队列（含未决选路条——walk 置 null 即散），落格结算不触发
     for (const p of this.state.players) {
       p.walk = null;
@@ -1741,6 +1800,10 @@ export class GameKernel {
     this.emit({ type: "confirm", pid: p.id, auto: mode !== "human" });
     if (mode === "replacement") {
       this.msg("system", `系统替 ${p.name} 自动确认`, p.id);
+    }
+    // 轮班·限时（T9）：他确认=他的棒结束——立刻让下一位开表（早确认=省自己的表，不占别人的）
+    if (this.config.timerMode === "turn" && !this.fighting() && this.state.turnActor === p.id) {
+      this.handTurnToNext(now);
     }
   }
 
@@ -2155,7 +2218,8 @@ export class GameKernel {
     if (opt.effect) this.applyCardEffect(p, opt.effect, now, card.title);
   }
 
-  /** 指认/指向他人的卡面效果统一按计时模式出发（#22 T4b1 收口）：轮班·限时=立刻生效（无同时行动，无竞态；M1 未接线 T9，口径先立）；world·即时=挂账下一窗开窗结算（被整蛊者有预判窗口）。
+  /** 指认/指向他人的卡面效果统一按计时模式出发（#22 T4b1 收口；T9 轮班完整接线）：轮班·限时=立刻生效
+   *  （无同时行动，无竞态）；world·即时=挂账下一窗开窗结算（被整蛊者有预判窗口）。
    *  grudgeLabel=整蛊手段的卡名（T8b1 计数通道：event 卡必指认、道具卡仅违禁品——落账当拍出「整蛊得手」条目）。 */
   private dispatchToOthers(targets: PlayerState[], parts: EffectPart[], now: number, ctx: GuardCtx, grudgeLabel?: string): void {
     if (this.config.timerMode === "turn") {
@@ -2760,6 +2824,10 @@ export function itemPlayGate(state: GameState, pid: number, cardId: string): Pla
     return { ok: false, reason: "最后一波——道具卡递给队友或直砸年兽，不按常规打法" };
   }
   if (p.dead) return { ok: false, reason: "已淘汰观战，不能再出手" };
+  // 轮班·限时（T9）：轮到才能出手；唯一豁免=通关席的整蛊口子（「仍可打卡整蛊」不分计时模式）
+  if (state.turnActor != null && state.turnActor !== pid && p.zone !== "done") {
+    return { ok: false, reason: "轮班·限时——还没轮到你出手" };
+  }
   const card = ITEM_CARD_BY_ID.get(cardId);
   if (!card) return { ok: false, reason: `道具卡 ${cardId} 不在表一` };
   if (!p.hand.includes(cardId)) return { ok: false, reason: "这张卡不在你的手牌里" };

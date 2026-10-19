@@ -82,3 +82,64 @@ describe("无死锁不变量（seed 扫描）", () => {
     void GameKernel;
   });
 });
+
+describe("无死锁不变量·轮班·限时（#29 T9）", () => {
+  // 座次纪律不变量：任何时刻「已掷未确认」的在局者只能是当前行动者（轮班=一棒一人在局上）。
+  // 年兽战波窗不适用——合砍不轮班（strike=rolled 未 confirmed 是战斗常态）。
+  function assertSeatDiscipline(k: ReturnType<typeof boot>): void {
+    if (k.state.endgame?.beast != null) return;
+    for (const p of k.state.players) {
+      if (p.rolled && !p.confirmed && !p.dead && p.zone !== "done") {
+        expect(k.state.turnActor).toBe(p.id);
+      }
+    }
+    if (k.state.turnActor != null) {
+      const a = k.state.players[k.state.turnActor]!;
+      expect(a.dead).toBe(false);
+      expect(a.zone).not.toBe("done");
+    }
+  }
+
+  for (const seed of [1, 7, 42]) {
+    it(`seed ${seed}: 轮班 15 轮全自动推进到 gameEnd（棒棒超时替掷也不卡）`, () => {
+      const k = boot({ seed, timerMode: "turn", windowMs: 3_000, restMs: 500 });
+      let t = 0;
+      while (k.state.phase !== "over" && t <= 900_000) {
+        t += 500;
+        k.tick(t);
+        if (k.state.phase === "acting") assertSeatDiscipline(k);
+      }
+      expect(k.state.phase).toBe("over");
+      expect(k.state.endgame?.settlement).toBeDefined();
+    });
+  }
+
+  it("轮班混合流：真人只在自己棒上出手（早确认让位），也不死锁", () => {
+    const k = boot({ seed: 555, timerMode: "turn", windowMs: 3_000, restMs: 500 });
+    let t = 0;
+    let rolls = 0;
+    while (k.state.phase !== "over" && t <= 900_000) {
+      t += 500;
+      k.tick(t);
+      const s = k.state;
+      if (s.phase === "acting" && s.turnActor === 0 && !s.players[0]!.rolled && t % 2_000 === 0 && Math.random() < 0.5) {
+        try {
+          k.apply({ type: "roll", pid: 0 }, t);
+          rolls++;
+        } catch {
+          // 走格占用等业务拒绝——替掷兜住
+        }
+      }
+      if (s.phase === "acting" && s.turnActor === 0 && s.players[0]!.rolled && !s.players[0]!.walk && t % 3_000 === 0) {
+        try {
+          k.apply({ type: "confirm", pid: 0 }, t);
+        } catch {
+          // 抉择挂起时拒——代选兜住
+        }
+      }
+      if (s.phase === "acting") assertSeatDiscipline(k);
+    }
+    expect(k.state.phase).toBe("over");
+    void rolls;
+  });
+});

@@ -19,9 +19,15 @@ const me = computed<PlayerState | null>(() => state.value?.players[0] ?? null);
 const acting = computed(() => state.value?.phase === "acting");
 const fight = computed(() => !!state.value?.endgame?.beast && acting.value); // 年兽战波窗（T8a2）
 const dead = computed(() => !!me.value?.dead);
+// 轮班·限时（T9）：turnActor=null（world 模式/波窗合砍）=不限棒；轮班时没轮到=掷骰确认都锁
+const myTurn = computed(() => {
+  const s = state.value;
+  return s?.turnActor == null || s.turnActor === 0;
+});
+const actorName = computed(() => gameStore.turnActorName);
 const canRoll = computed(() => {
   const p = me.value;
-  return acting.value && !!p && p.zone !== "done" && !p.dead && !p.rolled && !p.confirmed && !p.walk;
+  return acting.value && myTurn.value && !!p && p.zone !== "done" && !p.dead && !p.rolled && !p.confirmed && !p.walk;
 });
 const canStrike = computed(() => fight.value && !!me.value && strikeGate(state.value!, 0).ok);
 const rolled = computed(() => !!me.value?.rolled);
@@ -69,13 +75,14 @@ function confirm(): void {
       <button
         v-else
         id="confirmBtn"
-        :class="{ armed: (!!rolled || done) && !confirmed && !dead, waited: confirmed, spectating: dead }"
-        :disabled="!acting || confirmed || dead || (!rolled && !done)"
+        :class="{ armed: (!!rolled || done) && !confirmed && !dead && myTurn, waited: confirmed, spectating: dead }"
+        :disabled="!acting || confirmed || dead || (!rolled && !done) || !myTurn"
         @click="confirm"
       >
         <template v-if="dead">☠ 已出局 · 观战中</template>
         <template v-else-if="confirmed">⏳ 已确认 · 等待区</template>
         <template v-else-if="done">🏁 通关席 · 观局</template>
+        <template v-else-if="!myTurn">☕ 轮到 {{ actorName }} · 稍候</template>
         <template v-else>✔ 确认结束</template>
       </button>
     </div>

@@ -1,10 +1,12 @@
 /**
  * 单机壳 ↔ 内核接线（M1）：
- * - 内核为权威，全部推进走 GameKernel.tick / apply；rAF 心跳喂时。
+ * - 内核为权威，全部推进走 GameKernel.tick / apply；setTimeout 链喂时。
  * - 本地计时：单机本地钟（performance 基线）。M2 时换 WS 事实流；本文件是两种模式的换接点。
+ * - 单机计时域（T9）：页面切后台/隐藏=本地时钟冻结（不补算后台时段——对 ADR 0001 的
+ *   单机期有意偏离，M2 归位为服务端权威钟），回前台从冻结值继续。
  * - 演出：逐格动画靠 .tkMain 的 CSS transform 过渡（内核 140ms 节拍的事实驱动）。
  */
-import { reactive, ref, shallowRef } from "vue";
+import { reactive, ref, shallowRef, watch } from "vue";
 import { BOARD, GameKernel } from "../../../kernel/src";
 import type { Fact, GameConfig, GameState, Intent, PlayerDef } from "../../../kernel/src";
 
@@ -43,6 +45,10 @@ class GameStore {
 
   private perfBase = 0;
   private started = false;
+  /** 单机计时域（T9）：页面隐藏的起始时刻（performance 轴）；null=未隐藏 */
+  private hiddenAt: number | null = null;
+  /** 「轮到你了」提示的响应式解绑把手（换局/收摊要摘） */
+  private stopTurnWatch: (() => void) | null = null;
 
   /**
    * 开局（T2 起由大厅页调用）：配置+ defs（真人在内）定谳 → 一次创建即 drafting：
@@ -58,6 +64,11 @@ class GameStore {
     this.resetShellState();
     this.started = true;
     this.perfBase = performance.now();
+    // 单机计时域：只认 hidden 的**切换沿**（boot 时不看 document.hidden——部分内嵌 webview/IAB
+    // 常驻报 hidden 且永不来 visible，误信它=时钟永久冻结；用户刚点开局，页面事实上可见）
+    this.hiddenAt = null;
+    document.addEventListener("visibilitychange", this.onVisibility);
+    this.bindTurnWatch();
     this.handle(facts);
     this.loop();
   }
@@ -83,6 +94,7 @@ class GameStore {
     this.toast.value = null;
     this.reportReq.value = 0;
     this.reportJump.value = null;
+    this.hiddenOverride = null; // 计时域冒烟钩子不跨局（上一局伪造的 hidden 不许冻住新局）
   }
 
   /** 战报抽屉开启请求（T8b2）：at=定位到指定条目（找战犯溯源），缺省只开抽屉滚到最新 */
@@ -91,9 +103,44 @@ class GameStore {
     this.reportReq.value++;
   }
 
-  /** 单机本地钟：内核时间轴（ms，0 起单调） */
+  /**
+   * 单机本地钟：内核时间轴（ms，0 起单调）。
+   * 隐藏期间读数冻结（扣掉隐藏时长）——后台时段不从时钟轴上走，deadline 全体顺延=不补算。
+   */
   now(): number {
-    return this.started ? Math.round(performance.now() - this.perfBase) : 0;
+    if (!this.started) return 0;
+    const paused = this.hiddenAt != null ? performance.now() - this.hiddenAt : 0;
+    return Math.round(performance.now() - this.perfBase - paused);
+  }
+
+  /**
+   * 单机计时域（T9）：切后台/隐藏=本地计时暂停，回前台恢复继续（不补算后台时段——
+   * 对 ADR 0001 的单机期有意偏离，M2 归位服务端权威钟）。只认 hidden 切换沿（boot 时常驻
+   * hidden 的内嵌环境不算——见 boot 注记）。驱动链不摘（后台被节流也无妨，冻结的 now()
+   * 让 tick 全是空拍），只记账。
+   */
+  private onVisibility = (): void => {
+    if (!this.started) return;
+    const hidden = this.hiddenOverride ?? document.hidden;
+    if (hidden) {
+      if (this.hiddenAt == null) this.hiddenAt = performance.now();
+    } else if (this.hiddenAt != null) {
+      this.perfBase += performance.now() - this.hiddenAt; // 隐藏时长整段剜掉
+      this.hiddenAt = null;
+    }
+  };
+
+  /** 冒烟钩子（?dev=1 的 __pzvis）：伪造 hidden 读数——IAB 常驻 hidden 且切换沿出不来 */
+  hiddenOverride: boolean | null = null;
+
+  /** 轮班·限时（T9）：轮到真人=提示一声（他的表刚开始走；换人即触发，含下一轮回到自己） */
+  private bindTurnWatch(): void {
+    this.stopTurnWatch = watch(
+      () => this.state.value?.turnActor ?? null,
+      (to) => {
+        if (to === 0) this.showToast("轮到你了——倒计时开始！");
+      },
+    );
   }
 
   /** 心跳：纯时间读数（倒计时）用它声明依赖，每驱动拍+1 */
@@ -102,6 +149,13 @@ class GameStore {
   /** 真人（pid 0，M1 单机壳约定）；响应式（state 代理） */
   get human() {
     return this.state.value?.players[0] ?? null;
+  }
+
+  /** 轮班·限时（T9）：当前行动者的名字——HUD「轮到 X」徽标与「轮到你了」提示共用一份读数（world 模式/波窗合砍=null） */
+  get turnActorName(): string | null {
+    const s = this.state.value;
+    if (!s || s.turnActor == null || s.phase !== "acting") return null;
+    return s.players[s.turnActor]?.name ?? null;
   }
 
   apply(intent: Intent): void {
@@ -206,6 +260,10 @@ class GameStore {
     this.started = false;
     this.kernel.value = null;
     this.state.value = null;
+    document.removeEventListener("visibilitychange", this.onVisibility);
+    this.hiddenAt = null;
+    this.stopTurnWatch?.();
+    this.stopTurnWatch = null;
     window.clearTimeout(GameStore.timer);
   }
 }
@@ -215,7 +273,8 @@ export const gameStore = new GameStore();
 /** 调试冒烟通道（?fast=）：免大厅直达一局短窗局（10s 窗/无休息），暗牌自动代选；
  *  追加 ?dev=1 时开局 allowDev 局并挂 window.__pzcard（强抽指定事件卡，浮层冒烟用）；
  *  ?win=秒 自定义窗长（冒烟多步交互防收窗——T7 海关窗任务条组冒烟用）；
- *  ?turn=N 自定义局长（≥5，T8a2 年兽战冒烟用——短局快进到最后一波） */
+ *  ?turn=N 自定义局长（≥5，T8a2 年兽战冒烟用——短局快进到最后一波）；
+ *  ?mode=turn 轮班·限时（T9 冒烟——按座次轮流行动）。 */
 export function maybeBootFastPath(): void {
   if (gameStore.kernel.value) return;
   const params = new URLSearchParams(location.search);
@@ -227,7 +286,15 @@ export function maybeBootFastPath(): void {
   const turnParam = Number(params.get("turn"));
   const turnCap = Number.isInteger(turnParam) && turnParam >= 5 ? turnParam : undefined;
   gameStore.boot(
-    { allowDev: dev, windowMs, restMs: 0, stepMs: 90, seed: newSeed(), ...(turnCap ? { turnCap } : {}) },
+    {
+      allowDev: dev,
+      windowMs,
+      restMs: 0,
+      stepMs: 90,
+      seed: newSeed(),
+      ...(turnCap ? { turnCap } : {}),
+      ...(params.get("mode") === "turn" ? { timerMode: "turn" as const } : {}),
+    },
     [
       { name: "你", isBot: false, roleId: "light" },
       { name: "小黄", isBot: true },
@@ -253,6 +320,11 @@ function bindDevChannels(): void {
   w.__pzdead = (pid = 0) => gameStore.apply({ type: "dev.setDead", pid });
   w.__pzcustoms = (sheriff?: number) => gameStore.apply(sheriff == null ? { type: "dev.customs" } : { type: "dev.customs", sheriff });
   w.__pzbeast = (hp: number) => gameStore.apply({ type: "dev.setBeast", hp });
+  // 单机计时域冒烟（T9）：伪造 hidden 切换沿——__pzvis(true)=切后台时钟冻结 / __pzvis(false)=回前台恢复
+  w.__pzvis = (hidden: boolean) => {
+    gameStore.hiddenOverride = hidden;
+    document.dispatchEvent(new Event("visibilitychange"));
+  };
   w.__pzdog = (cell?: number) => {
     const k = gameStore.kernel.value;
     if (!k) return;

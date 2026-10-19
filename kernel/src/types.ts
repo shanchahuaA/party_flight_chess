@@ -323,8 +323,12 @@ export interface CustomsState {
 export interface GameState {
   turn: number;
   phase: GamePhase;
-  /** 本窗截止时间戳（仅 acting） */
+  /** 本窗截止时间戳（仅 acting）。world=全窗共用；turn=当前行动者自己的倒计时（轮到谁才开始走） */
   windowDeadline: number;
+  /** 轮班·限时当前行动者（#29 T9）：acting 时=轮到谁（pid）、他的倒计时=windowDeadline；
+   *  让位即换人（确认早让/超时替掷替确认后让/淘汰与入席立刻让），无人可动=null（=本轮收口）。
+   *  world·即时恒 null；年兽战波窗也 null（合砍=全员同波，不轮班）。 */
+  turnActor: number | null;
   /** 休息截止时间戳（仅 rest） */
   restUntil: number;
   players: PlayerState[];
@@ -389,7 +393,7 @@ export interface GameConfig {
   windowMs: number;
   /** 回合间休息毫秒（0..20000 可调，默认 10000，0=直接开下一窗） */
   restMs: number;
-  /** 计时模式：world=世界·即时（默认）；turn=轮班·限时（T9 完整接线，本票先收数据） */
+  /** 计时模式：world=世界·即时（默认）；turn=轮班·限时（T9 完整接线：按座次轮流行动、轮到谁谁的倒计时才开始走、淘汰者与通关席跳过轮次、超时替掷+替确认） */
   timerMode: "world" | "turn";
   /** 环岛选路等待毫秒（默认 10000，规格定死不可调） */
   routeAskMs: number;

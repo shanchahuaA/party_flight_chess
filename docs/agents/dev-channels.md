@@ -29,6 +29,7 @@
 | `__pzcustoms(sheriff?)` | dev.customs | 海关风云（传 0 钉人间当警长） |
 | `__pzbeast(hp)` | dev.setBeast | 年兽收束/团灭（钉 1=下一刀必杀） |
 | `__pzdog(cell?)` | dev.spawnDog | 遭遇战（缺省人间相邻格） |
+| `__pzvis(hidden)` | 伪造 hidden 切换沿 | 单机计时域（T9）：`true`=切后台时钟冻结／`false`=回前台恢复——IAB 常驻 `document.hidden=true` 出不了真实切换沿，冒烟全靠它 |
 | `__pz()` | 只读快照 | 内核态随手查：now/turn/phase/me/bots/finishers/hand/ground/dogs/customs/items/msgs |
 
 ## URL 冒烟参数（`maybeBootFastPath`，免大厅直达一局）
@@ -40,8 +41,9 @@
 | `?win=秒` | 自定义窗长（多步交互冒烟防收窗，如海关任务条） |
 | `?slow=1` | 60s 慢窗——**壳层冒烟默认用它**（10s 快窗与逐格走/替掷竞速，手速跟不上） |
 | `?turn=N` | 自定义局长 turnCap（快进最后一波用，≥5） |
+| `?mode=turn` | 轮班·限时（T9）：按座次轮流行动——配 `&turn=5&win=3` 可 90s 内打满一整局到结算页 |
 
-常用组合：`?fast&slow=1&dev=1`；终局冒烟再加 `&turn=5`。
+常用组合：`?fast&slow=1&dev=1`；终局冒烟再加 `&turn=5`；轮班冒烟 `?fast&dev=1&mode=turn&win=3&turn=5`。
 
 ## 测试侧确定性工具（`kernel/test/helpers.ts` + 探针）
 

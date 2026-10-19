@@ -25,6 +25,10 @@
 | 长等待报超时 | 单次 js 调用 120s 硬顶 | 长跑计时拆多 cell，单 cell 等待 ≤10s |
 | 重开一局后卡在 drafting | `?fast` 的暗牌自动代选只在首局 `maybeBootFastPath` 注入，再来一局要手点 SecretDraft | 冒烟脚本重开后记得点 `.goal` → `.ok` |
 | 点 `.ok` 等按钮没生效 | Vue 重渲吞掉 evaluate 里的 click（点击后按钮被换掉） | 读回 `disabled`/浮层是否仍在，没生效就补点一次 |
+| `querySelector(".ok")` 点了没反应 | 选择器命中了别的元素（如 `<i class="ok">` 图标排前面） | 用标签收窄：`querySelector("button.ok")`；点前读回 `tagName` |
+| evaluate 里 JS 串含中文/特殊符号报 `Invalid or unexpected token` | cell 传输编码不稳（Node 侧拼串时炸） | JS cell 里的字符串/键名保持 ASCII；中文断言放读取结果后 Node 侧比对 |
+| `Object.defineProperty(document, "hidden", …)` 报 `Cannot redefine property` | IAB 把 `hidden` 铺成 document 自身**不可配置**属性，盖不掉（连 `Document.prototype` 覆盖也读不到） | 别试伪造可见性——计时域冒烟走 `__pzvis()` 通道（见 dev-channels.md）；IAB 常驻 `hidden=true` 且 `visibilitychange` 永不触发 |
+| 时钟不走/全场「慢动作」定格（T9 计时域上线后） | 壳层只认 hidden **切换沿**暂停计时——若某环境常驻 hidden 会被误伤；boot 时已故意不读 hidden | 页内先查 `document.hidden`；IAB 冒烟确认 `__pz().now` 在走再继续 |
 
 ## 冒烟后必做
 

@@ -36,6 +36,9 @@ const countdown = computed(() => {
   return "";
 });
 
+// 轮班·限时（T9）：轮到谁=他的表在走（world·即时恒 null 不显示；读数共用 store getter）
+const actorName = computed(() => gameStore.turnActorName);
+
 const canSkip = computed(() => state.value?.phase === "rest");
 
 function skip(): void {
@@ -72,6 +75,11 @@ const hpToneCls = computed(() => hpTone(hpPct.value));
       <span v-if="state?.phase !== 'over'">{{ turnLabel }}</span>
       <span v-else class="over">🏁 局长打满</span>
       <span class="sep">·</span>
+      <!-- 轮班·限时（T9）：轮到谁的徽标（我的棒=金色点名） -->
+      <span v-if="actorName" class="actor" :class="{ mine: state?.turnActor === 0 }"
+        >轮到 {{ actorName }}</span
+      >
+      <span v-if="actorName" class="sep">·</span>
       <span>{{ countdown }}</span>
       <button v-if="canSkip" class="skip" @click="skip">跳过休息</button>
     </div>
@@ -122,6 +130,13 @@ const hpToneCls = computed(() => hpTone(hpPct.value));
 .pill .sep {
   color: #90a4ae;
   margin: 0 3px;
+}
+/* 轮班行动者徽标（T9）：我的棒金色点亮 */
+.pill .actor {
+  color: #00695c;
+}
+.pill .actor.mine {
+  color: #b71c1c;
 }
 .pill .over {
   color: #c62828;
