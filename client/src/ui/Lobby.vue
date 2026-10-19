@@ -201,6 +201,7 @@ function start(): void {
 
 <style scoped>
 .lobby {
+  /* min-height 而非 height：内容超出视口时整页长高、靠 body 滚动（style.css 放开） */
   min-height: 100%;
   display: flex;
   flex-direction: column;
@@ -208,7 +209,6 @@ function start(): void {
   padding: calc(12px + env(safe-area-inset-top)) 12px calc(14px + env(safe-area-inset-bottom));
   background: #17222c;
   color: #eceff1;
-  overflow-y: auto;
 }
 .head h1 {
   font-size: 20px;

@@ -7,7 +7,12 @@ html,
 body {
   margin: 0;
   height: 100%;
-  overflow: hidden;
+}
+html {
+  /* 只防横向；纵向交给默认文档级滚动——大厅长页在手机上被裁时能滚到开始键
+   * （T9 真机走查）。注意 overflow-y 不能写在这里或 body 上：html 设了非
+   * visible 的 overflow 会阻止溢出传播、把 body 变成滚动容器，window 滚不动。 */
+  overflow-x: hidden;
 }
 body {
   background: #17222c;

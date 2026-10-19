@@ -26,6 +26,9 @@ defineEmits<{ close: [] }>();
 }
 .sheet {
   width: 100%;
+  max-height: 85vh;
+  max-height: 85dvh;
+  overflow-y: auto;
   background: #22303c;
   color: #eceff1;
   border-radius: 16px 16px 0 0;
