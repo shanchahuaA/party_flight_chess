@@ -19,7 +19,7 @@ export function boot(over: Partial<GameConfig> = {}, now = 0): GameKernel {
  * 事实收集器：把 k 的 apply/tick 返回事实汇进一个数组（代理转发，脚本无感）。
  * 搜种子的约束一律读这里头的事实（cardDrawn 等），**禁止解析战报中文文案**——文案会改，事实是协议。
  */
-function factTee(k: GameKernel): { k: GameKernel; facts: Fact[] } {
+export function factTee(k: GameKernel): { k: GameKernel; facts: Fact[] } {
   const facts: Fact[] = [];
   const proxy = new Proxy(k, {
     get(target, prop) {

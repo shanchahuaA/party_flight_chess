@@ -14,7 +14,7 @@ import { AXIS_NAMES, ROLES, roleDef } from "./data/roles";
 import { SECRET_GOALS, secretGoal } from "./data/goals";
 import { computeSettlement, finishScore } from "./settle";
 import { CHECK_FACES, effectiveValue, netMods, resolveCheck, roleCheckMods, roleOneToCrit, rollD20, rollDice, type CheckGrade, type CheckMods, type CheckResolve } from "./check";
-import { rngStatesFrom, rngStream, RNG_STREAM_NAMES, type Rng, type RngStates, type RngStreamName, type RngState } from "./rng";
+import { rngStatesFrom, rngStream, rngStreamFrom, RNG_STREAM_NAMES, type Rng, type RngStates, type RngStreamName, type RngState } from "./rng";
 import type { BeastState, WalkState } from "./types";
 import {
   KernelError,
@@ -144,19 +144,52 @@ export class GameKernel {
     this.state = swap(this.state);
   }
 
+  /**
+   * 序列化缝·导出（Spec #37 实现决策 6＝M2 唯一内核改动）：导出可 JSON 化的完整态快照——
+   * 纯数据（无函数/类实例/循环引用/非有限数）、JSON 往返无损，含 RNG 五流状态与内部发号（seq/dogSeq/customsSeq）。
+   * DO 每次落账后把它写进内置 SQLite（Hibernation 恢复）；M2 联机下发快照时按座位裁剪（RNG 流/内部段绝不下发）。
+   */
+  save(): GameState {
+    this.syncRng(); // 防御性回账：把五流现值收进 state（各消费点本就逐拍同步，此处兜直连路径的任何缺口）
+    return JSON.parse(JSON.stringify(this.state)) as GameState;
+  }
+
+  /**
+   * 序列化缝·复局：从存档原样续局——RNG 五流按存档状态续走、内部发号续号，apply/tick 语义与直跑无差。
+   * config 是开局定死的冻结域（create 校验过），复局只带不发问；存档对象深拷贝隔离，此后与调用方无牵连。
+   */
+  static load(config: GameConfig, saved: GameState): GameKernel {
+    if (!saved || !Array.isArray(saved.players) || saved.players.length === 0) {
+      throw new KernelError("存档不完整：缺少玩家名册");
+    }
+    if (!saved.rngStates || RNG_STREAM_NAMES.some((n) => typeof saved.rngStates[n] !== "number")) {
+      throw new KernelError("存档不完整：RNG 五流状态缺失");
+    }
+    if (!Number.isFinite(saved.seq) || !Number.isFinite(saved.dogSeq) || !Number.isFinite(saved.customsSeq)) {
+      throw new KernelError("存档不完整：内部发号缺失");
+    }
+    return new GameKernel(Object.freeze({ ...config }), [], 0, JSON.parse(JSON.stringify(saved)) as GameState);
+  }
+
   /** 五条命名 RNG 流（rng.ts）：setup=开局分发／deck=事件牌堆／items=道具牌堆／dice=走格骰+检定／world=世界恶意+野狗 */
   private rngHosts: Record<RngStreamName, RngState>;
   private rngs: Record<RngStreamName, Rng>;
-  /** 🐕 当局野狗编号发号（DogState.id=壳层 token 稳定 key） */
-  private dogSeq = 0;
-  /** 🚢 当局海关报备单号发号（CustomsShipment.id=查验意图的指单 key） */
-  private customsSeq = 0;
 
-  private constructor(config: GameConfig, defs: PlayerDef[], now: number) {
-    // 随机源先立：假人角色分派与暗牌抽取都消耗它（顺序固定=同种子全序流；五流拆分见 rng.ts）
+  private constructor(config: GameConfig, defs: PlayerDef[], now: number, saved?: GameState) {
+    // 随机源先立：假人角色分派与暗牌抽取都消耗它（顺序固定=同种子全序流；五流拆分见 rng.ts）。
+    // 复局路径（saved）：五流状态原样续走，state 直接接管存档——开局初始化全跳过。
     this.config = config;
     this.rngHosts = {} as Record<RngStreamName, RngState>;
     this.rngs = {} as Record<RngStreamName, Rng>;
+    if (saved) {
+      for (const n of RNG_STREAM_NAMES) {
+        const { rng, host } = rngStreamFrom(saved.rngStates[n]);
+        this.rngs[n] = rng;
+        this.rngHosts[n] = host;
+      }
+      this.state = saved;
+      return;
+    }
     for (const n of RNG_STREAM_NAMES) {
       const { rng, host } = rngStream(config.seed, n);
       this.rngs[n] = rng;
@@ -234,6 +267,8 @@ export class GameKernel {
       endgame: null,
       malice: { timber: null, sink: null, rock: null, spawnQueue: [], dogs: [] },
       seq: 0,
+      dogSeq: 0,
+      customsSeq: 0,
       rngStates: rngStatesFrom(config.seed),
     };
     const bots = this.state.players.filter((p) => p.isBot);
@@ -570,7 +605,7 @@ export class GameKernel {
     for (const p of this.state.players) {
       if (!p.isBot || p.dead || p.zone === "done") continue;
       p.botSchedule.rollAt = now + 400 + p.id * 350 + Math.floor(this.draw("world") * 700);
-      p.botSchedule.confirmAt = Number.POSITIVE_INFINITY;
+      p.botSchedule.confirmAt = null; // 未排程：走完由 endWalk 排（∞ 哨兵不可序列化——M2-T1 序列化缝）
     }
   }
 
@@ -639,14 +674,14 @@ export class GameKernel {
 
   /** 让位：座次（pid 序）找下一位未行动的在场者——淘汰者/通关席/已确认（含罚停轮空）跳过；
    *  轮到谁，谁的倒计时才开始走（windowDeadline 换成他自己的表）；无人可动=turnActor 清 null
-   *  （maybeCloseWindow 收轮）。假人 actor 排「思考一拍」的掷骰日程（confirmAt=∞，走完由 endWalk 排）。 */
+   *  （maybeCloseWindow 收轮）。假人 actor 排「思考一拍」的掷骰日程（confirmAt 未排程=null，走完由 endWalk 排）。 */
   private handTurnToNext(now: number): void {
     const next = this.activePlayers().find((p) => !p.confirmed) ?? null;
     this.state.turnActor = next?.id ?? null;
     if (!next) return;
     this.state.windowDeadline = now + this.config.windowMs;
     if (next.isBot) {
-      next.botSchedule = { rollAt: now + 400 + Math.floor(this.draw("world") * 700), confirmAt: Number.POSITIVE_INFINITY };
+      next.botSchedule = { rollAt: now + 400 + Math.floor(this.draw("world") * 700), confirmAt: null };
     }
   }
 
@@ -704,7 +739,15 @@ export class GameKernel {
           this.doRollChecked(p.id, now, "bot");
         }
       }
-      if (!fight && p.rolled && !p.confirmed && !p.walk && p.cardPending == null && now >= p.botSchedule.confirmAt) {
+      if (
+        !fight &&
+        p.rolled &&
+        !p.confirmed &&
+        !p.walk &&
+        p.cardPending == null &&
+        p.botSchedule.confirmAt != null &&
+        now >= p.botSchedule.confirmAt
+      ) {
         this.doConfirm(p, now, "bot");
       }
     }
@@ -966,6 +1009,7 @@ export class GameKernel {
    *  旧区必然已在 tickMalice 旧账处递减到 0 复原清账，塌陷区永不叠加。 */
   private waveSink(now: number): void {
     const cells = this.sinkCells();
+    this.syncRng(); // sinkCells 直吃 world 流——批耗后回账（序列化缝要求 rngStates 随时现值）
     this.state.malice.sink = { cells, left: SINK_TURNS };
     this.msg(
       "malice",
@@ -1037,7 +1081,7 @@ export class GameKernel {
   /** 单只标准野狗入册（波次生成/狗笛出队/dev 通道共用）：DOG_HP 血、寿命 DOG_TURNS 世界回合、
    *  当局自增 id（壳层 token 稳定 key） */
   private spawnDogAt(cellId: number): void {
-    this.state.malice.dogs.push({ id: ++this.dogSeq, cell: cellId, hp: DOG_HP, left: DOG_TURNS });
+    this.state.malice.dogs.push({ id: ++this.state.dogSeq, cell: cellId, hp: DOG_HP, left: DOG_TURNS });
   }
 
   /** 死狗清册（消灭即离册的唯一收口）：狗被恶意/玩家打死或沦为 0 血后，从这里出册 */
@@ -1244,7 +1288,7 @@ export class GameKernel {
     const q = this.player(to);
     p.hand.splice(p.hand.indexOf(cardId), 1);
     q.hand.push(cardId);
-    const id = ++this.customsSeq;
+    const id = ++this.state.customsSeq;
     this.state.customs!.shipments.push({ id, from: pid, to, cardId, declared, checked: false });
     this.msg("system", `📦 ${p.name} 向 ${q.name} 报备转让 1 张道具卡——报备货名「${decl.title}」。`, pid, {
       targets: [q.id],
@@ -1574,7 +1618,7 @@ export class GameKernel {
         this.msg("beast", `${p.name} 罚停生效——本波轮空（年兽面前动弹不得）。`, p.id, { emphasis: "normal" });
       }
       if (p.isBot) {
-        p.botSchedule = { rollAt: now + 400 + p.id * 350 + Math.floor(this.draw("world") * 700), confirmAt: Number.POSITIVE_INFINITY };
+        p.botSchedule = { rollAt: now + 400 + p.id * 350 + Math.floor(this.draw("world") * 700), confirmAt: null };
       }
     }
     for (const p of this.waveFighters()) {

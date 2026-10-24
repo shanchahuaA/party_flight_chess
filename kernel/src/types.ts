@@ -92,8 +92,9 @@ export interface PlayerState {
   secretOptions: [number, number];
   /** 选定下标（0|1）：真人选后落定；假人开局由系统代抽 */
   secretPick: number | null;
-  /** 假人的窗口内日程（rollAt 到点自动掷；walk 结束后到点自动确认） */
-  botSchedule: { rollAt: number; confirmAt: number };
+  /** 假人的窗口内日程（rollAt 到点自动掷；confirmAt 到点自动确认——null=未排程，等走完由走格收尾排期。
+   *  域内只许有限数或 null：GameState 全量要过 JSON 序列化缝（M2-T1），∞ 哨兵会静默变 null 且回放语义漂移） */
+  botSchedule: { rollAt: number; confirmAt: number | null };
   walk: WalkState | null;
   /** 卡面效果排队的续走（正=前进负=沿栈退）：walk 被占用时入队，走完自动接（T3a 卡面连动） */
   walkQueue: number[];
@@ -376,8 +377,14 @@ export interface GameState {
     /** 🐕 野狗花名册：活狗实时位置/血量/寿命（波次生成与狗笛生成共一条入册通道） */
     dogs: DogState[];
   };
-  /** 内部：战报 id 发号与 RNG 各流状态（随状态走，M2 快照恢复随机流——五条命名流见 rng.ts） */
+  /** 内部：战报 id 发号与 RNG 各流状态（随状态走，M2 快照恢复随机流——五条命名流见 rng.ts）。
+   *  连同下面两个发号器一起=「save() 导出、不下发客户端」的内部段：狗 id/报备单号是壳层 token
+   *  与查验意图的稳定 key，复局必须续走不许重号（M2-T1 序列化缝）。 */
   seq: number;
+  /** 🐕 当局野狗编号发号（DogState.id；save/load 续走） */
+  dogSeq: number;
+  /** 🚢 当局海关报备单号发号（CustomsShipment.id；save/load 续走） */
+  customsSeq: number;
   rngStates: RngStates;
 }
 

@@ -86,3 +86,9 @@ export const rngStream = (seed: number, name: RngStreamName): { rng: Rng; host: 
   const host: RngState = { s: streamSeed(seed, name) };
   return { rng: rngFrom(host.s, host), host };
 };
+
+/** 从既有流状态重建一条流（save/load 复局用）：host 与 rng 绑定同一对象，续走语义与 rngStream 完全一致 */
+export const rngStreamFrom = (s: number): { rng: Rng; host: RngState } => {
+  const host: RngState = { s: s >>> 0 };
+  return { rng: rngFrom(host.s, host), host };
+};
