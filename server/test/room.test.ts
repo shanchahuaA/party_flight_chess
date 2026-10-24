@@ -1,102 +1,16 @@
 // M2-T3（#40）全生命周期主链（Spec #37 Testing Decisions 缝 2：Room DO 的 WS 协议边界）。
 // 好测试=外部行为级别：HTTP/WS 进、快照/状态码/关闭码断言，不测内部函数。
-// isolatedStorage 默认开：每个 it 独立存储，互不污染。
+// isolatedStorage 默认开：每个 it 独立存储，互不污染。共用客户端在 ./helpers（M2-T4 抽出）。
 //
 // 状态机三问对照（docs/脚手架约定.md；DO 单线程事件串行是结构性前提）：
 // 1. 同一实体并发操作（两人抢进同座）：DO 事件串行 + 最小空位分配，无第二写者；豁免专项测试。
 // 2. 标的消失后迟到操作（离房/解散后 socket 迟到消息）：webSocketMessage 的 seat==null 关线分支 +
 //    本文件「解散后旧 token 重连 404」断言覆盖。
 // 3. 边界重入（close 事件重入广播）：webSocketClose 的 roomRow() 判空 + 广播排除自身，末人离房/解散路径有测试。
-import { runInDurableObject, SELF } from "cloudflare:test";
+import { runInDurableObject } from "cloudflare:test";
 import { env } from "cloudflare:workers";
 import { describe, expect, it } from "vitest";
-import type {
-  CreateRoomResp,
-  Downstream,
-  JoinRoomResp,
-  Upstream,
-} from "../../shared/protocol";
-
-const BASE = "https://test.local";
-
-async function postJSON(path: string, body: unknown): Promise<Response> {
-  return SELF.fetch(BASE + path, {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify(body),
-  });
-}
-
-interface WsClient {
-  /** 连接建立时服务端直发的首条快照（带 you），connect() 已替你消费掉 */
-  hello: Downstream;
-  recv(): Promise<Downstream>;
-  recvClose(): Promise<number>;
-  send(u: Upstream): void;
-  close(): void;
-}
-
-/** WS 测试客户端：push 缓冲 + recv 取后续广播；服务端主动 close 时 recvClose 收码 */
-async function connect(code: string, token: string): Promise<WsClient> {
-  const resp = await SELF.fetch(`${BASE}/ws/${code}?token=${encodeURIComponent(token)}`, {
-    headers: { Upgrade: "websocket" },
-  });
-  if (resp.status !== 101) {
-    throw new Error(`upgrade failed: ${resp.status} ${await resp.text()}`);
-  }
-  const ws = resp.webSocket!;
-  ws.accept();
-  const buf: Downstream[] = [];
-  const waiters: Array<(m: Downstream) => void> = [];
-  let closeCode: number | null = null;
-  let closeResolve: ((c: number) => void) | null = null;
-  ws.addEventListener("message", (e) => {
-    const m = JSON.parse(String(e.data)) as Downstream;
-    const w = waiters.shift();
-    if (w) w(m);
-    else buf.push(m);
-  });
-  const closed = new Promise<number>((resolve) => {
-    closeResolve = resolve;
-  });
-  ws.addEventListener("close", (e) => {
-    closeCode = e.code;
-    closeResolve?.(e.code);
-  });
-  const recv = () =>
-    new Promise<Downstream>((resolve, reject) => {
-      const m = buf.shift();
-      if (m) return resolve(m);
-      waiters.push(resolve);
-      setTimeout(() => {
-        const i = waiters.indexOf(resolve);
-        if (i >= 0) {
-          waiters.splice(i, 1);
-          reject(new Error("recv timeout"));
-        }
-      }, 10_000);
-    });
-  const hello = await recv();
-  return {
-    hello,
-    recv,
-    recvClose: () => (closeCode != null ? Promise.resolve(closeCode) : closed),
-    send: (u) => ws.send(JSON.stringify(u)),
-    close: () => ws.close(),
-  };
-}
-
-async function createRoom(name: string): Promise<CreateRoomResp> {
-  const res = await postJSON("/api/rooms", { name });
-  expect(res.status).toBe(200);
-  return (await res.json()) as CreateRoomResp;
-}
-
-async function joinRoom(code: string, name: string): Promise<JoinRoomResp> {
-  const res = await postJSON(`/api/rooms/${code}/join`, { name });
-  expect(res.status).toBe(200);
-  return (await res.json()) as JoinRoomResp;
-}
+import { connect, createRoom, joinRoom, postJSON } from "./helpers";
 
 describe("房间生命周期主链（M2-T3）", () => {
   it("创建→加入→座位互见（含昵称/码形态）", async () => {
@@ -112,8 +26,8 @@ describe("房间生命周期主链（M2-T3）", () => {
     expect(host.hello.you).toBe(0);
     expect(host.hello.room.code).toBe(created.code);
     expect(host.hello.room.seats).toEqual([
-      { seat: 0, name: "房主", online: true, host: true },
-      { seat: 1, name: "朋友甲", online: false, host: false },
+      { seat: 0, name: "房主", online: true, host: true, roleId: null, bot: false },
+      { seat: 1, name: "朋友甲", online: false, host: false, roleId: null, bot: false },
     ]);
 
     const guest = await connect(created.code, joined.token);
@@ -265,8 +179,8 @@ describe("房间生命周期主链（M2-T3）", () => {
     if (back.hello.type !== "room") return;
     expect(back.hello.you).toBe(0);
     expect(back.hello.room.seats).toEqual([
-      { seat: 0, name: "房主", online: true, host: true },
-      { seat: 1, name: "朋友甲", online: false, host: false },
+      { seat: 0, name: "房主", online: true, host: true, roleId: null, bot: false },
+      { seat: 1, name: "朋友甲", online: false, host: false, roleId: null, bot: false },
     ]);
   });
 

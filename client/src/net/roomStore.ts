@@ -8,7 +8,8 @@
  * - 断线治理（自动重连/转移/踢人）在 T7/T8 落，本票只有手动重连一条缝。
  */
 import { ref } from "vue";
-import type { Downstream, RoomSnapshot, Upstream } from "../../../shared/protocol";
+import type { RoleId } from "../../../kernel/src";
+import type { Downstream, LobbyConfig, RoomSnapshot, Upstream } from "../../../shared/protocol";
 
 const TOKEN_KEY_PREFIX = "pfc.token.";
 const NICK_KEY = "pfc.nickname";
@@ -174,15 +175,46 @@ class RoomStore {
     this.roomAction({ type: "dissolve" }, "房间已解散");
   }
 
-  /** leave/dissolve 共用动作形：死线守卫 → 清本机 token → 上行 → 回首页 → 提示 */
-  private roomAction(msg: Upstream, toastText: string): void {
+  // ── 大厅动作（M2-T4，#41）：服务端校验房主/phase/配额，被拒收 error 事实走 toast ──
+
+  /** 明选角色（可重复选/换选；可多人同角色） */
+  pickRole(roleId: RoleId): void {
+    this.roomSend({ type: "pickRole", roleId });
+  }
+
+  /** 房主改开局配置（全量上行；非房主被服务端拒） */
+  setConfig(config: LobbyConfig): void {
+    this.roomSend({ type: "setConfig", config });
+  }
+
+  addBot(): void {
+    this.roomSend({ type: "addBot" });
+  }
+
+  removeBot(): void {
+    this.roomSend({ type: "removeBot" });
+  }
+
+  /** 房主开始：房间转开局流程（对局主链路 T5/T6 接线） */
+  startGame(): void {
+    this.roomSend({ type: "start" });
+  }
+
+  /** 上行统一守卫：死线（断开/未连）拒绝假动作并提示。返回 false=没发出去 */
+  private roomSend(msg: Upstream): boolean {
     if (this.wsState.value !== "open" || !this.ws) {
       this.showToast("连接已断开，请先重连再操作");
-      return;
+      return false;
     }
+    this.sendUpstream(msg);
+    return true;
+  }
+
+  /** leave/dissolve 共用动作形：死线守卫 → 清本机 token → 上行 → 回首页 → 提示 */
+  private roomAction(msg: Upstream, toastText: string): void {
+    if (!this.roomSend(msg)) return;
     if (this.code.value) clearToken(this.code.value);
     this.leaving = true;
-    this.sendUpstream(msg);
     this.backHome();
     this.showToast(toastText);
   }

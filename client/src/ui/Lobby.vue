@@ -1,40 +1,32 @@
 <script setup lang="ts">
 /**
  * 大厅简版页（M1 形态：配置表单 + 直达「开始」）：
- * - 配置五项：局长 5–30 默认 15／血量上限 5–20 默认 10／世界回合窗 10–90s 默认 30／
- *   计时模式双选（T9 完整接线：世界·即时默认／轮班·限时=按座次轮流行动）／休息 0–20s 默认 10。
- * - 世界恶意（#24 T6a，数值表 §5.5）：档位三段钮（关/温和 −1 血/猛 −2 血，默认温和）+
- *   波周期滑条（每 2–5 个世界回合一波，默认 3；关档时禁用）。
+ * - 配置七项在共用 ConfigPanel（M2-T4 抽出：单机内联卡与联机房弹窗同一套控件）；
+ *   单机不接 change 上行，开始时一次性读 model。
  * - 假人 1–7（共 2–8 人局）；角色 5 个明选（可重复选同一角色，属性只在详情弹层展示）。
  * - 出生格按人数均布由内核 spawnMenu 落座（各占一角相望）。
  */
 import { computed, reactive, ref } from "vue";
-import { CONFIG_LIMITS, ROCK_LEN, ROLES, SINK_CELLS, TIMBER_CELLS, type GameConfig, type PlayerDef, type RoleId } from "../../../kernel/src";
+import { ROLES, type GameConfig, type PlayerDef, type RoleId } from "../../../kernel/src";
+import { BOT_NAMES } from "../../../shared/protocol";
 import { gameStore, newSeed } from "../game/store";
 import { roomStore } from "../net/roomStore";
 import BaseSheet from "./BaseSheet.vue";
-
-const BOT_NAMES = ["小黄", "小绿", "小蓝", "小紫", "小橙", "小粉", "小青"];
+import ConfigPanel, { type ConfigModel } from "./ConfigPanel.vue";
 
 const botsN = ref(1);
-const cfg = reactive({
+const cfg = reactive<ConfigModel>({
   turnCap: 15,
   maxHp: 10,
   windowSeconds: 30,
-  timerMode: "world" as "world" | "turn",
   restSeconds: 10,
-  maliceLevel: "mild" as "mild" | "fierce" | "off",
+  timerMode: "world",
+  maliceLevel: "mild",
   maliceEvery: 3,
 });
 const humanRole = ref<RoleId>("light");
 const detailRole = ref<RoleId | null>(null);
 
-const WINDOW_OPTIONS = [10, 15, 20, 30, 60, 90];
-const MALICE_LEVELS: Array<{ id: "mild" | "fierce" | "off"; label: string; note: string }> = [
-  { id: "off", label: "关", note: "整局无世界恶意" },
-  { id: "mild", label: "温和", note: "每波 −1 血（默认）" },
-  { id: "fierce", label: "猛", note: "每波 −2 血（伤害翻倍）" },
-];
 const detail = computed(() => (detailRole.value ? ROLES.find((r) => r.id === detailRole.value) ?? null : null));
 
 function pickRole(id: RoleId): void {
@@ -91,74 +83,7 @@ function start(): void {
 
     <section class="card">
       <h2>⚙️ 局面配置</h2>
-      <label class="field">
-        <span class="lab">局长（世界回合）</span>
-        <span class="ctl">
-          <input v-model.number="cfg.turnCap" type="range" :min="CONFIG_LIMITS.turnCap[0]" :max="CONFIG_LIMITS.turnCap[1]" step="1" />
-          <b>{{ cfg.turnCap }} 回合</b>
-        </span>
-      </label>
-      <label class="field">
-        <span class="lab">血量上限</span>
-        <span class="ctl">
-          <input v-model.number="cfg.maxHp" type="range" :min="CONFIG_LIMITS.maxHp[0]" :max="CONFIG_LIMITS.maxHp[1]" step="1" />
-          <b>{{ cfg.maxHp }} ❤</b>
-        </span>
-      </label>
-      <label class="field">
-        <span class="lab">世界回合窗</span>
-        <span class="ctl">
-          <select v-model.number="cfg.windowSeconds">
-            <option v-for="s in WINDOW_OPTIONS" :key="s" :value="s">{{ s }} 秒</option>
-          </select>
-        </span>
-      </label>
-      <label class="field">
-        <span class="lab">回合间休息</span>
-        <span class="ctl">
-          <input v-model.number="cfg.restSeconds" type="range" :min="CONFIG_LIMITS.restMs[0] / 1000" :max="CONFIG_LIMITS.restMs[1] / 1000" step="1" />
-          <b>{{ cfg.restSeconds }} s</b>
-        </span>
-      </label>
-      <div class="field">
-        <span class="lab">计时模式</span>
-        <span class="ctl seg">
-          <button type="button" :class="{ on: cfg.timerMode === 'world' }" @click="cfg.timerMode = 'world'">
-            世界·即时<span class="tag">默认</span>
-          </button>
-          <button type="button" :class="{ on: cfg.timerMode === 'turn' }" @click="cfg.timerMode = 'turn'">
-            轮班·限时
-          </button>
-        </span>
-      </div>
-      <p class="hint">
-        {{
-          cfg.timerMode === "turn"
-            ? "轮班·限时：按座次轮流行动，轮到谁谁的倒计时才开始走；淘汰者与通关席跳过，超时自动掷骰。"
-            : "世界·即时：全员同一倒计时窗内同时行动，全员确认提前开窗，超时系统替掷。"
-        }}
-      </p>
-      <div class="field">
-        <span class="lab">世界恶意</span>
-        <span class="ctl seg">
-          <button
-            v-for="l in MALICE_LEVELS"
-            :key="l.id"
-            type="button"
-            :class="{ on: cfg.maliceLevel === l.id }"
-            :title="l.note"
-            @click="cfg.maliceLevel = l.id"
-          >{{ l.label }}</button>
-        </span>
-      </div>
-      <label class="field">
-        <span class="lab">恶意波周期</span>
-        <span class="ctl" :class="{ off: cfg.maliceLevel === 'off' }">
-          <input v-model.number="cfg.maliceEvery" type="range" :min="CONFIG_LIMITS.maliceEvery[0]" :max="CONFIG_LIMITS.maliceEvery[1]" step="1" :disabled="cfg.maliceLevel === 'off'" />
-          <b>每 {{ cfg.maliceEvery }} 回合</b>
-        </span>
-      </label>
-      <p class="hint">世界恶意：🌲 每 N 回合一波全桌不测之祸（🪵 木头砸 {{ TIMBER_CELLS }} 格·预警可逃／🪨 滚石 {{ ROCK_LEN }} 格可躲／🕳 塌陷 {{ SINK_CELLS }} 格），战报承载、不打断操作。</p>
+      <ConfigPanel :model="cfg" />
     </section>
 
     <section class="card">
@@ -283,72 +208,6 @@ function start(): void {
 .note {
   font-size: 11.5px;
   color: #b0bec5;
-}
-.field {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 5px 0;
-  font-size: 12.5px;
-}
-.lab {
-  width: 96px;
-  flex: 0 0 auto;
-  color: #cfd8dc;
-}
-.ctl {
-  flex: 1;
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-.ctl input[type="range"] {
-  flex: 1;
-  accent-color: #ef5350;
-}
-.ctl b {
-  width: 66px;
-  text-align: right;
-  font-size: 12.5px;
-}
-.ctl select {
-  flex: 1;
-  background: #263238;
-  color: #eceff1;
-  border: 1px solid #455a64;
-  border-radius: 8px;
-  padding: 6px 8px;
-  font-size: 13px;
-}
-.seg {
-  gap: 6px;
-}
-.ctl.off {
-  opacity: 0.45;
-}
-.seg button {
-  flex: 1;
-  border: 1px solid #455a64;
-  background: #263238;
-  color: #90a4ae;
-  border-radius: 10px;
-  padding: 8px 4px;
-  font-size: 12px;
-  font-weight: 700;
-}
-.seg button.on {
-  background: #b71c1c;
-  border-color: #ef5350;
-  color: #fff;
-}
-.tag {
-  font-size: 9px;
-  vertical-align: super;
-  margin-left: 2px;
-  color: #90a4ae;
-}
-.tag.alert {
-  color: #ffb74d;
 }
 .hint {
   font-size: 11px;
