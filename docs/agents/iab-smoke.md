@@ -29,6 +29,7 @@
 | evaluate 里 JS 串含中文/特殊符号报 `Invalid or unexpected token` | cell 传输编码不稳（Node 侧拼串时炸） | JS cell 里的字符串/键名保持 ASCII；中文断言放读取结果后 Node 侧比对 |
 | `Object.defineProperty(document, "hidden", …)` 报 `Cannot redefine property` | IAB 把 `hidden` 铺成 document 自身**不可配置**属性，盖不掉（连 `Document.prototype` 覆盖也读不到） | 别试伪造可见性——计时域冒烟走 `__pzvis()` 通道（见 dev-channels.md）；IAB 常驻 `hidden=true` 且 `visibilitychange` 永不触发 |
 | 时钟不走/全场「慢动作」定格（T9 计时域上线后） | 壳层只认 hidden **切换沿**暂停计时——若某环境常驻 hidden 会被误伤；boot 时已故意不读 hidden | 页内先查 `document.hidden`；IAB 冒烟确认 `__pz().now` 在走再继续 |
+| 冒烟中途改了壳层源码后行为诡异（旧代码与页内 import 探针读数互相矛盾、toast/状态读了不存在） | **vite 编辑窗口期 + 浏览器 304 缓存 = 双模块实例**：页的 import 图冻结在 reload 时刻（带 `?t=` 时间戳），evaluate 里裸 `import("/src/xxx.ts")` 拿的是另一份新实例——改 UI 状态探不到、注入无效 | 验证：`performance.getEntriesByType("resource")` 看模块 URL 是否带旧 `?t=`。处置：杀 vite（先查 PID 归属）→ `rm -rf client/node_modules/.vite` → 重启带 `--force`；页签 `goto("about:blank")` 再回目标 URL 强制换文档。**冒烟中途尽量别改壳层源码**，要改就当轮重启 vite 再继续 |
 
 ## 冒烟后必做
 

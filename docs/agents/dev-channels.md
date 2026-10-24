@@ -45,6 +45,17 @@
 
 常用组合：`?fast&slow=1&dev=1`；终局冒烟再加 `&turn=5`；轮班冒烟 `?fast&dev=1&mode=turn&win=3&turn=5`。
 
+## 房间冒烟通道（M2-T3 起，`docs/agents/iab-smoke.md` 配合读）
+
+| 手段 | 效果 |
+|---|---|
+| `?room=CODE` 链接直跳 | 进房页自动填码；本机存过 token（`pfc.token.<码>`）即静默归队（刷新/断线免重输） |
+| 页内 `localStorage.removeItem("pfc.token.<码>")` + 重载 | 模拟全新玩家走表单（清 token 后 join 不归队） |
+| 同页签重开 `?room=` 链接 | 同 token 双开顶替：旧连接收横幅「已让位」，新连接归位 |
+| 页内 fetch `POST /api/rooms/<码>/join` | HTTP 占座假人（凑满 8 人验拒进），不开 WS |
+
+**同源单身份**：同一浏览器的所有页签共享 localStorage——一个浏览器对一个房间只能持有一个身份；双浏览器语义（两玩家互见/互踢）由 server 集成测试（`server/test/room.test.ts` 双 WS 客户端）覆盖，IAB 冒烟只走单身份 UX 面。
+
 ## 测试侧确定性工具（`kernel/test/helpers.ts` + 探针）
 
 - `boot/bootWithDie/bootWithDies/bootWithDiesPure`：种子搜素建局（纪律见文件头「种子搜索纪律」）。

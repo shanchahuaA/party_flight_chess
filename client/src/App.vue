@@ -1,8 +1,12 @@
 <script setup lang="ts">
-/** 单机壳（M1 T2）：未开局=大厅简版页（配置+角色明选）；开局=游戏页（满屏棋盘+战报让位带+抉择浮层）；局终=结算页浮层（T8b2） */
+/** 应用壳（M2-T3 起三视图）：home=单机大厅/游戏页 → join=进房页 → room=房间大厅。
+ *  单机链路原样（maybeBootFastPath 免大厅直达）；?room= 链接直跳进房页自动填码。 */
 import { computed, onBeforeUnmount, onMounted } from "vue";
 import { maybeBootFastPath } from "./game/store";
+import { bootFromUrl, roomStore } from "./net/roomStore";
 import Lobby from "./ui/Lobby.vue";
+import JoinPage from "./ui/JoinPage.vue";
+import RoomLobby from "./ui/RoomLobby.vue";
 import BoardSvg from "./board/BoardSvg.vue";
 import Dock from "./ui/Dock.vue";
 import HudBar from "./ui/HudBar.vue";
@@ -13,9 +17,12 @@ import CardChoice from "./ui/CardChoice.vue";
 import Settlement from "./ui/Settlement.vue";
 import { gameStore } from "./game/store";
 
+const view = computed(() => roomStore.view.value);
 const started = computed(() => !!gameStore.source.value);
+const roomToast = computed(() => roomStore.toast.value);
 
 onMounted(() => {
+  bootFromUrl();
   maybeBootFastPath();
 });
 onBeforeUnmount(() => {
@@ -26,20 +33,26 @@ const toast = computed(() => gameStore.toast.value);
 </script>
 
 <template>
-  <Lobby v-if="!started" />
-  <div v-else class="gamePage">
-    <HudBar />
-    <WorldMessage />
-    <main class="boardWrap">
-      <BoardSvg />
-    </main>
-    <RouteBar />
-    <Dock />
-    <SecretDraft />
-    <CardChoice />
-    <Settlement />
-    <div v-if="toast" class="toast">{{ toast }}</div>
-  </div>
+  <template v-if="view === 'home'">
+    <Lobby v-if="!started" />
+    <div v-else class="gamePage">
+      <HudBar />
+      <WorldMessage />
+      <main class="boardWrap">
+        <BoardSvg />
+      </main>
+      <RouteBar />
+      <Dock />
+      <SecretDraft />
+      <CardChoice />
+      <Settlement />
+      <div v-if="toast" class="toast">{{ toast }}</div>
+    </div>
+  </template>
+  <JoinPage v-else-if="view === 'join'" />
+  <RoomLobby v-else />
+  <!-- 房间 toast 全局渲染：离房/解散/被顶都伴随视图切换，渲染在页组件里会被卸载吃掉 -->
+  <div v-if="roomToast" class="toast">{{ roomToast }}</div>
 </template>
 
 <style scoped>

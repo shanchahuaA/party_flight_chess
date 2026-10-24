@@ -11,6 +11,7 @@
 import { computed, reactive, ref } from "vue";
 import { CONFIG_LIMITS, ROCK_LEN, ROLES, SINK_CELLS, TIMBER_CELLS, type GameConfig, type PlayerDef, type RoleId } from "../../../kernel/src";
 import { gameStore, newSeed } from "../game/store";
+import { roomStore } from "../net/roomStore";
 import BaseSheet from "./BaseSheet.vue";
 
 const BOT_NAMES = ["小黄", "小绿", "小蓝", "小紫", "小橙", "小粉", "小青"];
@@ -62,9 +63,19 @@ function start(): void {
 <template>
   <div class="lobby">
     <header class="head">
-      <h1>🏮 庄园法会 · 开局</h1>
+      <h1>🏮 庄园法会</h1>
       <p class="sub">单机可玩（1 真人 + 1–7 假人）｜数值冻结一局，下局可再调</p>
     </header>
+
+    <!-- 大厅双入口（Spec #37 实现决策 10）：联机房间与单机开局并列，单机形态原样保留 -->
+    <section class="card online">
+      <h2>🛰️ 朋友联机</h2>
+      <div class="row">
+        <button class="roomBtn" type="button" @click="roomStore.openJoin('create')">🏠 创建房间</button>
+        <button class="roomBtn" type="button" @click="roomStore.openJoin('join')">🚪 加入房间</button>
+      </div>
+      <p class="hint">创建得到房间码与邀请链接，发到群里朋友点开即进（最多 8 人）。</p>
+    </section>
 
     <section class="card">
       <h2>🪑 同桌几人</h2>
@@ -224,6 +235,16 @@ function start(): void {
   border: 1px solid rgba(176, 190, 197, 0.25);
   border-radius: 14px;
   padding: 10px 12px 12px;
+}
+.online .roomBtn {
+  flex: 1;
+  border: 0;
+  border-radius: 12px;
+  background: #8e2418;
+  color: #ffebee;
+  font-size: 14px;
+  font-weight: 800;
+  padding: 12px 4px;
 }
 .card h2 {
   font-size: 13.5px;
