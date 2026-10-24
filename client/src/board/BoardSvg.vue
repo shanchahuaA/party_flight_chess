@@ -91,7 +91,7 @@ const tokenViews = computed(() =>
 
 // ---------- 血条（#23 T5a，数值表 §5.3 常驻呈现）：自己=❤数字+微条；他人=微型血条 ----------
 // 档位与色取共用件 game/hp（HUD pill 同吃一份）——本格只管几何与读数
-const maxHp = computed(() => gameStore.kernel.value?.config.maxHp ?? 10);
+const maxHp = computed(() => gameStore.config?.maxHp ?? 10);
 const hpBarW = (p: PlayerState): string => (16 * hpRatio(p.hp, maxHp.value)).toFixed(2);
 const hpFill = (p: PlayerState): string => HP_TONE_COLOR[hpTone(hpRatio(p.hp, maxHp.value))];
 

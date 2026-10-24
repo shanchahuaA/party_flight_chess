@@ -135,9 +135,9 @@ watch(
   },
 );
 
-// 换局（boot/再来一局=内核换体）：抽屉收起、展开态与渲染窗归位——旧局的条目 id 会从 1 重排，不清理会跨局串味
+// 换局（boot/再来一局=数据源换体）：抽屉收起、展开态与渲染窗归位——旧局的条目 id 会从 1 重排，不清理会跨局串味
 watch(
-  () => gameStore.kernel.value,
+  () => gameStore.source.value,
   () => {
     drawer.value = false;
     raised.value = false;

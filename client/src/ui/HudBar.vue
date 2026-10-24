@@ -13,7 +13,7 @@ const state = computed(() => {
 const turnLabel = computed(() => {
   const s = state.value;
   if (!s) return "";
-  const cap = gameStore.kernel.value?.config.turnCap ?? 15;
+  const cap = gameStore.config?.turnCap ?? 15;
   if (s.phase === "drafting") return "开局 · 抽暗牌";
   if (s.phase !== "over" && s.endgame?.beast) return `🐉 最后一波 · 第 ${s.endgame.beast.wave} 波`;
   return s.phase === "over" ? "终局" : `回合 ${s.turn}/${cap}`;
@@ -63,7 +63,7 @@ const myGoal = computed(() => {
 });
 
 // 血量常驻 pill（#23 T5a，数值表 §5.3）：心形数字+微条，跟随自定义上限；档位判据走共用件 game/hp
-const maxHp = computed(() => gameStore.kernel.value?.config.maxHp ?? 10);
+const maxHp = computed(() => gameStore.config?.maxHp ?? 10);
 const myHp = computed(() => state.value?.players[0]?.hp ?? 0);
 const hpPct = computed(() => hpRatio(myHp.value, maxHp.value));
 const hpToneCls = computed(() => hpTone(hpPct.value));

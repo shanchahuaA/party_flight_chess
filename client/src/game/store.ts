@@ -1,14 +1,15 @@
 /**
- * 单机壳 ↔ 内核接线（M1）：
- * - 内核为权威，全部推进走 GameKernel.tick / apply；setTimeout 链喂时。
- * - 本地计时：单机本地钟（performance 基线）。M2 时换 WS 事实流；本文件是两种模式的换接点。
- * - 单机计时域（T9）：页面切后台/隐藏=本地时钟冻结（不补算后台时段——对 ADR 0001 的
- *   单机期有意偏离，M2 归位为服务端权威钟），回前台从冻结值继续。
+ * 壳层 store ↔ 数据源接线（M2-T2 双源抽象）：
+ * - 壳层只认 GameSource 接口（source.ts）：意图出口 send + 状态入口 state/config + 事实入口 onFacts。
+ *   单机源=LocalKernelSource（本地内核包一层）；联机源=M2-T6 快照+事实流接同一面，共用全部壳层。
+ * - 单机计时：本地冻结钟住源里（performance 基线）；单机计时域（T9）页面切后台/隐藏=时钟冻结
+ *   （不补算后台时段——对 ADR 0001 的单机期有意偏离，M2 归位为服务端权威钟），回前台从冻结值继续。
  * - 演出：逐格动画靠 .tkMain 的 CSS transform 过渡（内核 140ms 节拍的事实驱动）。
  */
 import { reactive, ref, shallowRef, watch } from "vue";
-import { BOARD, GameKernel } from "../../../kernel/src";
+import { BOARD } from "../../../kernel/src";
 import type { Fact, GameConfig, GameState, Intent, PlayerDef } from "../../../kernel/src";
+import { LocalKernelSource, type GameSource } from "./source";
 
 /** 新随机种子（单机局默认换新种子——内核默认种子留给测试）：三处同形表达式的单一来源 */
 export function newSeed(): number {
@@ -25,8 +26,9 @@ export interface PulseLit {
  * 内核深写 → 模板里直接读代理的组件自动失效重渲（细粒度、无需 version 通道）。
  */
 class GameStore {
-  kernel = shallowRef<GameKernel | null>(null);
-  state = shallowRef<GameState | null>(null); // reactive 代理
+  /** 当前数据源（单机=LocalKernelSource；联机=M2-T6 远程源接同一接口）；null=未开局 */
+  source = shallowRef<GameSource | null>(null);
+  state = shallowRef<GameState | null>(null); // reactive 代理（源侧状态入口的镜像引用）
   /** 事实侧的瞬时演出：棋子脉冲（level 熄灭时间戳） */
   pulses = reactive<Record<number, PulseLit>>({});
   /** 最后一次掷面（dock 掷骰钮上显示） */
@@ -43,34 +45,41 @@ class GameStore {
   private lastBoot: { config: Partial<GameConfig>; defs: PlayerDef[] } | null = null;
   private toastSeq = 0;
 
-  private perfBase = 0;
-  private started = false;
-  /** 单机计时域（T9）：页面隐藏的起始时刻（performance 轴）；null=未隐藏 */
-  private hiddenAt: number | null = null;
   /** 「轮到你了」提示的响应式解绑把手（换局/收摊要摘） */
   private stopTurnWatch: (() => void) | null = null;
+
+  /** 本局配置只读面（HUD turnCap/maxHp 等读数）——源侧 config 的透传 */
+  get config(): Partial<GameConfig> | null {
+    return this.source.value?.config ?? null;
+  }
 
   /**
    * 开局（T2 起由大厅页调用）：配置+ defs（真人在内）定谳 → 一次创建即 drafting：
    * 真人暗牌选择由游戏页浮层驱动（chooseSecret），选完内核才开第一窗。
+   * 单机入口：建 LocalKernelSource（驱动链/冻结钟/初始事实随源起），壳层只接住状态引用。
    */
   boot(config: Partial<GameConfig>, defs: PlayerDef[]): void {
-    const { kernel, facts } = GameKernel.create(config, 0, defs);
-    // 重要：内核之后所有读写都走代理 → 模板里直接读代理的组件获得细粒度真响应
-    kernel.attachStateProxy((s) => reactive(s) as GameState);
-    this.kernel.value = kernel;
-    this.state.value = reactive(kernel.state) as GameState;
+    this.dispose(); // 防御：boot 前收掉任何残留源（正常入口均已先收摊）——源实例自持驱动链，不收会双链驱动
+    let src: LocalKernelSource;
+    src = new LocalKernelSource({
+      onFacts: (facts) => {
+        // 状态引用先于事实入壳挂好（旧序不变式）：初始事实的壳层消费读得到 state
+        if (this.state.value !== src.state) this.state.value = src.state;
+        this.handle(facts);
+      },
+      onStep: () => {
+        this.beat.value++;
+      },
+      onCrash: (err) => {
+        console.error("[kernel-tick]", err);
+        this.showToast(err instanceof Error ? `内核故障已停推进：${err.message}` : String(err));
+      },
+    });
     this.lastBoot = { config: { ...config }, defs: defs.map((d) => ({ ...d })) };
-    this.resetShellState();
-    this.started = true;
-    this.perfBase = performance.now();
-    // 单机计时域：只认 hidden 的**切换沿**（boot 时不看 document.hidden——部分内嵌 webview/IAB
-    // 常驻报 hidden 且永不来 visible，误信它=时钟永久冻结；用户刚点开局，页面事实上可见）
-    this.hiddenAt = null;
-    document.addEventListener("visibilitychange", this.onVisibility);
+    this.resetShellState(); // 开新局即清上一局瞬时态；hiddenOverride 不在此列——换局=新源实例，天然复位
+    src.start(config, defs); // 建内核+挂代理+初始事实+驱动链（本地冻结钟/visibility 监听随源起）；建局被拒=此处抛，壳层零污染
+    this.source.value = src;
     this.bindTurnWatch();
-    this.handle(facts);
-    this.loop();
   }
 
   /** 再来一局（T8b2）：上一次的全套配置与名册原样重开，只换新随机种子——新内核即无状态残留。 */
@@ -94,7 +103,6 @@ class GameStore {
     this.toast.value = null;
     this.reportReq.value = 0;
     this.reportJump.value = null;
-    this.hiddenOverride = null; // 计时域冒烟钩子不跨局（上一局伪造的 hidden 不许冻住新局）
   }
 
   /** 战报抽屉开启请求（T8b2）：at=定位到指定条目（找战犯溯源），缺省只开抽屉滚到最新 */
@@ -103,35 +111,10 @@ class GameStore {
     this.reportReq.value++;
   }
 
-  /**
-   * 单机本地钟：内核时间轴（ms，0 起单调）。
-   * 隐藏期间读数冻结（扣掉隐藏时长）——后台时段不从时钟轴上走，deadline 全体顺延=不补算。
-   */
+  /** 源时钟透传（单机=本地冻结钟；联机=服务端钟插值）。未开局=0 */
   now(): number {
-    if (!this.started) return 0;
-    const paused = this.hiddenAt != null ? performance.now() - this.hiddenAt : 0;
-    return Math.round(performance.now() - this.perfBase - paused);
+    return this.source.value?.now() ?? 0;
   }
-
-  /**
-   * 单机计时域（T9）：切后台/隐藏=本地计时暂停，回前台恢复继续（不补算后台时段——
-   * 对 ADR 0001 的单机期有意偏离，M2 归位服务端权威钟）。只认 hidden 切换沿（boot 时常驻
-   * hidden 的内嵌环境不算——见 boot 注记）。驱动链不摘（后台被节流也无妨，冻结的 now()
-   * 让 tick 全是空拍），只记账。
-   */
-  private onVisibility = (): void => {
-    if (!this.started) return;
-    const hidden = this.hiddenOverride ?? document.hidden;
-    if (hidden) {
-      if (this.hiddenAt == null) this.hiddenAt = performance.now();
-    } else if (this.hiddenAt != null) {
-      this.perfBase += performance.now() - this.hiddenAt; // 隐藏时长整段剜掉
-      this.hiddenAt = null;
-    }
-  };
-
-  /** 冒烟钩子（?dev=1 的 __pzvis）：伪造 hidden 读数——IAB 常驻 hidden 且切换沿出不来 */
-  hiddenOverride: boolean | null = null;
 
   /** 轮班·限时（T9）：轮到真人=提示一声（他的表刚开始走；换人即触发，含下一轮回到自己） */
   private bindTurnWatch(): void {
@@ -159,10 +142,10 @@ class GameStore {
   }
 
   apply(intent: Intent): void {
-    const k = this.kernel.value;
-    if (!k) return;
+    const src = this.source.value;
+    if (!src) return;
     try {
-      this.handle(k.apply(intent, this.now()));
+      src.send(intent);
     } catch (err) {
       this.showToast(err instanceof Error ? err.message : String(err));
     }
@@ -196,27 +179,6 @@ class GameStore {
       if (seq === this.toastSeq) this.toast.value = null;
     }, 1800);
   }
-
-  private loop(): void {
-    // 内嵌环境（部分 IAB）rAF 可能整体不触发；驱动器统一走 setTimeout 链，
-    // 33ms 一拍 ≈ 内核事实节拍骨感（140ms 步进）之上，真实手机上同样工作。
-    let stopped = () => !this.started || !this.kernel.value;
-    const step = () => {
-      if (stopped()) return;
-      try {
-        this.beat.value++;
-        this.handle(this.kernel.value!.tick(this.now()));
-      } catch (err) {
-        console.error("[kernel-tick]", err);
-        this.showToast(err instanceof Error ? `内核故障已停推进：${err.message}` : String(err));
-        return;
-      }
-      GameStore.timer = window.setTimeout(step, 33);
-    };
-    GameStore.timer = window.setTimeout(step, 33);
-  }
-
-  private static timer = 0;
 
   private handle(facts: Fact[]): void {
     for (const f of facts) {
@@ -257,14 +219,11 @@ class GameStore {
   }
 
   dispose(): void {
-    this.started = false;
-    this.kernel.value = null;
+    this.source.value?.stop();
+    this.source.value = null;
     this.state.value = null;
-    document.removeEventListener("visibilitychange", this.onVisibility);
-    this.hiddenAt = null;
     this.stopTurnWatch?.();
     this.stopTurnWatch = null;
-    window.clearTimeout(GameStore.timer);
   }
 }
 
@@ -276,7 +235,7 @@ export const gameStore = new GameStore();
  *  ?turn=N 自定义局长（≥5，T8a2 年兽战冒烟用——短局快进到最后一波）；
  *  ?mode=turn 轮班·限时（T9 冒烟——按座次轮流行动）。 */
 export function maybeBootFastPath(): void {
-  if (gameStore.kernel.value) return;
+  if (gameStore.source.value) return;
   const params = new URLSearchParams(location.search);
   if (!params.has("fast")) return;
   const dev = params.has("dev");
@@ -322,13 +281,13 @@ function bindDevChannels(): void {
   w.__pzbeast = (hp: number) => gameStore.apply({ type: "dev.setBeast", hp });
   // 单机计时域冒烟（T9）：伪造 hidden 切换沿——__pzvis(true)=切后台时钟冻结 / __pzvis(false)=回前台恢复
   w.__pzvis = (hidden: boolean) => {
-    gameStore.hiddenOverride = hidden;
+    const src = gameStore.source.value;
+    if (src instanceof LocalKernelSource) src.hiddenOverride = hidden; // instanceof 穿缝：hiddenOverride 是单机源冒烟钩子，不上接口（联机源无此概念）
     document.dispatchEvent(new Event("visibilitychange"));
   };
   w.__pzdog = (cell?: number) => {
-    const k = gameStore.kernel.value;
-    if (!k) return;
-    const me = k.state.players[0]!;
+    const me = gameStore.state.value?.players[0];
+    if (!me) return;
     gameStore.apply({ type: "dev.spawnDog", cell: cell ?? BOARD[me.pos]!.links[0]! }); // 缺省钉人间相邻格=过一拍可能撞上
   };
 }
@@ -336,9 +295,8 @@ function bindDevChannels(): void {
 /** 开发期只读快照钩子（window.__pz()）：内核态随手可查 */
 function bindDevSnapshot(): void {
   (window as unknown as Record<string, unknown>).__pz = () => {
-    const k = gameStore.kernel.value;
-    if (!k) return null;
-    const s = k.state;
+    const s = gameStore.state.value;
+    if (!s) return null;
     const me = s.players[0]!;
     return {
       now: gameStore.now(),

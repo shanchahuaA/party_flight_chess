@@ -13,7 +13,7 @@ import CardChoice from "./ui/CardChoice.vue";
 import Settlement from "./ui/Settlement.vue";
 import { gameStore } from "./game/store";
 
-const started = computed(() => !!gameStore.kernel.value);
+const started = computed(() => !!gameStore.source.value);
 
 onMounted(() => {
   maybeBootFastPath();
