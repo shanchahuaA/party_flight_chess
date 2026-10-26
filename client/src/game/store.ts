@@ -82,8 +82,26 @@ class GameStore {
     this.bindTurnWatch();
   }
 
-  /** 再来一局（T8b2）：上一次的全套配置与名册原样重开，只换新随机种子——新内核即无状态残留。 */
+  /** 联机源上壳（M2-T6，#43）：roomStore 建好 RemoteRoomSource 后调用——防御同 boot
+   *  （dispose 清残留源+瞬时演出清零），但源非本处构造（驱动链/对时/状态替装住源内，
+   *  服务端=唯一权威），壳层只接状态引用与轮班观察；facts 的壳层演出语义由 roomStore
+   *  的 SourceHandlers 经 handle 单通道入壳（状态引用先于事实入壳的不变式在那端保持）。
+   *  单机 boot/LocalKernelSource 零改动。 */
+  bootRemote(src: GameSource): void {
+    this.dispose(); // 防御：上壳前收掉任何残留源（残留单机源/旧联机源——双份驱动链都会乱拍）
+    this.resetShellState();
+    this.source.value = src;
+    this.state.value = src.state; // 首条 game 消息进壳前挂好引用（feed 每条先替 state 再派 facts）
+    this.bindTurnWatch();
+  }
+
+  /** 再来一局（T8b2）：上一次的全套配置与名册原样重开，只换新随机种子——新内核即无状态残留。
+   *  联机局面（M2-T6）：换来一局=服务端动作（房主在局间配置里开下一局），客户端零内核——提示替代。 */
   restart(): void {
+    if (!(this.source.value instanceof LocalKernelSource)) {
+      this.showToast("房主在局间配置里开下一局");
+      return;
+    }
     const last = this.lastBoot;
     if (!last) return;
     this.dispose();
@@ -180,7 +198,12 @@ class GameStore {
     }, 1800);
   }
 
-  private handle(facts: Fact[]): void {
+  /**
+   * 事实入壳语义层（演出收口）：棋子脉冲/掷面/淘汰观战/targeting 清账都在这单一通道里。
+   * 联机源（M2-T6）的 onFacts 也走这里（roomStore 的 SourceHandlers）——远端事实与单机内核
+   * 事实同形状，pulse 亮牌/掷面/出局贴皮零成本复用（「演出不另起」）。
+   */
+  handle(facts: Fact[]): void {
     for (const f of facts) {
       switch (f.type) {
         case "roll":
@@ -292,8 +315,10 @@ function bindDevChannels(): void {
   };
 }
 
-/** 开发期只读快照钩子（window.__pz()）：内核态随手可查 */
-function bindDevSnapshot(): void {
+/** 开发期只读快照钩子（window.__pz()）：内核态随手可查。
+ *  导出化（M2-T6）：联机源上壳时 roomStore 顺手再挂一次——同一函数读 gameStore.state，
+ *  联机快照（服务端 rebase 后=我恒 pid 0）同款口径，不双挂不复制逻辑。 */
+export function bindDevSnapshot(): void {
   (window as unknown as Record<string, unknown>).__pz = () => {
     const s = gameStore.state.value;
     if (!s) return null;

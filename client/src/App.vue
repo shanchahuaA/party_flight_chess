@@ -1,9 +1,13 @@
 <script setup lang="ts">
-/** 应用壳（M2-T3 起三视图）：home=单机大厅/游戏页 → join=进房页 → room=房间大厅。
- *  单机链路原样（maybeBootFastPath 免大厅直达）；?room= 链接直跳进房页自动填码。 */
+/** 应用壳（M2-T3 起三视图；M2-T6 对局分支）：home=单机大厅/游戏页 → join=进房页 → room=房间大厅。
+ *  单机链路原样（maybeBootFastPath 免大厅直达）；?room= 链接直跳进房页自动填码。
+ *  room 视图三分支（M2-T6，#43）：phase=lobby→RoomLobby；playing 且无源或 drafting→RoomLobby
+ *  （大厅面收口，内嵌暗牌区）；playing（含 over 短窗，即 intermission 快照未到的缓存期）且源
+ *  active→gamePage——与 home 复用同一段 board/HUD/dock/浮层模板（同一内联分支，不复制组件）；
+ *  intermission 首现=源收摊（roomStore 钩子），视图自动翻回 RoomLobby 局间真形。 */
 import { computed, onBeforeUnmount, onMounted } from "vue";
 import { maybeBootFastPath } from "./game/store";
-import { bootFromUrl, roomStore } from "./net/roomStore";
+import { bindRoomProbe, bootFromUrl, roomStore } from "./net/roomStore";
 import Lobby from "./ui/Lobby.vue";
 import JoinPage from "./ui/JoinPage.vue";
 import RoomLobby from "./ui/RoomLobby.vue";
@@ -19,10 +23,24 @@ import { gameStore } from "./game/store";
 
 const view = computed(() => roomStore.view.value);
 const started = computed(() => !!gameStore.source.value);
+
+/** 房间页的对局画面开闸（M2-T6）：phase=playing 且源活着且有对局面。drafting 期留在大厅
+ *  （暗牌浮层内嵌那里）；state over（结算）先到=仍在 gamePage 上展出 Settlement（intermission
+ *  快照随后到达即收摊翻页——两条到齐即收敛） */
+const roomInGame = computed(() => {
+  if (view.value !== "room") return false;
+  const snap = roomStore.snapshot.value;
+  const s = gameStore.state.value;
+  return !!snap && snap.phase === "playing" && !!s && s.phase !== "drafting";
+});
+const gamePageOn = computed(() => (view.value === "home" && started.value) || roomInGame.value);
+/** gamePage 角落（联机面）：房主解散钮可见判据 */
+const amHost = computed(() => roomStore.snapshot.value?.hostSeat === roomStore.mySeat.value);
 const roomToast = computed(() => roomStore.toast.value);
 
 onMounted(() => {
   bootFromUrl();
+  bindRoomProbe();
   maybeBootFastPath();
 });
 onBeforeUnmount(() => {
@@ -33,24 +51,28 @@ const toast = computed(() => gameStore.toast.value);
 </script>
 
 <template>
-  <template v-if="view === 'home'">
-    <Lobby v-if="!started" />
-    <div v-else class="gamePage">
-      <HudBar />
-      <WorldMessage />
-      <main class="boardWrap">
-        <BoardSvg />
-      </main>
-      <RouteBar />
-      <Dock />
-      <SecretDraft />
-      <CardChoice />
-      <Settlement />
-      <div v-if="toast" class="toast">{{ toast }}</div>
-    </div>
-  </template>
+  <Lobby v-if="view === 'home' && !gamePageOn" />
   <JoinPage v-else-if="view === 'join'" />
-  <RoomLobby v-else />
+  <RoomLobby v-else-if="view === 'room' && !gamePageOn" />
+  <div v-else class="gamePage">
+    <HudBar />
+    <WorldMessage />
+    <main class="boardWrap">
+      <BoardSvg />
+    </main>
+    <RouteBar />
+    <Dock />
+    <SecretDraft />
+    <CardChoice />
+    <Settlement />
+    <!-- 联机对局面角落（M2-T6，最小不抢戏）：对局中 leave 服务端封禁（名册 boot 定死，T8 接管）——
+         别出假按钮，出一行小字；房主解散全 phase 可用，低调完备 -->
+    <div v-if="view === 'room'" class="roomBar">
+      <span class="note">对局中不可离席——中途离席功能 T8 上线</span>
+      <button v-if="amHost" type="button" @click="roomStore.dissolve()">💥 解散</button>
+    </div>
+    <div v-if="toast" class="toast">{{ toast }}</div>
+  </div>
   <!-- 房间 toast 全局渲染：离房/解散/被顶都伴随视图切换，渲染在页组件里会被卸载吃掉 -->
   <div v-if="roomToast" class="toast">{{ roomToast }}</div>
 </template>
@@ -70,6 +92,29 @@ const toast = computed(() => gameStore.toast.value);
   justify-content: center;
   padding: 2px 6px;
   overflow: hidden;
+}
+/* 联机对局角落（M2-T6）：安全阀占位小字+房主解散（低调，不抢戏） */
+.roomBar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 3px 12px calc(3px + env(safe-area-inset-bottom));
+  flex: 0 0 auto;
+}
+.roomBar .note {
+  font-size: 10px;
+  color: #546e7a;
+}
+.roomBar button {
+  border: 1px solid #8e2418;
+  background: rgba(142, 36, 24, 0.35);
+  color: #ef9a9a;
+  border-radius: 999px;
+  font-size: 10.5px;
+  font-weight: 700;
+  padding: 3px 10px;
+  flex: 0 0 auto;
 }
 .toast {
   position: fixed;

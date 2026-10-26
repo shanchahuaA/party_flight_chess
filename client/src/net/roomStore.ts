@@ -5,17 +5,37 @@
  *   WS 面：/ws/:code?token= 连上即认座，下行全量快照整体覆盖（胖消息口径）。
  * - token 存 localStorage（pfc.token.<code>），刷新/断线免重输；同 token 新连接顶旧连
  *   （replaced）由服务端裁决，旧页收到通知即失效。
- * - 断线治理（自动重连/转移/踢人）在 T7/T8 落，本票只有手动重连一条缝。
+ * - 对局面（M2-T6，#43）：room 快照 phase 演变=生命周期钩子（lobby 常态 / playing 首现不动——
+ *   主动等第一条 game 消息再建源；intermission 首现=收对局壳+结算缓存）；case "game"=建源
+ *   （开局 hello 与 Hibernation 重连全量 hello 同一条路）→ feed 胖消息进壳。
+ *   RemoteRoomSource 的上行出口/收摊通知（disposeHook）都挂在本 store 上。
+ * - 断线治理（自动重连/转移/踢人）在 T8 落，本票只有手动重连一条缝；重连后 game hello 照 feed
+ *   （源活着直接吃新快照）。
  */
 import { ref } from "vue";
-import type { RoleId } from "../../../kernel/src";
+import type {
+  GameState,
+  RoleId,
+  SettlementResult,
+} from "../../../kernel/src";
 import type { Downstream, LobbyConfig, RoomSnapshot, Upstream } from "../../../shared/protocol";
+import { bindDevSnapshot, gameStore } from "../game/store";
+import { RemoteRoomSource, type DownstreamGame } from "../game/remoteSource";
 
 const TOKEN_KEY_PREFIX = "pfc.token.";
 const NICK_KEY = "pfc.nickname";
 
 export type RoomView = "home" | "join" | "room";
 export type JoinMode = "create" | "join";
+
+/** 上一局终局缓存（局间回看，M2-T6）：intermission 首现时从灭源前的态里摘账——
+ *  持当前收者视角（服务端 rebase=我恒 pid 0）的结算账+终局态快照（战报尾片+名册）。 */
+export interface LastSettlement {
+  settlement: SettlementResult;
+  /** 终局态（回看 sheet 的名字解析与文字流数据源；下一步开局提要会清空） */
+  state: GameState;
+}
+
 
 function loadToken(code: string): string | null {
   try {
@@ -77,9 +97,14 @@ class RoomStore {
   toast = ref<string | null>(null);
   private toastSeq = 0;
 
+  /** 上一局终局缓存（局间回看：RoomLobby 摘要卡/回看战况 sheet；下一局建源即清） */
+  lastSettlement = ref<LastSettlement | null>(null);
+
   private ws: WebSocket | null = null;
   /** 主动离房标记：离房的 close 是预期行为，不出「连接断开」横幅 */
   private leaving = false;
+  /** 联机源句柄（对局面活着时非空）：game 消息 feed 入口；收摊走源 stop→disposeHook 回来摘名 */
+  private remoteSource: RemoteRoomSource | null = null;
 
   /** 首页 → 进房页（创建=只填昵称；加入=码+昵称）。codeParam=分享链接 ?room= 直跳预填 */
   openJoin(mode: JoinMode, codeParam?: string | null): void {
@@ -91,12 +116,15 @@ class RoomStore {
 
   backHome(): void {
     this.disconnect();
+    // 房间面退场=对局壳一并收摊（联机源 stop→disposeHook 摘名；单机链不经此路零影响）
+    gameStore.dispose();
     this.view.value = "home";
     this.snapshot.value = null;
     this.code.value = null;
     this.mySeat.value = null;
     this.banner.value = null;
     this.joinError.value = null;
+    this.lastSettlement.value = null;
   }
 
   /** 创建房间：创建者即房主即座位 0，token 落本机后连 WS 进房间大厅 */
@@ -202,10 +230,17 @@ class RoomStore {
 
   /** 上行统一守卫：死线（断开/未连）拒绝假动作并提示。返回 false=没发出去 */
   private roomSend(msg: Upstream): boolean {
-    if (this.wsState.value !== "open" || !this.ws) {
+    if (!this.sendUpstreamGuarded(msg)) {
       this.showToast("连接已断开，请先重连再操作");
       return false;
     }
+    return true;
+  }
+
+  /** 上行守卫出口（共享给源的上行，M2-T6）：死线即拒返回 false，提示由调方定——房间动作
+   *  这里直接 toast；游戏意图走 RemoteRoomSource.send 的抛错路（壳层 apply catch→toast） */
+  private sendUpstreamGuarded(msg: Upstream): boolean {
+    if (this.wsState.value !== "open" || !this.ws) return false;
     this.sendUpstream(msg);
     return true;
   }
@@ -299,13 +334,29 @@ class RoomStore {
 
   private handleDownstream(msg: Downstream): void {
     switch (msg.type) {
-      case "room":
+      case "room": {
+        const prevPhase = this.snapshot.value?.phase ?? null;
         this.snapshot.value = msg.room;
         if (msg.you != null) this.mySeat.value = msg.you;
+        // phase 生命周期钩子（M2-T6）：intermission 首现=收对局壳+结算缓存（App 视图翻回
+        // RoomLobby 局间真形）。playing 首现不动作——game 消息（hello）才是建源保险栓，
+        // 防「快照先到但对局 hello 未到」造出悬空源。
+        if (msg.room.phase === "intermission" && prevPhase !== "intermission") {
+          this.enterIntermission();
+        }
         break;
+      }
+      case "game": {
+        // 对局胖消息（M2-T6）：有源直接 feed（源活着吃新快照=重连 hello 同路）；无源=
+        // 开场 hello/Hibernation 重连全量 hello——现场建源上壳后 feed（同一条路）。
+        const remote = this.remoteSource ?? this.buildRemoteSource();
+        remote.feed(msg);
+        break;
+      }
       case "replaced":
         // 同 token 新连接顶掉本页（双开防漂移）：本页失效——清 token、回进房页让用户决断。
         // 不留在房间页出「重新连接」：那会反向顶掉最新连接，双开互踢打乒乓；以最新连接为准。
+        gameStore.dispose(); // 对局壳一并收摊（M2-T6：被顶后别留死局画面）
         this.disconnect();
         this.wsState.value = "closed";
         if (this.code.value) clearToken(this.code.value);
@@ -315,7 +366,7 @@ class RoomStore {
         break;
       case "dissolved":
         if (this.code.value) clearToken(this.code.value);
-        this.backHome();
+        this.backHome(); // 内含 gameStore.dispose+lastSettlement 清账
         this.showToast("房主解散了房间");
         break;
       case "error":
@@ -323,6 +374,64 @@ class RoomStore {
         break;
     }
   }
+
+  // ── 对局源接拆（M2-T6，#43）：建源上壳 / 局间钩子 / roomStore 上行出口挂线 ──
+
+  /**
+   * 现场建源并上壳（首条 game 消息=开局 hello 或 Hibernation 重连全量 hello——两条路同进）：
+   * 建源→gameStore.bootRemote 挂壳→返回源（caller 随即 feed）。
+   * 防御：意外重复进室（双开顶替回环等）先收老源；下一局启动=局间缓存退场；
+   * dev=1 挂同款 __pz 快照（单机 bindDevSnapshot 函数化复用，不双挂不复制）。
+   */
+  private buildRemoteSource(): RemoteRoomSource {
+    const dead = this.remoteSource;
+    if (dead) {
+      dead.stop(); // disposeHook 原地摘名
+      this.remoteSource = null;
+    }
+    this.lastSettlement.value = null;
+    let src!: RemoteRoomSource;
+    src = new RemoteRoomSource(
+      {
+        // 状态引用先于事实入壳（#39 不变式，与单机 boot 同形）：源侧 feed 先替 src.state
+        // 再调这里，此处先镜像壳层 state、后走 handle 的演出语义
+        onFacts: (facts) => {
+          if (gameStore.state.value !== src.state) gameStore.state.value = src.state;
+          gameStore.handle(facts);
+        },
+        onStep: () => {
+          gameStore.beat.value++;
+        },
+        onCrash: (err) => {
+          console.error("[remote-source]", err);
+          this.showToast("对局数据异常——已停止接收，重连可恢复");
+        },
+      },
+      // 源的上行出口=本 store 的死线守卫出口（intent 的死线拼写/对时/turn 全在源侧）
+      (msg) => this.sendUpstreamGuarded(msg),
+      // disposeHook：源被收摊（gameStore.dispose/stop）时主动摘名——此后 game 消息走重建
+      () => {
+        this.remoteSource = null;
+      },
+      this.snapshot.value?.config ?? null,
+    );
+    gameStore.bootRemote(src);
+    this.remoteSource = src;
+    if (isDevQuery()) bindDevSnapshot();
+    return src;
+  }
+
+  /** intermission 首现（M2-T6 生命周期钩子）：摘账（先于收摊砌——从灭源前的态里拿结算/尾片）
+   *  →收对局壳（App 视图翻回 RoomLobby 局间真形）。 */
+  private enterIntermission(): void {
+    const s = gameStore.state.value;
+    if (s?.endgame?.settlement) {
+      // 服务端每条 game 消息已 rebase（我恒 pid 0）——缓存原样可回看
+      this.lastSettlement.value = { settlement: s.endgame.settlement, state: s };
+    }
+    gameStore.dispose(); // 源 stop→disposeHook 摘名；App 对局分支翻回 RoomLobby 局间真形
+  }
+
 
   showToast(text: string): void {
     this.toast.value = text;
@@ -353,7 +462,42 @@ function markUrlWithRoom(code: string): void {
   }
 }
 
-/** 模块级单例（与 gameStore 同风格：class 持 ref，组件经 computed/script 读 .value）；房间状态与对局状态互不隶属 */
+/** dev 冒烟命中判据（?dev=1）：链接参数一查即真（?room= 链接可带 &dev=1 同用） */
+function isDevQuery(): boolean {
+  try {
+    return new URLSearchParams(location.search).has("dev");
+  } catch {
+    return false;
+  }
+}
+
+/** 联机只读探针（M2-T6，#43；?dev=1 挂 window.__pzroom）：房间面快照摘要——
+ *  code/phase/mySeat/hostSeat/ws 状态/座位列/config，联机冒烟的断言口。
+ *  （对局内的 __pz 仍是 gameStore 的：bindDevSnapshot 单函数双挂位，见 buildRemoteSource。） */
+export function bindRoomProbe(): void {
+  if (!isDevQuery()) return;
+  (window as unknown as Record<string, unknown>).__pzroom = () => {
+    const snap = roomStore.snapshot.value;
+    if (!snap) return null;
+    return {
+      code: snap.code,
+      phase: snap.phase,
+      mySeat: roomStore.mySeat.value,
+      hostSeat: snap.hostSeat,
+      ws: roomStore.wsState.value,
+      seats: snap.seats.map(
+        (s) =>
+          `${s.seat}${s.host ? "👑" : ""}${s.bot ? "🤖" : ""} ${s.name}` +
+          `${s.bot ? "" : s.online ? "" : "(离线)"}${s.roleId ? ` @${s.roleId}` : ""}`,
+      ),
+      config: snap.config,
+    };
+  };
+}
+
+/** 模块级单例（与 gameStore 同风格：class 持 ref，组件经 computed/script 读 .value）；
+ *  房间面与对局面各有归属——对局壳生命周期由本 store 钩子驱动（bootRemote/dispose），
+ *  对局内事实演出全走 gameStore（壳层零感知房间）。 */
 export const roomStore = new RoomStore();
 
 /** 首屏引导：链接带 ?room=CODE 直跳进房页（自动填码） */

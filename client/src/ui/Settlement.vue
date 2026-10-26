@@ -1,3 +1,15 @@
+<script lang="ts">
+/** 呈现元数据导出（M2-T6）：RoomLobby 局间回看 sheet 复用同一套奖牌/战犯图标口径（单一真源） */
+import type { CulpritReport } from "../../../kernel/src";
+
+export const CULPRIT_META: Record<CulpritReport["kind"], { icon: string; label: string }> = {
+  noCardsPlayed: { icon: "🛋", label: "全程划水" },
+  healedToDeath: { icon: "💊", label: "治疗吞到死" },
+  wrongCheck: { icon: "🔎", label: "查验查错人" },
+};
+export const MEDALS = ["🥇", "🥈", "🥉"];
+</script>
+
 <script setup lang="ts">
 /**
  * 结算页简版（#28 T8b2，完全体在 M3）：局终（phase over 且 T8b1 结算已落账）整页浮层盖账。
@@ -7,7 +19,7 @@
  */
 import { computed } from "vue";
 import { secretGoal } from "../../../kernel/src";
-import type { CulpritReport, SettlementRow } from "../../../kernel/src";
+import type { SettlementRow } from "../../../kernel/src";
 import { gameStore } from "../game/store";
 
 const state = computed(() => gameStore.state.value);
@@ -19,8 +31,6 @@ const ranked = computed<SettlementRow[]>(() => {
   const rows = settlement.value?.rows ?? [];
   return [...rows].sort((a, b) => b.total - a.total || a.pid - b.pid);
 });
-
-const MEDALS = ["🥇", "🥈", "🥉"];
 
 function name(pid: number): string {
   return state.value?.players[pid]?.name ?? `玩家${pid}`;
@@ -41,11 +51,7 @@ function pickedAchieved(row: SettlementRow): boolean {
   return !!g && row.goalNos.includes(g.no);
 }
 
-const CULPRIT_META: Record<CulpritReport["kind"], { icon: string; label: string }> = {
-  noCardsPlayed: { icon: "🛋", label: "全程划水" },
-  healedToDeath: { icon: "💊", label: "治疗吞到死" },
-  wrongCheck: { icon: "🔎", label: "查验查错人" },
-};
+// CULPRIT_META/MEDALS=模块顶导（上面 <script lang="ts"> 块）——呈现元数据单一真源，两种呈现同口径复用
 
 function jumpTo(id: number): void {
   gameStore.openReport(id);
