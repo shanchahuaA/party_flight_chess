@@ -516,17 +516,7 @@ export class Room {
     // routeAskMs/stepMs 取内核默认（不可调域，Spec #37 决策 6）。allowDev 不传=服务端永远关 dev 意图。
     const seedBytes = new Uint32Array(1);
     crypto.getRandomValues(seedBytes);
-    const config: GameConfig = {
-      ...GAME_DEFAULTS,
-      seed: seedBytes[0],
-      turnCap: lobby.turnCap,
-      maxHp: lobby.maxHp,
-      windowMs: lobby.windowMs,
-      restMs: lobby.restMs,
-      timerMode: lobby.timerMode,
-      maliceEvery: lobby.maliceEvery,
-      maliceLevel: lobby.maliceLevel,
-    };
+    const config: GameConfig = this.configFromLobby(lobby, seedBytes[0]);
     let kernel: GameKernel;
     let bootFacts: Fact[];
     try {
@@ -656,6 +646,15 @@ export class Room {
   }
 
   /**
+   * 房级断线两钟成对读（M2-T8，读法归一口）：offline=全员离线销毁截止、host=房主离线转移截止
+   * ——均内核时钟轴 now()、一次性钟（起一次、到点即清）。两列的成对/单列判定读取一律经此解构，
+   * 不再各自裸查 RoomRow 属性名；只归一读法、不改任何判定行为。
+   */
+  private roomDeadlines(room: RoomRow): { offline: number | null; host: number | null } {
+    return { offline: room.offline_deadline, host: room.host_deadline };
+  }
+
+  /**
    * 房级一次性时限到点扫（M2-T8，#45）。返回 true iff 房间已被销毁（调用方就此收场）。
    * - 全员离线销毁：offline_deadline 到点且此刻仍无一个在线真人 → destroy（对局中照毁——假人
    *   撑不起一层房，ADR §6「房间即世界」）。
@@ -667,14 +666,15 @@ export class Room {
     const room = this.roomRow();
     if (!room) return false;
     const code = this.state.id.name ?? "";
-    if (room.offline_deadline != null && t >= room.offline_deadline) {
+    const { offline, host } = this.roomDeadlines(room);
+    if (offline != null && t >= offline) {
       if (this.humanOnlineCount() === 0) {
         this.destroy();
         return true;
       }
       this.state.storage.sql.exec("UPDATE room SET offline_deadline = NULL WHERE code = ?", code);
     }
-    if (room.host_deadline != null && t >= room.host_deadline) {
+    if (host != null && t >= host) {
       const hostRow = this.seatRows().find((s) => s.seat === room.host_seat);
       const hostOnline =
         hostRow != null && hostRow.bot === 0 && this.onlineTokens().has(hostRow.token);
@@ -722,19 +722,20 @@ export class Room {
     const online = this.onlineTokens(excludeOnline);
     const humans = this.seatRows().filter((s) => !s.bot);
     if (humans.length === 0) return; // 无真人=断线钟无对象（房在清零/销毁路径）
+    const { offline, host } = this.roomDeadlines(room);
     if (humans.some((h) => online.has(h.token))) {
-      if (room.offline_deadline != null) {
+      if (offline != null) {
         this.state.storage.sql.exec("UPDATE room SET offline_deadline = NULL WHERE code = ?", code);
       }
-    } else if (room.offline_deadline == null) {
+    } else if (offline == null) {
       this.state.storage.sql.exec("UPDATE room SET offline_deadline = ? WHERE code = ?", this.now() + ALLOFF_DESTROY_MS, code);
     }
     const hostRow = humans.find((h) => h.seat === room.host_seat);
     if (hostRow != null && online.has(hostRow.token)) {
-      if (room.host_deadline != null) {
+      if (host != null) {
         this.state.storage.sql.exec("UPDATE room SET host_deadline = NULL WHERE code = ?", code);
       }
-    } else if (room.host_deadline == null) {
+    } else if (host == null) {
       this.state.storage.sql.exec("UPDATE room SET host_deadline = ? WHERE code = ?", this.now() + HOST_TRANSFER_MS, code);
     }
   }
@@ -755,16 +756,17 @@ export class Room {
    */
   private scheduleAlarm(): void {
     const cands: number[] = [];
-    const roomDeadlines = new Set<number>(); // 房级钟不吃内核哨兵过滤（见上注）
+    const roomBellTimes = new Set<number>(); // 房级钟不吃内核哨兵过滤（见上注）
     const room = this.roomRow();
     if (room) {
-      if (room.offline_deadline != null) {
-        cands.push(room.offline_deadline);
-        roomDeadlines.add(room.offline_deadline);
+      const { offline, host } = this.roomDeadlines(room);
+      if (offline != null) {
+        cands.push(offline);
+        roomBellTimes.add(offline);
       }
-      if (room.host_deadline != null) {
-        cands.push(room.host_deadline);
-        roomDeadlines.add(room.host_deadline);
+      if (host != null) {
+        cands.push(host);
+        roomBellTimes.add(host);
       }
     }
     // kernel 候选只在 playing 扫：非对局面 kernel 是上一局收场残留（over 尾挂账），
@@ -797,7 +799,7 @@ export class Room {
     let next: number | null = null;
     for (const t of cands) {
       if (!Number.isFinite(t)) continue;
-      if (!roomDeadlines.has(t) && t <= this.lastIdleAt) continue; // 内核钟哨兵；房级钟不滤（同值也过）
+      if (!roomBellTimes.has(t) && t <= this.lastIdleAt) continue; // 内核钟哨兵；房级钟不滤（同值也过）
       if (next == null || t < next) next = t;
     }
     if (next == null) {
@@ -857,12 +859,14 @@ export class Room {
     }
   }
 
-  /** 由房间账重建 GameConfig（boot 与续局同一构造——seed/config 在 start 落定、局中冻结） */
-  private gameConfig(room: RoomRow): GameConfig {
-    const lobby = room.config ? (JSON.parse(room.config) as LobbyConfig) : DEFAULT_LOBBY_CONFIG;
+  /** GameConfig 拼装唯一版（code-review 修复轮 J 合一）：七可调域从 LobbyConfig 映射、
+   *  GAME_DEFAULTS 补齐不可调域（routeAskMs/stepMs 等，Spec #37 决策 6）——
+   *  start 时点（新种子现场生成、随后落账 seed 列）与续局重建（seed/config 局中冻结、从 room 行读回）
+   *  语义同源同形状，唯 seed 来源不同，两处共用本一份。 */
+  private configFromLobby(lobby: LobbyConfig, seed: number): GameConfig {
     return {
       ...GAME_DEFAULTS,
-      seed: room.seed ?? GAME_DEFAULTS.seed,
+      seed,
       turnCap: lobby.turnCap,
       maxHp: lobby.maxHp,
       windowMs: lobby.windowMs,
@@ -871,6 +875,12 @@ export class Room {
       maliceEvery: lobby.maliceEvery,
       maliceLevel: lobby.maliceLevel,
     };
+  }
+
+  /** 由房间账重建 GameConfig（boot 与续局同一构造——seed/config 在 start 落定、局中冻结） */
+  private gameConfig(room: RoomRow): GameConfig {
+    const lobby = room.config ? (JSON.parse(room.config) as LobbyConfig) : DEFAULT_LOBBY_CONFIG;
+    return this.configFromLobby(lobby, room.seed ?? GAME_DEFAULTS.seed);
   }
 
   /** 对局落账：整包内核态+pid↔座位映射写 game 表 singleton（每次内核变化调） */
