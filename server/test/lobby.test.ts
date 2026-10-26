@@ -199,7 +199,7 @@ describe("大厅：假人凑局（M2-T4）", () => {
 });
 
 describe("大厅：开始（M2-T4）", () => {
-  it("仅房主能开始；≥2 人才能开始；开始后 phase=started 全员互见、join 拒收、大厅动作收口", async () => {    const { code, hostToken, host, guest } = await twoOnline();
+  it("仅房主能开始；≥2 人才能开始；开始后 phase=playing 全员互见、join 拒收、大厅动作收口", async () => {    const { code, hostToken, host, guest } = await twoOnline();
 
     guest.send({ type: "start" });
     await nextError(guest, "只有房主");
@@ -213,9 +213,9 @@ describe("大厅：开始（M2-T4）", () => {
 
     host.send({ type: "start" });
     const seen = await nextRoom(guest);
-    expect(seen.phase).toBe("started");
+    expect(seen.phase).toBe("playing"); // M2-T5 换代：phase 三值（playing=对局中）
     const ack = await nextRoom(host);
-    expect(ack.phase).toBe("started");
+    expect(ack.phase).toBe("playing");
 
     // 开局后：新面孔拒进、大厅动作收口、掉线者凭 token 仍可归队
     expect((await postJSON(`/api/rooms/${code}/join`, { name: "迟到者" })).status).toBe(409);
@@ -227,7 +227,7 @@ describe("大厅：开始（M2-T4）", () => {
     const back = await connect(code, hostToken);
     expect(back.hello.type).toBe("room");
     if (back.hello.type !== "room") return;
-    expect(back.hello.room.phase).toBe("started");
+    expect(back.hello.room.phase).toBe("playing");
   });
 });
 
@@ -264,15 +264,15 @@ describe("大厅：休眠唤醒等价（M2-T4）", () => {
         { seat: 2, name: "小黄", role: null, bot: 1 },
       ]);
       const room = state.storage.sql.exec("SELECT phase, config FROM room").toArray()[0]!;
-      expect(room.phase).toBe("started");
+      expect(room.phase).toBe("playing"); // M2-T5 换代：库存 phase=playing（started 退役）
       expect(JSON.parse(room.config as string)).toEqual(cfg);
     });
 
-    // 重连恢复：大厅面完整（角色/配置/假人/started）
+    // 重连恢复：大厅面完整（角色/配置/假人/playing）
     const back = await connect(created.code, created.token);
     expect(back.hello.type).toBe("room");
     if (back.hello.type !== "room") return;
-    expect(back.hello.room.phase).toBe("started");
+    expect(back.hello.room.phase).toBe("playing");
     expect(back.hello.room.config).toEqual(cfg);
     expect(seatOf(back.hello.room.seats, 1).roleId).toBe("beast");
     expect(seatOf(back.hello.room.seats, 2).bot).toBe(true);

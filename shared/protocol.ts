@@ -1,8 +1,16 @@
 // WS 协议唯一真源（见 docs/脚手架约定.md）：client 与 server 共同导入，禁止各自手写消息类型。
-// M2-T3（#40）起为房间生命周期协议：上行只有房间动作（T5 起扩展对局意图），下行只有房间快照与通知。
+// M2-T3（#40）起为房间生命周期协议；M2-T5（#42）起扩展对局面：上行=房间动作+对局意图
+// （kernel Intent 原形状上电线），下行=房间快照/通知+对局胖事实消息（本批事实+战报 slice+
+// 按座位裁剪的全量快照——各字段说明见 server/src/gameView.ts，服务端终局裁决的转换都在那）。
 // 传输层心跳不走这里：DO 用 setWebSocketAutoResponse("ping"→"pong") 原样应答，不唤醒进程。
 
-import type { GameConfig } from "../kernel/src/types";
+import type {
+  Fact,
+  GameConfig,
+  GameState,
+  Intent,
+  MessageEntry,
+} from "../kernel/src/types";
 import type { RoleId } from "../kernel/src/data/roles";
 
 /** 房间容量（8 人局，kernel 出生槽池同口径） */
@@ -36,7 +44,10 @@ export type Upstream =
   | { type: "setConfig"; config: LobbyConfig } // 改开局配置：仅房主；全量对象（域校验复用内核 CONFIG_LIMITS）
   | { type: "addBot" } // 加 1 假人凑局：仅房主；假人 ≤7 且真人+假人 ≤8
   | { type: "removeBot" } // 减最近加的 1 假人：仅房主
-  | { type: "start" }; // 开始：仅房主；≥2 人（真人+假人）——按下后房间转开局流程（T5 起此处 boot 内核）
+  | { type: "start" } // 开始：仅房主；≥2 人（真人+假人）——按下后 boot 内核转对局态（M2-T5 实装），含局间再来一局
+  | { type: "intent"; turn: number; intent: Intent }; // 对局意图（M2-T5，#42）：pid 恒写 0=发送者视角，
+// DO 按源 socket 的 token→座位折算成真实 pid 后才交内核（服务端替视角转译，客户端不知道自己的全局 pid）；
+// turn=客户端已知的内核回合号，DO 与 kernel.state.turn 对账（过期=「操作过期」error+快照对齐）
 
 /** 座位的公开视图（座位互见：昵称/在线/房主标记/已选角色；token 绝不下发） */
 export interface RoomSeatView {
@@ -55,8 +66,10 @@ export interface RoomSnapshot {
   code: string;
   /** 房主座位号（转移逻辑 T8 落；本票=创建者持标记，房主离房转给最早加入者） */
   hostSeat: number;
-  /** lobby=大厅态（选角/配置/假人）；started=房主已按开始（T5 起按下即 boot 内核转对局态） */
-  phase: "lobby" | "started";
+  /** lobby=大厅态（选角/配置/假人）；playing=对局中（boot 内核、大厅面收口、join 拒收）；
+   *  intermission=局间配置态（结算后回大厅面，可改配置/选角/开局；同一房间同批人，每局新种子）。
+   *  （M2-T5，#42：room.phase 由 started 换代为 playing|intermission——按下开始即 boot 内核转对局态。） */
+  phase: "lobby" | "playing" | "intermission";
   /** 开局配置（房主可改、他人只读预览；server 侧按内核域校验后落账） */
   config: LobbyConfig;
   seats: RoomSeatView[];
@@ -65,6 +78,11 @@ export interface RoomSnapshot {
 /** 服务端 → 客户端 */
 export type Downstream =
   | { type: "room"; room: RoomSnapshot; you: number | null; now: number } // you=自己的座位号（null=观战/未落座，本票恒有座位）
+  // 对局胖事实消息（M2-T5，#42；Spec #37 实现决策 3/4）：每条按收者逐人构建——
+  // facts=本批内核事实；messages=战报尾片（最后 200 条）；state=按收者视角重定基+裁剪后的
+  // 全量快照（整体覆盖零合并）。重定基=收者恒 pid 0（pid 引用全量改写）；裁剪硬约束=
+  // 他人手牌/暗牌/真货行/RNG 流（rngStates/seq/dogSeq/customsSeq）绝不下发。
+  | { type: "game"; now: number; facts: Fact[]; messages: MessageEntry[]; state: GameState }
   | { type: "replaced" } // 同 token 新连接顶掉旧连（双开防漂移）：旧连接收到即失效，以最新连接为准
   | { type: "dissolved" } // 房主解散/房间销毁：全员收到后回首页
   | { type: "error"; message: string }; // 上行动作被拒（非房主解散等）；轻提示用，快照随后强制对齐

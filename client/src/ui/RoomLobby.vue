@@ -15,7 +15,9 @@ import ConfigPanel, { type ConfigModel } from "./ConfigPanel.vue";
 const snap = computed(() => roomStore.snapshot.value);
 const amHost = computed(() => snap.value?.hostSeat === roomStore.mySeat.value);
 const phase = computed(() => snap.value?.phase ?? "lobby");
-const started = computed(() => phase.value === "started");
+// M2-T5（#42)最小 shim：phase 换代三值——playing|intermission 均视作「已开局」的等待/收形态
+// （真形态=进对局画面，T6 票接 game 源时重做演出，本票只保编译面与文案不回归）。
+const started = computed(() => phase.value === "playing" || phase.value === "intermission");
 const seats = computed(() => snap.value?.seats ?? []);
 const humansCount = computed(() => seats.value.filter((s) => !s.bot).length);
 const botsCount = computed(() => seats.value.filter((s) => s.bot).length);
