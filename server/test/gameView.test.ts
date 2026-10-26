@@ -187,6 +187,54 @@ describe("buildGameView：内部段与战报", () => {
   });
 });
 
+describe("buildGameView：保密口径收口（code-review 修复轮 A/B）", () => {
+  it("A. 对局中他人快照不含未来牌序：deck/itemDeck 保形裁黑（长度可数、卡面全黑）", () => {
+    const s = rawState({
+      players: [player(0), player(1)],
+      deck: ["e1", "e2", "e3"],
+      itemDeck: ["i1", "i2"],
+    });
+    // 任何视角都裁（含收者本人）：未来抽卡顺序不是 per-座位私密，是全体保密面
+    for (const viewer of [0, 1]) {
+      const { state } = buildGameView(s, [], viewer);
+      expect(state.deck).toEqual(["", "", ""]);
+      expect(state.itemDeck).toEqual(["", ""]);
+      expect(s.deck).toEqual(["e1", "e2", "e3"]); // 原件未动
+      expect(s.itemDeck).toEqual(["i1", "i2"]);
+    }
+  });
+
+  it("A. over 相位牌堆残序同款裁黑（终局亮的是暗牌不是牌堆）", () => {
+    const s = rawState({ phase: "over", players: [player(0), player(1)], deck: ["e1"], itemDeck: ["i1", "i2"] });
+    const { state } = buildGameView(s, [], 0);
+    expect(state.deck).toEqual([""]);
+    expect(state.itemDeck).toEqual(["", ""]);
+  });
+
+  it("B. 结算即揭：over 相位他人暗牌照实亮（secretOptions/secretPick 与 kernel 真值一致，手牌仍裁）", () => {
+    const s = rawState({
+      phase: "over",
+      players: [
+        player(0),
+        player(1, { secretOptions: [7, 9], secretPick: 1, hand: ["item_9"] }),
+      ],
+    });
+    const { state } = buildGameView(s, [], 0);
+    expect(state.players[1].secretOptions).toEqual([7, 9]); // 真值亮出（单机 Settlement 同源呈现依赖）
+    expect(state.players[1].secretPick).toBe(1);
+    expect(state.players[1].hand).toEqual([]); // 决策 4 硬约束不随结算松动
+  });
+
+  it("B. 对局中（acting 相位）他人暗牌仍保形置零——保密口径不提前松动", () => {
+    const s = rawState({
+      phase: "acting",
+      players: [player(0), player(1, { secretOptions: [7, 9], secretPick: 1 })],
+    });
+    const { state } = buildGameView(s, [], 0);
+    expect(state.players[1].secretOptions).toEqual([0, 0]);
+  });
+});
+
 describe("buildGameView：facts 批", () => {
   it("pid/target/targets 重定基 + itemDrawn 双口径（本人真卡面/他人空串）；分节号不动", () => {
     const s = rawState({ players: [player(0), player(1), player(2)] });

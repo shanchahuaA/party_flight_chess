@@ -63,16 +63,16 @@ const rankedRows = computed<SettlementRow[]>(() => {
   return lastSettle.value?.state.players[pid]?.name ?? `玩家${pid}`;
 }
 
-/** 暗牌亮牌仅限自己（他人 secretOptions 被服务端保形置零——亮牌无真值，恰是保密口径） */
-function myGoalOf(row: SettlementRow) {
-  if (row.pid !== 0) return null;
-  const p = lastSettle.value?.state.players[0];
+/** 暗牌亮牌（与单机 Settlement.vue T8b2 同型）：结算即揭——over 快照里他人 secretOptions 已照实
+ *  下发（服务端 gameView 结算例外，code-review 修复轮 B），逐 row 亮齐各人目标与判定结果。 */
+function goalOf(row: SettlementRow) {
+  const p = lastSettle.value?.state.players[row.pid];
   const pick = p?.secretPick;
   if (!p || pick == null) return null;
   return secretGoal(p.secretOptions[pick]!);
 }
-function myGoalAchieved(row: SettlementRow): boolean {
-  const g = myGoalOf(row);
+function goalAchieved(row: SettlementRow): boolean {
+  const g = goalOf(row);
   return !!g && row.goalNos.includes(g.no);
 }
 
@@ -373,10 +373,10 @@ const detail = computed(() => roleOf(detailRole.value));
                 <span class="noTitle">—</span>
               </template>
             </div>
-            <p class="dark" v-if="myGoalOf(r)">
-              🎯 暗牌「{{ myGoalOf(r)!.title }}」
+            <p class="dark" v-if="goalOf(r)">
+              🎯 暗牌「{{ goalOf(r)!.title }}」
               <b v-if="r.goalsVoided" class="voidTxt">作废</b>
-              <b v-else-if="myGoalAchieved(r)" class="hitTxt">达成 ✓</b>
+              <b v-else-if="goalAchieved(r)" class="hitTxt">达成 ✓</b>
               <b v-else class="missTxt">未达成</b>
             </p>
           </div>
