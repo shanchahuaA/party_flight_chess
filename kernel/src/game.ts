@@ -447,7 +447,12 @@ export class GameKernel {
         break;
       }
       case "chooseSecret": {
-        // 开局暗牌抽 2 选 1：真人本人选（drafting 期唯一前置动作），假人已在 create 代抽
+        // 开局暗牌抽 2 选 1：真人本人选（drafting 期唯一前置动作），假人已在 create 代抽。
+        // 窗口时序（M2 #42 报出，T5c 前置修）：联机房间每个真人都抽暗牌——第一个真人选完就
+        // openWindow 会把其余真人的 chooseSecret 拒成「非开局抽牌阶段」（选牌死锁）。唯有
+        // 全部真人（secretPick==null 的真人=0 家）都选定才开第一窗；drafting 期无时限、
+        // tick 不催（等全员选定是语义，挂起/掉线治理归 M2 T8）。M1 单真人局逐党不变：
+        // 唯一真人选完即全员齐=照旧当拍开张。
         if (this.state.phase !== "drafting") throw new KernelError("非开局抽牌阶段");
         const p = this.player(intent.pid);
         if (p.isBot) throw new KernelError("假人目标由系统代抽，无需选择");
@@ -455,8 +460,15 @@ export class GameKernel {
         if (intent.pick !== 0 && intent.pick !== 1) throw new KernelError("暗牌选项下标越界");
         p.secretPick = intent.pick;
         this.emit({ type: "secretPicked", pid: p.id });
-        this.msg("system", `${p.name} 选定暗牌目标——第一窗开张！`, p.id, { emphasis: "highlight" });
-        this.openWindow(now);
+        const allHumansPicked = !this.state.players.some((q) => !q.isBot && q.secretPick == null);
+        if (allHumansPicked) {
+          // 最后一拍=开张：文案随触发人发（照旧 highlight），同拍 openWindow
+          this.msg("system", `${p.name} 选定暗牌目标——第一窗开张！`, p.id, { emphasis: "highlight" });
+          this.openWindow(now);
+        } else {
+          // 仍有真人未选：只落「选定」一笔，盼余下人（无开张尾巴）
+          this.msg("system", `${p.name} 选定暗牌目标。`, p.id);
+        }
         break;
       }
       case "dev.back": {

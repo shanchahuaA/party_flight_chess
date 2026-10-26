@@ -51,7 +51,9 @@ describe("整蛊三通道（grudge 标签）", () => {
   ];
   const boot2h = (over: Partial<GameConfig> = {}): GameKernel => {
     const { kernel } = GameKernel.create({ allowDev: true, maliceLevel: "off", restMs: 0, ...over }, 0, FIXED);
+    // 驱动扩展（T5c 前置）：双真人都抽暗牌，全员选定才开窗——只补齐选牌，断言不动
     kernel.apply({ type: "chooseSecret", pid: 0, pick: 0 }, 0);
+    for (const q of kernel.state.players.filter((x) => !x.isBot && x.secretPick == null)) kernel.apply({ type: "chooseSecret", pid: q.id, pick: 0 }, 0);
     return kernel;
   };
 
@@ -184,7 +186,9 @@ describe("海关三账（customsOpen/customsLied/customsClean）", () => {
   ];
   const bootK = (over: Partial<GameConfig> = {}): GameKernel => {
     const { kernel } = GameKernel.create({ allowDev: true, maliceLevel: "off", restMs: 0, ...over }, 0, FIXED);
+    // 驱动扩展（T5c 前置）：双真人都抽暗牌，全员选定才开窗——只补齐选牌，断言不动
     kernel.apply({ type: "chooseSecret", pid: 0, pick: 0 }, 0);
+    for (const q of kernel.state.players.filter((x) => !x.isBot && x.secretPick == null)) kernel.apply({ type: "chooseSecret", pid: q.id, pick: 0 }, 0);
     return kernel;
   };
 

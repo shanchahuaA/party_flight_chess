@@ -23,7 +23,9 @@ const TWO: PlayerDef[] = [
 ];
 const boot2 = (seed: number, over: Partial<GameConfig> = {}): GameKernel => {
   const { kernel } = GameKernel.create({ allowDev: true, seed, maliceLevel: "off", ...over }, 0, TWO);
+  // 驱动扩展（T5c 前置：多真人都抽暗牌，全员选定才开窗——断言与意图序列不动，只补齐除 pid0 外的真人选牌）
   kernel.apply({ type: "chooseSecret", pid: 0, pick: 0 }, 0);
+  for (const q of kernel.state.players.filter((x) => !x.isBot && x.secretPick == null)) kernel.apply({ type: "chooseSecret", pid: q.id, pick: 0 }, 0);
   return kernel;
 };
 

@@ -98,9 +98,10 @@ function pumpStep(d: Drive, which: "host" | "guest", allowActions: boolean): boo
   const c = which === "host" ? d.host : d.guest;
   const me = s.players[0];
   if (s.phase === "drafting") {
-    // 抽暗牌：房东（=kernel pid 0）在 host 视角多维 pid 0 直选；第二真人晚到=内核
-    // 「非开局抽牌阶段」拒（M1 单真人期语义遗留，见交付报告「实现期定案」——本票零 fork 不改内核）
-    if (which === "host") {
+    // 抽暗牌：凡在座真人都各选（视角重定基=自己恒 pid 0；self.secretPick 真值对本视角可见，
+    // 选位后不再重复发）。内核 T5c 前置修复后=全员选定才开窗，drafting 期 alarm 无钟可催，
+    // 本分支是 pump 唯一豁免面（allowActions=false 也放行）——双端各补一票即点亮第一窗。
+    if (!me.isBot && me.secretPick == null) {
       sendIntent(c, s.turn, { type: "chooseSecret", pid: 0, pick: 0 });
       return true;
     }
@@ -213,8 +214,8 @@ async function newRoomWithBot(): Promise<{ drive: Drive; hostToken: string; gues
   };
 }
 
-/** 房东落配置并开局+房东明选暗牌（点亮第一窗）：
- *  两端 room(playing)/game 开局快照/选牌 ack 都已消费并并账。
+/** 房东落配置并开局+房东先明选暗牌（第二真人的一票由驱动循环补）：
+ *  两端 room(playing)/game 开局快照/房东选牌 ack 都已消费并并账；第一窗的开张在 drive 里接力到齐。
  *  驱动循环 pop 只在「消息到达」后反应；boot ack 走显式消费，开局点火必须在此显式浇灌。 */
 async function startGame(
   d: Drive,
@@ -230,12 +231,18 @@ async function startGame(
   const gb = await nextGame(d.guest);
   ingest(d, "host", hb);
   ingest(d, "guest", gb);
-  // 房东明选暗牌（drafting 唯一前置动作）：turn=boot 的回合号 1
+  // 房东明选暗牌；朋友甲的一票同样在此显式补齐——修后内核（T5c 前置）全员选定才开窗，
+  // 而 drafting 期 alarm 无钟可催、drive 只在收到新消息时翻起 pump，冷启动必须在此浇齐两票。
   sendIntent(d.host, hb.state.turn, { type: "chooseSecret", pid: 0, pick: 0 });
-  const ha = await nextGame(d.host);
-  const ga = await nextGame(d.guest);
+  const ha = await nextGame(d.host); // 房东选牌 ack（phase 仍 drafting）
+  const ga = await nextGame(d.guest); // 广播同步
   ingest(d, "host", ha);
   ingest(d, "guest", ga);
+  sendIntent(d.guest, ga.state.turn, { type: "chooseSecret", pid: 0, pick: 0 }); // 自视角恒 pid 0（协议转译）
+  const gaa = await nextGame(d.guest); // 朋友甲选牌 ack——同批含 windowStart（开张拍）
+  const haa = await nextGame(d.host); // 广播（host 侧 phase 翻 acting）
+  ingest(d, "guest", gaa);
+  ingest(d, "host", haa);
   return { hostBoot: hb.state, guestBoot: gb.state };
 }
 
@@ -307,7 +314,7 @@ describe("对局主链（M2-T5）：进房打到结算，局间再开新局", ()
       for (const p of endState.players) {
         expect(p.hp).toBeGreaterThanOrEqual(0);
         expect(p.hp).toBeLessThanOrEqual(5);
-        // 假人=系统代抽（0|1）；真人=选过（0|1）或从未被允许选（内核单真人期遗留，见报告）=null
+        // 假人=系统代抽（0|1）；真人=选过（0|1）——凡在座真人都由驱动补选到齐才开窗
         if (p.isBot) expect([0, 1]).toContain(p.secretPick);
         else expect([null, 0, 1]).toContain(p.secretPick);
       }
@@ -446,7 +453,7 @@ describe("Alarm 全自动推进（M2-T5）", () => {
     async () => {
       const { drive: d } = await newRoomWithBot();
       await startGame(d, ALARM_CFG);
-      // 真人只在 drafting 那一下「抽暗牌」放行（pump 唯一豁免），此后零真人动作——全靠 alarm 推
+      // 真人只在 drafting 各选一次暗牌（pump 唯一豁免面，双端各一票），此后零真人动作——全靠 alarm 推
       await drive(d, (x) => x.seenFacts.has("gameEnd"), { allowActions: false });
 
       // 子轴一：auto=true 的 roll/confirm（替掷与假人日程同一条时钟税道；整局里必现）

@@ -32,7 +32,9 @@ const PAIR: PlayerDef[] = [
 ];
 const bootCrew = (over: Partial<GameConfig> = {}, defs: PlayerDef[] = CREW): GameKernel => {
   const { kernel } = GameKernel.create({ allowDev: true, seed: 7, maliceLevel: "off", ...over }, 0, defs);
+  // 驱动扩展（T5c 前置）：PAIR 双真人口也要两人选满才开窗；单真人口此循环为空转
   kernel.apply({ type: "chooseSecret", pid: 0, pick: 0 }, 0);
+  for (const q of kernel.state.players.filter((x) => !x.isBot && x.secretPick == null)) kernel.apply({ type: "chooseSecret", pid: q.id, pick: 0 }, 0);
   return kernel;
 };
 
