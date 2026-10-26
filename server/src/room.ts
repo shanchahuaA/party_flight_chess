@@ -537,7 +537,8 @@ export class Room {
       // 配置/名册意外被内核拒（配置已按 CONFIG_LIMITS 校验、人数已挡，理论上不可达）：不翻 phase 直接回 error
       this.send(ws, { type: "error", message: e instanceof KernelError ? e.message : "开局失败，请重试" });
       return;
-    }    this.pidSeat = seats.map((s) => s.seat); // pid=座位升序下标（seat_map 同源）
+    }
+    this.pidSeat = seats.map((s) => s.seat); // pid=座位升序下标（seat_map 同源）
     this.kernel = kernel;
     this.lastIdleAt = this.now(); // boot 已把 ≤now 的一切给过内核一次（新局时钟账从零起步）
     this.state.storage.sql.exec(
@@ -1133,7 +1134,9 @@ export class Room {
     const pid = this.pidOfSeat(seat);
     if (pid == null) return; // 座位不在 kernel 名册（intermission 旧账等）：老游戏不留接缝
     const view = buildGameView(saved, facts, pid);
-    this.send(ws, { type: "game", now: Date.now(), facts: view.facts, messages: view.messages, state: view.state });
+    // now=DO 内核时钟轴（this.now()=Date.now()+clockOffset）——与 windowDeadline/adoptGameBaseline
+    // 同轴（T7 计时域一致性：快进缝下 game.now 必须落在内核轴上，Date.now() 会站错侧）
+    this.send(ws, { type: "game", now: this.now(), facts: view.facts, messages: view.messages, state: view.state });
   }
 
   /**

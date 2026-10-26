@@ -14,8 +14,7 @@
  * - adoptGameBaseline(serverNow)：对时样本缺席时的弱基线（最近 game 消息的 now，单向偏差≈网络
  *   往返前半程，无 RTT/2 折算——弱点注释在案）；一旦有 sync 样本立即取替（此后 no-op）。
  * - resetAnchor(serverNow)：**整段重置缝**——room 回包（you 非空=单发对齐：upgrade hello /
- *   refresh 回包）时 roomStore 调它，与快照覆盖同拍；构造可传 now 读数函数（缺省 performance.now）
- *   roomStore 在 room 回包（you 非空=单发对齐：upgrade hello / refresh 回包）时调用。
+ *   refresh 回包）时 roomStore 调它，与快照覆盖同拍；构造可传 now 读数函数（缺省 performance.now）。
  *
  * 客户端无测试包（沿 #43 口径：typecheck/build 撑绿）；所有可测性都在纯函数形状与注入缝里，
  * 冒烟断读走 roomStore 的 ?dev=1 探针 __pztime()（offset/rttBest/samples 全量亮出）。
