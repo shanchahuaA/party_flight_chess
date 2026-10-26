@@ -11,12 +11,17 @@
  *   RemoteRoomSource 的上行出口/收摊通知（disposeHook）都挂在本 store 上。
  * - 对时正解（M2-T7，#44）：ServerClock（本包 clock.ts）住本 store——生命周期=连接域，比源长
  *   （源收摊/重建复用同一只钟）。建连成功(open)→多采样 sync 探针（4 条@150ms，pending 严格按
- *   到达序配对喂钟）+ 每 60s 幂等 refresh 保鲜；回前台 visible 沿/pageshow(persisted)/手动重连
- *   成功→refresh+采样一次（幂等重对时+全量快照覆盖本地——绝不补算锁屏期间的事，自动重连=T8）；
+ *   到达序配对喂钟）+ 10s 存活探针 + 每 60s 幂等 refresh 保鲜；回前台 visible 沿/pageshow(persisted)/
+ *   手动·自动重连成功→refresh+采样一次（幂等重对时+全量快照覆盖本地——绝不补算锁屏期间的事）；
  *   room 回包（you 非空=单发对齐）走 resetAnchor 整段重置缝，game 消息走源内 adoptGameBaseline
  *   弱基线——倒计时=windowDeadline-clock.serverNow() 全靠 store.now() 现行线（HUD 组件零改动）。
- * - 断线治理（自动重连/转移/踢人）在 T8 落，本票只有手动重连一条缝；重连后 game hello 照 feed
- *   （源活着直接吃新快照）。
+ * - 断线治理（M2-T8，#45 全量接线）：三味——
+ *   ①「重连中」态=下行静默 watchdog（ADR §2「约 25–30 秒收不到任何消息」，不依赖 onclose 感知）
+ *     判死自行断开 → onclose 统一入口起自动重连循环（10×2.2s 到顶=横幅降级手动），成功即
+ *     横幅收起+提示「已重新归队」+ recoverClockSession（T7 恢复触发面同缝零误伤）；
+ *   ②被踢（kicked 下行/4003 关线）=清 token 回首页+明确提示，绝不自动重连（原身份 403 拒升级）；
+ *   ③被顶（replaced）世代护栏：自动重连循环绝不反向顶替双开的另一侧。
+ *   房主转移/全员离线销毁由服务端裁决（room 快照广播/replaced 文案之外），客户端零额外特权。
  */
 import { ref } from "vue";
 import type {
@@ -39,8 +44,17 @@ const NICK_KEY = "pfc.nickname";
 const SYNC_SAMPLE_N = 4;
 const SYNC_SAMPLE_STEP_MS = 150;
 /** 可选保鲜面（M2-T7 契约 E④，实现期定案 3 落实）：每 60s 自动 refresh 一次——长局不掉观测、
- *  幂等重对时；死线时静默 no-op。不做自动重连（那是 T8 的域）。 */
+ *  幂等重对时；死线时静默 no-op。自动重连不在它身上（那是 M2-T8 加的下层 watchdog/循环）。 */
 const SYNC_REFRESH_EVERY_MS = 60_000;
+/** 存活探针节奏（M2-T8，#45）：每 10s 一条 sync 探针——ADR §2 的「25–30 秒收不到任何消息」判死
+ *  靠下行**持续有流**才成立（60s 保鲜间隔 > 判死窗，会把健康连接误判断线）；探针兼续对时样本。 */
+const SYNC_LIVENESS_MS = 10_000;
+/** 下行静默判死窗（M2-T8，ADR §2 原文口径）：约 25–30 秒收不到任何消息即进入「重连中」——
+ *  不依赖 onclose 感知断线（锁屏/断网的 socket 常年静默挂着，close 事件不会来）。 */
+const DEAD_SILENCE_MS = 25_000;
+/** 自动重连节奏（M2-T8）：10 次 × 2.2s ≈ 22s 拉网到顶——横幅降级为手动重连（票面「失败到顶」） */
+const AUTO_RECONN_MAX = 10;
+const AUTO_RECONN_STEP_MS = 2_200;
 
 export type RoomView = "home" | "join" | "room";
 export type JoinMode = "create" | "join";
@@ -128,6 +142,14 @@ class RoomStore {
   private syncTimers: number[] = [];
   private syncPending: number[] = [];
   private syncHeartbeat = 0;
+  /** 存活探针心跳句柄（M2-T8）：10s 一条 sync——下行持续流=判死凭据的给料线 */
+  private livenessTimer = 0;
+  /** 下行静默 watchdog 句柄（M2-T8）：每次下行刷新，25s 无任何消息=判死自行断开走自动重连 */
+  private watchdog = 0;
+  /** 最近一条下行时刻（performance.now 轴；探针 silentMs 读数=冒烟断「重连中进入时机」用） */
+  private lastRecvPerf = 0;
+  /** 自动重连世代护栏：手动重连/回首页/被顶/被踢都 ++——在跑的循环见世代变了立即退场（互顶不反弹） */
+  private reconnectGen = 0;
 
   constructor() {
     // 恢复触发面（M2-T7 契约 E①②）：回前台 visible 沿 + bfcache 恢复（persisted）——幂等重对时
@@ -150,6 +172,7 @@ class RoomStore {
 
   backHome(): void {
     this.disconnect();
+    this.reconnectGen++; // 净场：在跑的自动重连循环立即退场（回首页后绝不背着连接重连）
     // 房间面退场=对局壳一并收摊（联机源 stop→disposeHook 摘名；单机链不经此路零影响）
     gameStore.dispose();
     this.view.value = "home";
@@ -217,14 +240,44 @@ class RoomStore {
     return true;
   }
 
-  /** 手动重连（掉线横幅按钮）：token 还在座位上，重连即归队。重连成功=T7 恢复触发面③：升级
-   *  hello 已整段重置对时+burst 已采样，再补一发 refresh 幂等对齐（等价重连 hello 的拉快照）。 */
+  /**
+   * 重连（横幅按钮）。M2-T8 起手动与自动走同一条循环：世代++先废掉在跑的自动重连，
+   * 立即首发重试、失败按节奏续投（到顶=横幅降级为手动再试）。
+   * 重连成功=T7 恢复触发面③：升级 hello 已整段重置对时+burst 已采样，再补一发 refresh 幂等对齐。
+   */
   async reconnect(): Promise<void> {
     if (!this.code.value) return;
     const token = loadToken(this.code.value);
     if (!token) return;
     this.banner.value = null;
-    if (await this.connect(this.code.value, token)) this.recoverClockSession();
+    await this.autoReconnectLoop(++this.reconnectGen);
+  }
+
+  /**
+   * 自动重连循环（M2-T8，#45）：onclose（真掉线/watchdog 判死）与手动重连同一条入口。
+   * - 节奏：立即首发 → 10 次 × 2.2s ≈ 22s → 横幅降级为手动（不再自动）。
+   * - 成功即归队：横幅收起 + recoverClockSession（refresh+采样，与手动重连/T7 触发面同缝）+ 提示。
+   * - 世代护栏：循环每跳先查 reconnectGen——被手动/回首页/被顶/被踢接手时立即退场；
+   *   只有 view 仍在房间页且 token 还握在手上才继续（被踢/被顶者 token 已清，天然止步）。
+   */
+  private async autoReconnectLoop(gen: number): Promise<void> {
+    const code = this.code.value;
+    const token = code ? loadToken(code) : null;
+    if (!code || !token) return;
+    for (let attempt = 1; attempt <= AUTO_RECONN_MAX; attempt++) {
+      if (gen !== this.reconnectGen || this.view.value !== "room") return;
+      const ok = await this.connect(code, token);
+      if (gen !== this.reconnectGen) return; // 手动/顶替接管了这轮连接（成败都不由本循环说）
+      if (ok) {
+        this.banner.value = null;
+        this.recoverClockSession();
+        this.showToast("已重新归队——座位与局面已恢复");
+        return;
+      }
+      await sleepPromise(AUTO_RECONN_STEP_MS);
+    }
+    if (gen !== this.reconnectGen) return;
+    this.banner.value = "自动重连多次未成功——可点「重新连接」再试，或先回首页";
   }
 
   /** 主动离房：座位即刻释放、token 作废（服务端关线确认后回首页）。死线时拒绝假离房——
@@ -236,6 +289,11 @@ class RoomStore {
   /** 房主解散：全员请出、房间销毁（死线守卫同 leave） */
   dissolve(): void {
     this.roomAction({ type: "dissolve" }, "房间已解散");
+  }
+
+  /** 房主踢人（M2-T8，#45）：被踢者即刻断连+token 拉黑+棋子转自动掷骰（任何 phase 可踢，服务端裁决） */
+  kick(seat: number): void {
+    this.roomSend({ type: "kick", seat });
   }
 
   // ── 大厅动作（M2-T4，#41）：服务端校验房主/phase/配额，被拒收 error 事实走 toast ──
@@ -296,8 +354,8 @@ class RoomStore {
 
   // ── 对时会话（M2-T7，#44）：建连采样阵/60s 保鲜心跳/恢复触发面（全死线安全——不开线即 no-op）──
 
-  /** 建连成功(open)即开一轮对时会话：4×150ms 采样阵 + 60s 保鲜心跳。旧会话先清场（重连竞态
-   *  防双跑）；定时回调校验 ws 身份（旧定时器绝不打到新线）。 */
+  /** 建连成功(open)即开一轮对时会话：4×150ms 采样阵 + 10s 存活探针 + 60s 保鲜心跳 + 25s 判死
+   *  watchdog 起摆。旧会话先清场（重连竞态防双跑）；定时回调校验 ws 身份（旧定时器绝不打到新线）。 */
   private startClockSession(ws: WebSocket): void {
     this.stopClockSession();
     for (let i = 0; i < SYNC_SAMPLE_N; i++) {
@@ -308,21 +366,53 @@ class RoomStore {
         }, i * SYNC_SAMPLE_STEP_MS),
       );
     }
+    // 存活探针（M2-T8）：10s 一条 sync——健康连接的下行持续流=「25s 判死」凭据的给料线
+    this.livenessTimer = window.setInterval(() => {
+      if (this.ws !== ws) return;
+      this.sendSyncProbe();
+    }, SYNC_LIVENESS_MS);
     this.syncHeartbeat = window.setInterval(() => {
       if (this.ws !== ws) return;
       this.recoverClockSession();
     }, SYNC_REFRESH_EVERY_MS);
+    this.armWatchdog();
   }
 
-  /** 会话收场：定时器/心跳全清、pending 废对（跨连接配对绝不串帐） */
+  /** 会话收场：定时器/心跳/存活探针/watchdog 全清、pending 废对（跨连接配对绝不串帐） */
   private stopClockSession(): void {
     for (const id of this.syncTimers) window.clearTimeout(id);
     this.syncTimers.length = 0;
+    if (this.livenessTimer !== 0) {
+      window.clearInterval(this.livenessTimer);
+      this.livenessTimer = 0;
+    }
     if (this.syncHeartbeat !== 0) {
       window.clearInterval(this.syncHeartbeat);
       this.syncHeartbeat = 0;
     }
+    if (this.watchdog !== 0) {
+      window.clearTimeout(this.watchdog);
+      this.watchdog = 0;
+    }
     this.syncPending.length = 0;
+  }
+
+  /** 下行静默 watchdog（M2-T8，ADR §2）：每次下行调 disarm→re-arm；25s 没有任何消息=连接判死——
+   *  主动断开自己（不依赖 onclose 感知），banner 摆出重连中，onclose 统一入口起自动重连循环。
+   *  后台节流定时器会迟到：判死从不下错人——它只关当前 open 的连接，归队逻辑全权收回。 */
+  private armWatchdog(): void {
+    if (this.watchdog !== 0) window.clearTimeout(this.watchdog);
+    this.watchdog = window.setTimeout(() => {
+      this.watchdog = 0;
+      if (this.wsState.value !== "open" || this.ws == null || this.leaving) return;
+      this.banner.value = "连接疑似中断，重连中…";
+      const ws = this.ws;
+      try {
+        ws.close(); // onclose 守卫（this.ws===ws）仍认识它——统一入口接手
+      } catch {
+        /* 已在关闭中 */
+      }
+    }, DEAD_SILENCE_MS);
   }
 
   /** 恢复触发面共用（visible 沿/pageshow persisted/手动重连成功/60s 心跳）：幂等快照拉取
@@ -396,7 +486,8 @@ class RoomStore {
       this.wsState.value = "closed";
       this.stopClockSession(); // 对时会话随线收场（心跳/定时器/pending 全清）
       if (this.leaving) return; // 自己发的 leave：backHome 已走，别出横幅
-      this.banner.value = "连接已断开";
+      this.banner.value = "连接断开，自动重连中…"; // 25s 判死与 onClose 断线同一横幅面
+      void this.autoReconnectLoop(++this.reconnectGen); // M2-T8：自动归队循环（手动按钮可随时接管）
     };
     this.wsState.value = "open";
     this.startClockSession(ws); // T7：建连成功即开对时会话（采样阵+60s 保鲜心跳）
@@ -418,6 +509,8 @@ class RoomStore {
   }
 
   private handleDownstream(msg: Downstream): void {
+    this.lastRecvPerf = performance.now(); // 静默计时刻（M2-T8：探针 silentMs=「重连中进入时机」断言口）
+    this.armWatchdog(); // 每条下行都重新武装判死窗
     switch (msg.type) {
       case "room": {
         const prevPhase = this.snapshot.value?.phase ?? null;
@@ -452,6 +545,7 @@ class RoomStore {
       case "replaced":
         // 同 token 新连接顶掉本页（双开防漂移）：本页失效——清 token、回进房页让用户决断。
         // 不留在房间页出「重新连接」：那会反向顶掉最新连接，双开互踢打乒乓；以最新连接为准。
+        this.reconnectGen++; // 废掉在跑的自动重连循环（顶替者绝不反弹重连）
         gameStore.dispose(); // 对局壳一并收摊（M2-T6：被顶后别留死局画面）
         this.disconnect();
         this.wsState.value = "closed";
@@ -459,6 +553,13 @@ class RoomStore {
         this.openJoin("join", this.code.value);
         this.snapshot.value = null;
         this.showToast("房间在其他窗口被打开，本页已让位");
+        break;
+      case "kicked":
+        // 被房主请出（M2-T8，#45）：不是普通断线——清 token 断线回首页，明确提示，不出重连假象
+        //（服务端紧随其后以 4003 关线；backHome 内 disconnect 摘回调+世代++，close 事件不误报）
+        if (this.code.value) clearToken(this.code.value);
+        this.backHome();
+        this.showToast("你已被房主请出房间");
         break;
       case "dissolved":
         if (this.code.value) clearToken(this.code.value);
@@ -531,6 +632,11 @@ class RoomStore {
   }
 
 
+  /** 探针读数（M2-T8）：距最近一条 downline 的静默毫秒——冒烟断「25–30s 进入重连中」的覆水位 */
+  silentMs(): number {
+    return Math.round(performance.now() - this.lastRecvPerf);
+  }
+
   showToast(text: string): void {
     this.toast.value = text;
     const seq = ++this.toastSeq;
@@ -547,6 +653,10 @@ async function errorText(resp: Response): Promise<string | null> {
   } catch {
     return null;
   }
+}
+
+function sleepPromise(ms: number): Promise<void> {
+  return new Promise((r) => setTimeout(r, ms));
 }
 
 /** 把 ?room=码 写进当前地址（不产生历史记录）：刷新/转发本链接都能直达归队 */
@@ -583,12 +693,16 @@ export function bindRoomProbe(): void {
       mySeat: roomStore.mySeat.value,
       hostSeat: snap.hostSeat,
       ws: roomStore.wsState.value,
+      banner: roomStore.banner.value, // M2-T8：断线/重连中横幅全文——「重连中态」冒烟断言口
+      silentMs: roomStore.silentMs(), // M2-T8：下行静默毫秒（≈25s 覆水=判死进入重连中的时机证据）
       seats: snap.seats.map(
         (s) =>
           `${s.seat}${s.host ? "👑" : ""}${s.bot ? "🤖" : ""} ${s.name}` +
           `${s.bot ? "" : s.online ? "" : "(离线)"}${s.roleId ? ` @${s.roleId}` : ""}`,
       ),
       config: snap.config,
+      // M2-T8：本机签发的原 token（?dev=1 专属披露）——「原身份重进=403 拒绝」冒烟步用它拼升级 URL
+      token: snap.code ? loadToken(snap.code) : null,
     };
   };
   // 对时探针（M2-T7，#44；?dev=1 挂 window.__pztime）：ServerClock 读数全量亮出——

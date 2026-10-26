@@ -40,6 +40,9 @@ export type LobbyConfig = Pick<
 export type Upstream =
   | { type: "leave" } // 主动离房：座位即刻释放、token 作废（断线≠离房——只关 WS 座位保留，可凭 token 归队）
   | { type: "dissolve" } // 房主解散：全员请出、房间销毁
+  // ── 踢人（M2-T8，#45；ADR-0001 §6）：仅房主、任何 phase 可发（大厅/局间/对局中皆可）──
+  | { type: "kick"; seat: number } // 踢某座位：目标=真人座位（假人在大厅走 removeBot、对局中名册定死不可退，一律拒）；
+  // 被踢者棋子留局转自动掷骰（kernel 超时替掷既有路径，kernel 零改动），token 拉黑至房间销毁、原身份不可重进
   // ── 大厅态（M2-T4，#41；phase!=lobby 一律拒）──
   | { type: "pickRole"; roleId: RoleId } // 明选角色：任意在座真人、可重复选/换选（多人同角色合法）
   | { type: "setConfig"; config: LobbyConfig } // 改开局配置：仅房主；全量对象（域校验复用内核 CONFIG_LIMITS）
@@ -90,6 +93,8 @@ export type Downstream =
   // 他人手牌/暗牌/真货行/RNG 流（rngStates/seq/dogSeq/customsSeq）绝不下发。
   | { type: "game"; now: number; facts: Fact[]; messages: MessageEntry[]; state: GameState }
   | { type: "replaced" } // 同 token 新连接顶掉旧连（双开防漂移）：旧连接收到即失效，以最新连接为准
+  | { type: "kicked" } // 被房主请出（M2-T8，#45）：**单发**给被踢座位的那条连接、绝不广播——收者清本机 token 回首页；
+  // 紧随其后连接被服务端以 4003 关闭；此后该 token 一律 403 拒升级（拉黑至房间销毁）
   | { type: "dissolved" } // 房主解散/房间销毁：全员收到后回首页
   // 对时探针应答（M2-T7，#44）：push 单发回发起 sync 的该连接、绝不广播——客户端多采样
   // （最低 RTT 定 offset）与 performance.now() 单调插值全靠它；now=DO 内核时钟轴 epoch ms。

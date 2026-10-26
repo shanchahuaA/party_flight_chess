@@ -65,13 +65,22 @@ const toast = computed(() => gameStore.toast.value);
     <SecretDraft />
     <CardChoice />
     <Settlement />
-    <!-- 联机对局面角落（M2-T6，最小不抢戏）：对局中 leave 服务端封禁（名册 boot 定死，T8 接管）——
-         别出假按钮，出一行小字；房主解散全 phase 可用，低调完备 -->
+    <!-- 联机对局面角落（M2-T8）：对局中 leave 服务端仍封禁（名册 boot 定死）；掉线治理=自动重连
+         归队（棋子由系统暂时接管），纸面常识一句——房主解散保有，低调完备 -->
     <div v-if="view === 'room'" class="roomBar">
-      <span class="note">对局中不可离席——中途离席功能 T8 上线</span>
+      <span class="note">对局中不可离席；掉线会自动重连归队（棋子由系统暂管）</span>
       <button v-if="amHost" type="button" @click="roomStore.dissolve()">💥 解散</button>
     </div>
     <div v-if="toast" class="toast">{{ toast }}</div>
+  </div>
+  <!-- 房间横幅（M2-T8 全局化）：重连中/重连失败面跟着房间视图走（大厅页与对局面同一个位置断——
+       渲在 App 层两页共用，RoomLobby 内不再重画）。有 token=自动重连还在跑，横幅只是状态播报 -->
+  <div v-if="view === 'room' && roomStore.banner.value" class="roomBanner">
+    <span>{{ roomStore.banner.value }}</span>
+    <div class="bannerBtns">
+      <button type="button" @click="roomStore.reconnect()">重新连接</button>
+      <button type="button" @click="roomStore.backHome()">回首页</button>
+    </div>
   </div>
   <!-- 房间 toast 全局渲染：离房/解散/被顶都伴随视图切换，渲染在页组件里会被卸载吃掉 -->
   <div v-if="roomToast" class="toast">{{ roomToast }}</div>
@@ -105,6 +114,38 @@ const toast = computed(() => gameStore.toast.value);
 .roomBar .note {
   font-size: 10px;
   color: #546e7a;
+}
+/* 房间断线横幅（M2-T8 全局化）：置顶醒目、两按钮同 RoomLobby 旧形态 */
+.roomBanner {
+  position: fixed;
+  top: calc(8px + env(safe-area-inset-top));
+  left: 12px;
+  right: 12px;
+  z-index: 220;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  background: #4e342e;
+  border: 1px solid #bf360c;
+  border-radius: 12px;
+  padding: 10px 12px;
+  font-size: 12.5px;
+  color: #ffe0b2;
+}
+.roomBanner .bannerBtns {
+  display: flex;
+  gap: 6px;
+  flex: 0 0 auto;
+}
+.roomBanner .bannerBtns button {
+  border: 1px solid #8d6e63;
+  background: #3e2723;
+  color: #ffe0b2;
+  border-radius: 8px;
+  padding: 6px 10px;
+  font-size: 12px;
+  font-weight: 700;
 }
 .roomBar button {
   border: 1px solid #8e2418;

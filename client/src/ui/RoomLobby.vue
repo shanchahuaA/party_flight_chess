@@ -59,9 +59,7 @@ const reviewOpen = ref(false);
 const rankedRows = computed<SettlementRow[]>(() => {
   const rows = lastSettle.value?.settlement.rows ?? [];
   return [...rows].sort((a, b) => b.total - a.total || a.pid - b.pid);
-});
-
-function settleName(pid: number): string {
+});function settleName(pid: number): string {
   return lastSettle.value?.state.players[pid]?.name ?? `玩家${pid}`;
 }
 
@@ -172,12 +170,10 @@ const detail = computed(() => roleOf(detailRole.value));
       </p>
     </header>
 
-    <div v-if="roomStore.banner.value" class="banner">
-      <span>{{ roomStore.banner.value }}</span>
-      <div class="bannerBtns">
-        <button type="button" @click="roomStore.reconnect()">重新连接</button>
-        <button type="button" @click="roomStore.backHome()">回首页</button>
-      </div>
+    <div class="seatNoteBar">
+      <p class="hint" style="margin: 0">
+        断线不丢座：掉线后棋子由系统暂管，随时自动重连归队（M2-T8）。房主可对在线异常者「🥾 请出」。
+      </p>
     </div>
 
     <section class="card">
@@ -203,6 +199,14 @@ const detail = computed(() => roleOf(detailRole.value));
           </span>
           <span v-if="s.bot" class="botTag">🤖 假人</span>
           <span v-else class="dot" :class="{ on: s.online }">{{ s.online ? "在线" : "离线" }}</span>
+          <!-- 踢人（M2-T8，#45）：仅房主可见、真人且非自己；被踢者即刻断连+拉黑至房间销毁 -->
+          <button
+            v-if="amHost && !s.bot && !isMe(s.seat)"
+            class="kick"
+            type="button"
+            title="请出：断其连接、身份拉黑至房间销毁（棋子转自动掷骰）"
+            @click="roomStore.kick(s.seat)"
+          >🥾</button>
         </li>
       </ul>
       <p v-if="!inPlay && emptySeats > 0" class="hint">还差 {{ emptySeats }} 个座位；人不够房主可加假人凑局。</p>
@@ -283,11 +287,11 @@ const detail = computed(() => roleOf(detailRole.value));
         {{ phase === "intermission" ? "等房主开下一局" : "等房主按下开始" }}
       </p>
       <div class="footBtns">
-        <button v-if="amHost" class="danger" type="button" @click="roomStore.dissolve()">💥 解散房间</button>
-        <!-- 对局中（playing）服务端封禁离席（内核名册 boot 定死，T8 接替）——别出假按钮 -->
-        <button v-if="!inPlay" class="ghost" type="button" @click="roomStore.leave()">🚪 离房</button>
-      </div>
-      <p v-if="inPlay" class="hint">对局中不可离席——中途离席功能 T8 上线；房主可解散房间。</p>
+      <button v-if="amHost" class="danger" type="button" @click="roomStore.dissolve()">💥 解散房间</button>
+      <!-- 对局中（playing）服务端封禁离席（名册 boot 定死）；断线治理=自动重连归队（M2-T8）——别出假按钮 -->
+      <button v-if="!inPlay" class="ghost" type="button" @click="roomStore.leave()">🚪 离房</button>
+    </div>
+    <p v-if="inPlay" class="hint">对局中不可离席；掉线后自动重连归队，棋子由系统暂管（超时替掷）。房主可请出座位。</p>
       <p v-if="amHost && !inPlay && seats.length < 2" class="hint">至少 2 人才能开局——人不够可先加假人。</p>
     </footer>
 
@@ -569,6 +573,20 @@ const detail = computed(() => roleOf(detailRole.value));
 }
 .dot.on {
   color: #81c784;
+}
+/* 踢人（M2-T8）：座位行内的低调小钮 */
+.kick {
+  flex: 0 0 auto;
+  border: 0;
+  background: rgba(142, 36, 24, 0.25);
+  color: #ef9a9a;
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
+  font-size: 12px;
+}
+.seatNoteBar {
+  margin: 0;
 }
 .roles {
   display: grid;

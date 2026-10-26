@@ -27,7 +27,7 @@ import {
 } from "../../shared/protocol";
 import { buildGameView } from "./gameView";
 
-// 房间生命周期核（M2-T3，#40）+ 大厅核（M2-T4，#41）+ 对局核（M2-T5，#42）。
+// 房间生命周期核（M2-T3，#40）+ 大厅核（M2-T4，#41）+ 对局核（M2-T5，#42）+ 断线治理（M2-T8，#45）。
 // 每个房间一个 DO（ADR-0001）：房间账（座位/昵称/token/房主标记/角色/配置/假人/phase）与
 // 对局账（内核整态+pid↔座位映射）全落内置 SQLite——Hibernation 唤醒后内存可能已清空，
 // 因此**所有事件处理都直接查 SQLite、不设内存权威缓存**（唯一内存态=懒加载的内核实例句柄），
@@ -38,6 +38,13 @@ import { buildGameView } from "./gameView";
 // socket 重定基）→ kernel.apply → 落账 → 逐连接 buildGameView 裁剪广播；Alarm 把 kernel.tick
 // 喂进去（窗截止/步进/休息/海关钟等全 deadline 制）;内核 gameEnd（结算）→ phase=intermission
 // 回局间配置态（可改配置/选角/再来一局，HTTP join 不放人——Spec Out of Scope）。
+// 断线治理（M2-T8，#45；ADR §6）：
+// - 掉线者棋子=kernel 超时替掷既有路径接管（kernel 零改动），凭 token 随时归队（upgrade 本就是）；
+// - 踢人（仅房主、任何 phase）：token 拉黑至房间销毁 + 断其连接（kicked 单发+4003）+ 棋子留局由
+//   系统代掷；drafting 期被踢者暗牌由 DO 代选注入（chooseSecret）防「全员选定才开窗」卡死；
+// - 房级断线计时刻（offline_deadline=全员离线 5min 销毁；host_deadline=房主离线 5min 转移）：
+//   kernel 时钟轴 now() 同缝（测试 advanceTime 快进），关线起钟/上线撤钟/到点复核 live 条件 +
+//   一次性钟（不重派），alarm 扫描「先房后核」同拍优先销毁/转移（与 kernel 时限同轴互扰的裁决）。
 
 /** WS attachment：连接与座位的绑定面（序列化落 Hibernation，唤醒后 deserializeAttachment 可得） */
 interface WsAttach {
@@ -54,7 +61,9 @@ interface SeatRow {
   bot: number;
 }
 
-/** 房间行（phase/config/seed 在 T3/T4/本票加入；config 序列化 JSON、缺省=内核默认） */
+/** 房间行（phase/config/seed 在 T3/T4/本票加入；config 序列化 JSON、缺省=内核默认）。
+ *  M2-T8（#45）加两个断线计时刻（kernel 时钟轴 now()、一次性钟）：
+ *  offline_deadline=全员离线销毁截止；host_deadline=房主离线转移截止。关线/上线/踢人事件刷新。 */
 interface RoomRow {
   code: string;
   host_seat: number;
@@ -62,7 +71,14 @@ interface RoomRow {
   config: string | null;
   phase: string;
   seed: number | null;
+  offline_deadline: number | null;
+  host_deadline: number | null;
 }
+
+/** 房主离线转移截止：ADR-0001 §6「离线超 5 分钟」 */
+const HOST_TRANSFER_MS = 300_000;
+/** 全员离线销毁截止：ADR-0001 §6「全员离线 5 分钟后 DO 自毁」（房间即世界） */
+const ALLOFF_DESTROY_MS = 300_000;
 
 /** 房间 phase（对外协议口径）：lobby 大厅态 / playing 对局中 / intermission 局间配置态。
  *  库存值 "started"（T3/T4 遗留、本地 wrangler dev 旧账）归一为 playing 由 normPhase 处理。 */
@@ -167,9 +183,19 @@ export class Room {
          saved_at INTEGER NOT NULL
        )`,
     );
+    // 踢人黑名单（M2-T8，#45）：token → 拒升级记录，至房间销毁才清（destroy 统一清账）
+    this.state.storage.sql.exec(
+      `CREATE TABLE IF NOT EXISTS blocked (
+         token TEXT PRIMARY KEY,
+         at INTEGER NOT NULL
+       )`,
+    );
     this.addColumnIfMissing("room", "config", "TEXT");
     this.addColumnIfMissing("room", "phase", "TEXT NOT NULL DEFAULT 'lobby'");
     this.addColumnIfMissing("room", "seed", "INTEGER");
+    // 断线计时刻（M2-T8）：一次性钟（到点复核条件，条件失效即清钟不动作）
+    this.addColumnIfMissing("room", "offline_deadline", "INTEGER");
+    this.addColumnIfMissing("room", "host_deadline", "INTEGER");
     this.addColumnIfMissing("seats", "role", "TEXT");
     this.addColumnIfMissing("seats", "bot", "INTEGER NOT NULL DEFAULT 0");
   }
@@ -238,6 +264,9 @@ export class Room {
   private handleUpgrade(url: URL): Response {
     const token = url.searchParams.get("token") ?? "";
     if (!this.roomRow()) return apiError(404, "房间不存在或已解散");
+    // 踢人黑名单（M2-T8）：先于座位查询——被踢座位行已删（seatByToken 必空），凭黑名单显式 403
+    // 给出确定性拒绝文案（客户端凭它呈现「被请出」面，而不是当「token 失效」的隐错）
+    if (this.isBlocked(token)) return apiError(403, "你已被房主请出，无法重新进房");
     const seat = this.seatByToken(token);
     if (seat == null) return apiError(401, "身份已失效，请重新进房");
 
@@ -266,6 +295,11 @@ export class Room {
     }
     // 其他人看到该座位转在线：发送上排除自己（已有直发），统计上**不排除**——新 socket 已 accept、是真在线
     this.pushRoomTo(pair[1]);
+    // 断线计时刻刷新（M2-T8）：归线=对应钟撤销（可能同时救回销毁钟与转移钟）。
+    // playing 且内核账在 = 先救句柄（唤醒恢复同理，防 kernel 候选被房级钟覆盖丢失）
+    if (this.normPhase() === "playing") this.ensureKernel();
+    this.refreshOfflineTimers();
+    this.scheduleAlarm();
     return new Response(null, { status: 101, webSocket: pair[0] });
   }
 
@@ -329,6 +363,11 @@ export class Room {
       } catch {
         /* 已关闭 */
       }
+      // 断线计时刻刷新（M2-T8）：离房改变了真人格局——旁边人若早已全离线，销毁钟此刻必须开摆
+      // （漏这一步=「一人在座但离线+一人离房」的房无主僵住）。内核句柄救起同 close 事件因由。
+      if (this.normPhase() === "playing") this.ensureKernel();
+      this.refreshOfflineTimers();
+      this.scheduleAlarm();
       this.pushRoomTo(ws, ws); // 发送与统计都排除离房者（其 socket 关闭事件落地前仍在列表里）
       return;
     }
@@ -338,6 +377,35 @@ export class Room {
         return;
       }
       this.destroy();
+      return;
+    }
+    // ── 踢人（M2-T8，#45；ADR-0001 §6）：仅房主、任何 phase 可发——被踢者棋子留局转自动掷骰
+    //    （kernel 超时替掷既有路径，kernel 零改动），token 拉黑至房间销毁、原身份不可重进 ──
+    if (msg?.type === "kick") {
+      const room = this.roomRow();
+      if (!room) {
+        this.send(ws, { type: "error", message: "房间不存在或已解散" });
+        return;
+      }
+      if (room.host_seat !== seat) {
+        this.send(ws, { type: "error", message: "只有房主能踢人" });
+        return;
+      }
+      if (msg.seat === seat) {
+        this.send(ws, { type: "error", message: "不能踢自己——要退请走离房/解散" });
+        return;
+      }
+      const target = this.seatRows().find((s) => s.seat === msg.seat);
+      if (!target) {
+        this.send(ws, { type: "error", message: "目标座位不在房间" });
+        return;
+      }
+      if (target.bot) {
+        // 假人没有身份可拉黑（token 是合成值永不签发）；移出走既有面：大厅 removeBot、局中名册定死
+        this.send(ws, { type: "error", message: "假人不用踢——大厅侧用加减假人移除" });
+        return;
+      }
+      this.kickSeat(target);
       return;
     }
     // ── 大厅/局间动作（M2-T4+T5）：lobby|intermission 二态开放同一闸（intermission=局间配置态，
@@ -485,6 +553,12 @@ export class Room {
   webSocketClose(ws: WebSocket): void {
     if (!this.roomRow()) return; // 房间已销毁（解散刚清完账）：无广播对象
     this.pushRoomTo(ws, ws); // close 事件触发时该 socket 仍在列表里，发送与统计都要排除它
+    // 断线计时刻刷新（M2-T8）：重估全员离线销毁/房主离线转移两钟（起/撤），再重排 alarm。
+    // playing 且内核账在 = 先救句柄（Hibernation 唤醒的 close 事件内核句柄未醒，scheduleAlarm
+    // 只见房级候选会把 kernel 时限钟覆盖丢——对局在无人处推进全靠这口钟）
+    if (this.normPhase() === "playing") this.ensureKernel();
+    this.refreshOfflineTimers(ws);
+    this.scheduleAlarm();
   }
 
   // ── 对局门（M2-T5）：意图受理链——门闸→回合号守卫→pid 守卫→pid 替换→kernel.apply ──
@@ -551,12 +625,21 @@ export class Room {
 
   // ── Alarm 计时（ADR-0001 §3 服务端唯一权威）：tick 进给+编排放送 ──
 
-  /** alarm 到点：内核时钟推进一步→统一收口。内存干净时（唤醒/首拍）先 ensureKernel。 */
+  /**
+   * alarm 到点：先扫房级一次性时限（全员离线销毁/房主离线转移，任何 phase 生效——销毁直接收场），
+   * 剩余进入对局时钟推进一步→统一收口。内存干净时（唤醒/首拍）先 ensureKernel。
+   * 房级时限（M2-T8 #45）与内核时限同轴（now()）：到点时复核 live 条件（人回来了=清钟不动作），
+   * 一次性不重派；同拍都到则销毁/转移优先于内核 tick——同轴互扰的优先序在此定案。
+   */
   async alarm(): Promise<void> {
+    if (this.deadlinesSweep(this.now())) {
+      this.state.storage.deleteAlarm(); // 房间已销毁：残留钟清零
+      return;
+    }
     const roomPhase = this.normPhase();
     if (roomPhase !== "playing" || !this.ensureKernel()) {
-      // 残留 alarm（旧局收场/房间销毁后未清的钟）：清钟即止
-      this.state.storage.deleteAlarm();
+      // 非对局面：内核侧无钟可催；房级时限余量重排（无余量=内部清钟即止，并入原「残留 alarm」语义）
+      this.scheduleAlarm();
       return;
     }
     const tickNow = this.now();
@@ -572,48 +655,148 @@ export class Room {
   }
 
   /**
-   * 重排 Alarm：从内核态扫最早未来时限。时限全部是内核时钟轴（now()=Date.now()+clockOffset），
-   * 派给 setAlarm 前按 `- clockOffset` 折算回真实 epoch。
-   * 扫描口径=「kernel 哪些位置等在一个时限上」而不复刻内核判定逻辑（DO 只管时钟进给）：
+   * 房级一次性时限到点扫（M2-T8，#45）。返回 true iff 房间已被销毁（调用方就此收场）。
+   * - 全员离线销毁：offline_deadline 到点且此刻仍无一个在线真人 → destroy（对局中照毁——假人
+   *   撑不起一层房，ADR §6「房间即世界」）。
+   * - 房主离线转移：host_deadline 到点且房主仍未归座 → 转「最早加入的在座**在线**真人」（ADR §6；
+   *   在线过滤=T8 实现期定案：转给离线者无人按开始，全员离线场景由销毁钟收场）。成功即广播快照。
+   * - 条件失效（人回来了）=清钟不动作；后续关线事件起钟、上线事件撤钟。
+   */
+  private deadlinesSweep(t: number): boolean {
+    const room = this.roomRow();
+    if (!room) return false;
+    const code = this.state.id.name ?? "";
+    if (room.offline_deadline != null && t >= room.offline_deadline) {
+      if (this.humanOnlineCount() === 0) {
+        this.destroy();
+        return true;
+      }
+      this.state.storage.sql.exec("UPDATE room SET offline_deadline = NULL WHERE code = ?", code);
+    }
+    if (room.host_deadline != null && t >= room.host_deadline) {
+      const hostRow = this.seatRows().find((s) => s.seat === room.host_seat);
+      const hostOnline =
+        hostRow != null && hostRow.bot === 0 && this.onlineTokens().has(hostRow.token);
+      if (!hostOnline && this.reassignHostOnline()) {
+        this.pushRoomTo(); // 皇冠挪位全场看得到（新房主的开局面即刻点亮）
+      }
+      this.state.storage.sql.exec("UPDATE room SET host_deadline = NULL WHERE code = ?", code);
+    }
+    return false;
+  }
+
+  /** 在线真人数（在线=连接挂着的在座真人；假人无连接不算数） */
+  private humanOnlineCount(): number {
+    const online = this.onlineTokens();
+    return this.seatRows().filter((s) => !s.bot && online.has(s.token)).length;
+  }
+
+  /** 房主标记转给最早加入的在座在线真人（ADR §6 的离线转移路径；假人按不了开始无权执房）。
+   *  返回 false=没有在线真人可转（全员离线→由销毁钟收场，不转移）。 */
+  private reassignHostOnline(): boolean {
+    const online = this.onlineTokens();
+    const rows = this.state.storage.sql
+      .exec("SELECT token FROM seats WHERE bot = 0 ORDER BY seq, seat")
+      .toArray() as unknown as Array<{ token: string }>;
+    for (const r of rows) {
+      if (online.has(r.token)) {
+        this.state.storage.sql.exec("UPDATE room SET host_seat = ?", this.seatByToken(r.token));
+        return true;
+      }
+    }
+    return false;
+  }
+
+  /**
+   * 断线计时刻刷新（M2-T8）：关线/上线/踢人三类事件后调——重估「有真人在线」「房主在线」
+   * 两个 live 条件：恢复即撤钟、失效才起钟（一次性：起一次、不重起；起钟时刻+5min 见常量）。
+   * excludeOnline：正在关闭的死 socket 仍留在 getWebSockets() 里（Hibernation 既有坑），在线统计
+   * 必须排除——close 传关线 socket；upgrade/kick 类其余调用不传（新连已 accept、算真在线）。
+   * 调后由调用方 scheduleAlarm 重排。
+   */
+  private refreshOfflineTimers(excludeOnline?: WebSocket): void {
+    const room = this.roomRow();
+    if (!room) return;
+    const code = this.state.id.name ?? "";
+    const online = this.onlineTokens(excludeOnline);
+    const humans = this.seatRows().filter((s) => !s.bot);
+    if (humans.length === 0) return; // 无真人=断线钟无对象（房在清零/销毁路径）
+    if (humans.some((h) => online.has(h.token))) {
+      if (room.offline_deadline != null) {
+        this.state.storage.sql.exec("UPDATE room SET offline_deadline = NULL WHERE code = ?", code);
+      }
+    } else if (room.offline_deadline == null) {
+      this.state.storage.sql.exec("UPDATE room SET offline_deadline = ? WHERE code = ?", this.now() + ALLOFF_DESTROY_MS, code);
+    }
+    const hostRow = humans.find((h) => h.seat === room.host_seat);
+    if (hostRow != null && online.has(hostRow.token)) {
+      if (room.host_deadline != null) {
+        this.state.storage.sql.exec("UPDATE room SET host_deadline = NULL WHERE code = ?", code);
+      }
+    } else if (room.host_deadline == null) {
+      this.state.storage.sql.exec("UPDATE room SET host_deadline = ? WHERE code = ?", this.now() + HOST_TRANSFER_MS, code);
+    }
+  }
+
+  /**
+   * 重排 Alarm：从内核态扫最早未来时限 + 房级一次性时限（M2-T8 断线治理，同轴并扫）。
+   * 时限全部是内核时钟轴（now()=Date.now()+clockOffset），派给 setAlarm 前按 `- clockOffset`
+   * 折算回真实 epoch。两族时限互扰的裁决简单：**谁先到就谁先醒**——alarm 拍里先房后核（见 alarm）。
+   * 扫描口径=「kernel 哪些位置等在一个时限上」（不复刻内核判定逻辑）：
    * - windowDeadline（acting）/ restUntil（rest）：阶段专属；
    * - walk.nextStepAt / walk.ask.deadline / cardPending.deadline：跨阶段（rest/over 也有续走与挂账）；
    * - botSchedule.rollAt（acting）/ customs 时钟群（acting，armed 才有查验钟）。
    * - ≤ lastIdleAt（上次内核消化过的时钟点）的时限不再派：哨兵噪声（botSchedule.confirmAt=0、
    *   旧局的 rollAt/时限残值等）不再重派，防 alarm 空转自旋；drafting 期扫描整体为空（开局无钟）。
-   * 无时限=删钟。
+   * - 房级两钟（offline_deadline/host_deadline）是一次性钟：起钟时刻恒在未来、到点即清，
+   *   不吃 lastIdleAt 哨兵（max(now())+5min 恒大于 lastIdleAt 增长线）。无 kernel=只扫房级;
+   * 无任何待办=删钟。
    */
   private scheduleAlarm(): void {
-    const kernel = this.kernel;
-    if (!kernel) {
-      void this.state.storage.deleteAlarm();
-      return;
-    }
-    const s = kernel.state;
     const cands: number[] = [];
-    if (s.phase === "acting") {
-      cands.push(s.windowDeadline);
-      for (const p of s.players) {
-        if (!p.dead) cands.push(p.botSchedule.rollAt);
+    const roomDeadlines = new Set<number>(); // 房级钟不吃内核哨兵过滤（见上注）
+    const room = this.roomRow();
+    if (room) {
+      if (room.offline_deadline != null) {
+        cands.push(room.offline_deadline);
+        roomDeadlines.add(room.offline_deadline);
       }
-      const c = s.customs;
-      if (c) {
-        if (c.armed) cands.push(c.checkDeadline);
-        if (c.pending) cands.push(c.pending.deadline);
-        for (const b of c.botPlans) cands.push(b.at);
+      if (room.host_deadline != null) {
+        cands.push(room.host_deadline);
+        roomDeadlines.add(room.host_deadline);
       }
     }
-    if (s.phase === "rest") cands.push(s.restUntil);
-    // 跨阶段面：走路/环岛选路/抉择卡挂账（rest 与 over 也吃它们）
-    for (const p of s.players) {
-      if (p.walk) {
-        cands.push(p.walk.nextStepAt);
-        if (p.walk.ask) cands.push(p.walk.ask.deadline);
+    // kernel 候选只在 playing 扫：非对局面 kernel 是上一局收场残留（over 尾挂账），
+    // 绝无 tick 何以推进一轮——把它的时限垫进 alarm 会「到点重排到点」自旋（intermission 无秒杀位补 lastIdleAt）
+    const kernel = this.normPhase() === "playing" ? this.kernel : null;
+    if (kernel) {
+      const s = kernel.state;
+      if (s.phase === "acting") {
+        cands.push(s.windowDeadline);
+        for (const p of s.players) {
+          if (!p.dead) cands.push(p.botSchedule.rollAt);
+        }
+        const c = s.customs;
+        if (c) {
+          if (c.armed) cands.push(c.checkDeadline);
+          if (c.pending) cands.push(c.pending.deadline);
+          for (const b of c.botPlans) cands.push(b.at);
+        }
       }
-      if (p.cardPending) cands.push(p.cardPending.deadline);
+      if (s.phase === "rest") cands.push(s.restUntil);
+      // 跨阶段面：走路/环岛选路/抉择卡挂账（rest 与 over 也吃它们）
+      for (const p of s.players) {
+        if (p.walk) {
+          cands.push(p.walk.nextStepAt);
+          if (p.walk.ask) cands.push(p.walk.ask.deadline);
+        }
+        if (p.cardPending) cands.push(p.cardPending.deadline);
+      }
     }
     let next: number | null = null;
     for (const t of cands) {
-      if (!Number.isFinite(t) || t <= this.lastIdleAt) continue; // 已被内核消化/不待办
+      if (!Number.isFinite(t)) continue;
+      if (!roomDeadlines.has(t) && t <= this.lastIdleAt) continue; // 内核钟哨兵；房级钟不滤（同值也过）
       if (next == null || t < next) next = t;
     }
     if (next == null) {
@@ -740,7 +923,9 @@ export class Room {
 
   private roomRow(): RoomRow | null {
     const rows = this.state.storage.sql
-      .exec("SELECT code, host_seat, created_at, config, phase, seed FROM room LIMIT 1")
+      .exec(
+        "SELECT code, host_seat, created_at, config, phase, seed, offline_deadline, host_deadline FROM room LIMIT 1",
+      )
       .toArray() as unknown as RoomRow[];
     return rows[0] ?? null;
   }
@@ -762,6 +947,61 @@ export class Room {
 
   private removeSeat(seat: number): void {
     this.state.storage.sql.exec("DELETE FROM seats WHERE seat = ?", seat);
+  }
+
+  /** 踢出一个真人座位（M2-T8，#45）：拉黑（至房间销毁）→ 座位除名 → 断其连接（kicked 单发+4003）
+   *  →（对局中）棋子留局转自动掷骰：kernel 名册 boot 定死不可动，替掷走 kernel 超时既有路径，kernel 零改动。
+   *  drafting 特例见 kickSeat 内注。真人清零边界与主动离房同口径：当场销毁（房间即世界）。 */
+  private kickSeat(target: SeatRow): void {
+    this.state.storage.sql.exec(
+      "INSERT INTO blocked (token, at) VALUES (?, ?) ON CONFLICT(token) DO NOTHING",
+      target.token, Date.now(),
+    );
+    this.removeSeat(target.seat);
+    for (const w of this.state.getWebSockets()) {
+      const att = w.deserializeAttachment() as WsAttach | null;
+      if (att?.token !== target.token) continue;
+      this.send(w, { type: "kicked" }); // 单发被踢者（绝不广播）
+      try {
+        w.close(4003, "kicked"); // 专用关闭码：与 replaced(4001)/普通关闭(1000) 相区别
+      } catch {
+        /* 已在关闭中 */
+      }
+    }
+    // drafting 期踢人（「全员选定才开窗、drafting 无钟可催」的内核边界）：被踢者的暗牌没人选=整局等死——
+    // 此处代选注入（chooseSecret 取 0），窗照常开。kernel.apply 与真人选卡同一入口，不新增内核面。
+    if (this.normPhase() === "playing") {
+      const kernel = this.ensureKernel();
+      if (kernel && kernel.state.phase === "drafting") {
+        const pid = this.pidOfSeat(target.seat);
+        const p = pid != null ? kernel.state.players[pid] : undefined;
+        if (p && !p.isBot && p.secretPick == null) {
+          try {
+            this.afterKernelChanged(
+              kernel.apply({ type: "chooseSecret", pid: pid!, pick: 0 }, this.now()),
+            );
+          } catch {
+            /* 注入拒绝不该发生（内核对真人选卡同样校验）：静默吞，不破踢人主链 */
+          }
+        }
+      }
+    }
+    if (this.humanCount() === 0) {
+      this.destroy();
+      return;
+    }
+    this.refreshOfflineTimers(); // 踢人改变在线/座位格局：断线钟重估（比如被踢者是唯一其他真人）
+    this.scheduleAlarm();
+    this.pushRoomTo();
+  }
+
+  /** token 是否在踢人黑名单（升级前的 403 面与 join 假面互不相干：黑名单只盖原身份） */
+  private isBlocked(token: string): boolean {
+    if (!token) return false;
+    const rows = this.state.storage.sql
+      .exec("SELECT 1 AS hit FROM blocked WHERE token = ?", token)
+      .toArray();
+    return rows.length > 0;
   }
 
   /** 在座真人数（假人凑局不算「人在」：真人清零=房间无主可经营，销毁） */
@@ -788,12 +1028,14 @@ export class Room {
     }
   }
 
-  /** 解散/销毁：清全部账（含对局账）、广播后全员断线 */
+  /** 解散/销毁：清全部账（含对局账与踢人黑名单——拉黑口径至房间销毁为止）、删残留钟、广播后全员断线 */
   private destroy(): void {
     this.broadcast({ type: "dissolved" });
     this.state.storage.sql.exec("DELETE FROM seats");
     this.state.storage.sql.exec("DELETE FROM game");
+    this.state.storage.sql.exec("DELETE FROM blocked");
     this.state.storage.sql.exec("DELETE FROM room");
+    void this.state.storage.deleteAlarm(); // 僵尸钟一并清（房级/kernel 残钟不留到下一个 room 行重建）
     this.kernel = null;
     for (const w of this.state.getWebSockets()) {
       try {

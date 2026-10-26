@@ -55,7 +55,8 @@
 | 同页签重开 `?room=` 链接 | 同 token 双开顶替：旧连接收横幅「已让位」，新连接归位 |
 | 页内 fetch `POST /api/rooms/<码>/join` | HTTP 占座假人（凑满 8 人验拒进），不开 WS |
 
-**同源单身份**：同一浏览器的所有页签共享 localStorage——一个浏览器对一个房间只能持有一个身份；双浏览器语义（两玩家互见/互踢）由 server 集成测试（`server/test/room.test.ts` 双 WS 客户端）覆盖，IAB 冒烟只走单身份 UX 面。
+**同源单身份**：同一浏览器的所有页签共享 localStorage——一个浏览器对一个房间只能持有一个身份；双浏览器语义（两玩家互见/互踢/断线归队双端面）由 server 集成测试（`server/test` 双 WS 客户端）覆盖，IAB 冒烟只走单身份 UX 面。
+**双身份豁口（M2-T8 起冒烟在用）**：`localhost:5173` 与 `127.0.0.1:5173` 是不同 origin=两份 localStorage——vite 带 `--host` 起（否则 127.0.0.1 直接连接拒绝），一张标签一张嘴就能演双端；详细判定步见 [iab-smoke.md](./iab-smoke.md)「M2-T8 断线治理冒烟」。
 
 ## 测试侧确定性工具（`kernel/test/helpers.ts` + 探针）
 
