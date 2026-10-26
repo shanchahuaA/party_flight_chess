@@ -31,6 +31,21 @@
 | 时钟不走/全场「慢动作」定格（T9 计时域上线后） | 壳层只认 hidden **切换沿**暂停计时——若某环境常驻 hidden 会被误伤；boot 时已故意不读 hidden | 页内先查 `document.hidden`；IAB 冒烟确认 `__pz().now` 在走再继续 |
 | 冒烟中途改了壳层源码后行为诡异（旧代码与页内 import 探针读数互相矛盾、toast/状态读了不存在） | **vite 编辑窗口期 + 浏览器 304 缓存 = 双模块实例**：页的 import 图冻结在 reload 时刻（带 `?t=` 时间戳），evaluate 里裸 `import("/src/xxx.ts")` 拿的是另一份新实例——改 UI 状态探不到、注入无效 | 验证：`performance.getEntriesByType("resource")` 看模块 URL 是否带旧 `?t=`。处置：杀 vite（先查 PID 归属）→ `rm -rf client/node_modules/.vite` → 重启带 `--force`；页签 `goto("about:blank")` 再回目标 URL 强制换文档。**冒烟中途尽量别改壳层源码**，要改就当轮重启 vite 再继续 |
 
+## M2-T7 计时与快照恢复冒烟（#44；协调方脚本档）
+
+> 判定工具：`__pztime()`（?dev=1 挂载，roomStore 的 ServerClock 对时读数）+ 既有 `__pz()`/`__pzroom()`。
+> 原理铁则：serverNow 走 performance.now 单调插值（与 Date.now/本机墙钟解耦），倒计时=windowDeadline-serverNow。
+> IAB 页签不可假锁——「锁屏」用关页签 10s 重开 `?room=码` 归队等价（真机锁屏 10 分钟回前台走同一条恢复触发面），见下步 ③。
+
+1. **对时到位**：房主建联机房、配置 60s 慢窗 → 开局 → `__pztime()` 断 `samplesN>=1 且 rttBest!=null 且 offset!=null`（几秒内多采样收齐）。
+   坑：单机 `?fast` 不走联机钟——那边 `__pztime().serverNow` 恒 0（LocalKernelSource 自有冻结钟，T9 域）；对时探针只在房间/联机对局面非 0。
+2. **改本机时钟演示不漂（判定法）**：先记 `__pz().now` 与 `__pztime().serverNow` → 页内把墙钟拨快 10 分钟（IAB 可用）`(() => { const d = Date.now; Date.now = () => d() + 600_000; return "wall+10min"; })()` → 再读 `__pz().now`：读数连续平滑（差值≈两次调用间隔），`localWallDelta` 精准 **−600000**（=墙钟动了、读数没动；探针定义=serverNow−Date.now，墙钟被拨快→差值反向减；实测 −600002 含 ms 抖动）；真机上改系统时区/时钟是同一判定。
+   坑：别把 `localWallDelta` 变动当读数漂移——它就是「读数-墙钟差」，它动恰好证明只有墙钟动；判定盯 `serverNow`/`__pz().now` 本身。
+3. **快照恢复**：对局中关页签 10 秒 → 重开 `?room=码&dev=1` → `__pzroom` 座位/在线归队，`__pz()` turn/相位/战报尾片与关页前一致（无补播动画）→ `__pztime().samplesN>0`（新连接=新采样阵，重对时生效）。
+   坑：重开后先等首条 game 消息到达再断言（`__pz()` null=hello 还没到，别误判挂了）；同页签重开必须保 token——别 `localStorage.removeItem("pfc.token.<码>")`，归队靠它静默续座。
+4. **窗口已过/长局单调**：等一个 60s 窗轮空（无人操作→替掷/收窗一拍落账）→ `__pz()` turn 单调递增、相位流转合拍 → `__pztime().serverNow` 每次读都比上次大（恒不倒行）。
+   坑：IAB 后台节流会造成 UI 倒计时渲染慢于真实读数——判定一律读 `__pz()`/`__pztime()` 快照，别凭肉眼秒数收案。
+
 ## 冒烟后必做
 
 - 把新发现的坑**回写本页**（一行一行加，别攒）。

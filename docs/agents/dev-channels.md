@@ -31,6 +31,7 @@
 | `__pzdog(cell?)` | dev.spawnDog | 遭遇战（缺省人间相邻格） |
 | `__pzvis(hidden)` | 伪造 hidden 切换沿 | 单机计时域（T9）：`true`=切后台时钟冻结／`false`=回前台恢复——IAB 常驻 `document.hidden=true` 出不了真实切换沿，冒烟全靠它 |
 | `__pz()` | 只读快照 | 内核态随手查：now/turn/phase/me/bots/finishers/hand/ground/dogs/customs/items/msgs |
+| `__pztime()` | 对时探针（M2-T7 #44，联机面挂账） | roomStore 的 ServerClock 读数：serverNow/localWallDelta/rttBest/offset/samplesN——改本机时钟判读/重对时样本数冒烟断读；单机 `?fast` 下 serverNow 恒 0（另走 T9 冻结钟域） |
 
 ## URL 冒烟参数（`maybeBootFastPath`，免大厅直达一局）
 

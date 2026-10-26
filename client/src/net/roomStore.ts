@@ -9,6 +9,12 @@
  *   主动等第一条 game 消息再建源；intermission 首现=收对局壳+结算缓存）；case "game"=建源
  *   （开局 hello 与 Hibernation 重连全量 hello 同一条路）→ feed 胖消息进壳。
  *   RemoteRoomSource 的上行出口/收摊通知（disposeHook）都挂在本 store 上。
+ * - 对时正解（M2-T7，#44）：ServerClock（本包 clock.ts）住本 store——生命周期=连接域，比源长
+ *   （源收摊/重建复用同一只钟）。建连成功(open)→多采样 sync 探针（4 条@150ms，pending 严格按
+ *   到达序配对喂钟）+ 每 60s 幂等 refresh 保鲜；回前台 visible 沿/pageshow(persisted)/手动重连
+ *   成功→refresh+采样一次（幂等重对时+全量快照覆盖本地——绝不补算锁屏期间的事，自动重连=T8）；
+ *   room 回包（you 非空=单发对齐）走 resetAnchor 整段重置缝，game 消息走源内 adoptGameBaseline
+ *   弱基线——倒计时=windowDeadline-clock.serverNow() 全靠 store.now() 现行线（HUD 组件零改动）。
  * - 断线治理（自动重连/转移/踢人）在 T8 落，本票只有手动重连一条缝；重连后 game hello 照 feed
  *   （源活着直接吃新快照）。
  */
@@ -19,11 +25,22 @@ import type {
   SettlementResult,
 } from "../../../kernel/src";
 import type { Downstream, LobbyConfig, RoomSnapshot, Upstream } from "../../../shared/protocol";
+import { ServerClock } from "./clock";
 import { bindDevSnapshot, gameStore } from "../game/store";
 import { RemoteRoomSource, type DownstreamGame } from "../game/remoteSource";
 
 const TOKEN_KEY_PREFIX = "pfc.token.";
 const NICK_KEY = "pfc.nickname";
+
+/** 建连成功后的对时采样阵（M2-T7 契约 E）：4 条 sync 探针、间隔 150ms——给 ServerClock 挑
+ *  最低 RTT 的原料；pending 严格按发送序入队、到达序一一配对（服务端按受理序回，顺序不换）
+ *  ——shift 消化（实现期定案 1：契约「LIFO」按「严格按发送序逐一消化」执行，字面后进先出会
+ *  把首答配上末送时刻、RTT 必错——配对语义优先）。 */
+const SYNC_SAMPLE_N = 4;
+const SYNC_SAMPLE_STEP_MS = 150;
+/** 可选保鲜面（M2-T7 契约 E④，实现期定案 3 落实）：每 60s 自动 refresh 一次——长局不掉观测、
+ *  幂等重对时；死线时静默 no-op。不做自动重连（那是 T8 的域）。 */
+const SYNC_REFRESH_EVERY_MS = 60_000;
 
 export type RoomView = "home" | "join" | "room";
 export type JoinMode = "create" | "join";
@@ -105,6 +122,23 @@ class RoomStore {
   private leaving = false;
   /** 联机源句柄（对局面活着时非空）：game 消息 feed 入口；收摊走源 stop→disposeHook 回来摘名 */
   private remoteSource: RemoteRoomSource | null = null;
+  /** 服务端权威钟（M2-T7，#44）：生命周期=连接域，比源长——源收摊/重建复用同一只 */
+  readonly clock = new ServerClock();
+  /** 对时会话缝：采样定时器、pending 发送时刻（到达序配对）、60s 保鲜心跳——stopClockSession 统一收场 */
+  private syncTimers: number[] = [];
+  private syncPending: number[] = [];
+  private syncHeartbeat = 0;
+
+  constructor() {
+    // 恢复触发面（M2-T7 契约 E①②）：回前台 visible 沿 + bfcache 恢复（persisted）——幂等重对时
+    // +全量快照覆盖本地。绑定一次全生命周期有效；死线时 recover 静默 no-op（自动重连=T8 域）。
+    document.addEventListener("visibilitychange", () => {
+      if (document.visibilityState === "visible") this.recoverClockSession();
+    });
+    window.addEventListener("pageshow", (e) => {
+      if (e.persisted) this.recoverClockSession();
+    });
+  }
 
   /** 首页 → 进房页（创建=只填昵称；加入=码+昵称）。codeParam=分享链接 ?room= 直跳预填 */
   openJoin(mode: JoinMode, codeParam?: string | null): void {
@@ -183,13 +217,14 @@ class RoomStore {
     return true;
   }
 
-  /** 手动重连（掉线横幅按钮）：token 还在座位上，重连即归队 */
+  /** 手动重连（掉线横幅按钮）：token 还在座位上，重连即归队。重连成功=T7 恢复触发面③：升级
+   *  hello 已整段重置对时+burst 已采样，再补一发 refresh 幂等对齐（等价重连 hello 的拉快照）。 */
   async reconnect(): Promise<void> {
     if (!this.code.value) return;
     const token = loadToken(this.code.value);
     if (!token) return;
     this.banner.value = null;
-    await this.connect(this.code.value, token);
+    if (await this.connect(this.code.value, token)) this.recoverClockSession();
   }
 
   /** 主动离房：座位即刻释放、token 作废（服务端关线确认后回首页）。死线时拒绝假离房——
@@ -259,6 +294,53 @@ class RoomStore {
     this.ws?.send(JSON.stringify(msg));
   }
 
+  // ── 对时会话（M2-T7，#44）：建连采样阵/60s 保鲜心跳/恢复触发面（全死线安全——不开线即 no-op）──
+
+  /** 建连成功(open)即开一轮对时会话：4×150ms 采样阵 + 60s 保鲜心跳。旧会话先清场（重连竞态
+   *  防双跑）；定时回调校验 ws 身份（旧定时器绝不打到新线）。 */
+  private startClockSession(ws: WebSocket): void {
+    this.stopClockSession();
+    for (let i = 0; i < SYNC_SAMPLE_N; i++) {
+      this.syncTimers.push(
+        window.setTimeout(() => {
+          if (this.ws !== ws) return; // 旧会话定时器与新线错开
+          this.sendSyncProbe();
+        }, i * SYNC_SAMPLE_STEP_MS),
+      );
+    }
+    this.syncHeartbeat = window.setInterval(() => {
+      if (this.ws !== ws) return;
+      this.recoverClockSession();
+    }, SYNC_REFRESH_EVERY_MS);
+  }
+
+  /** 会话收场：定时器/心跳全清、pending 废对（跨连接配对绝不串帐） */
+  private stopClockSession(): void {
+    for (const id of this.syncTimers) window.clearTimeout(id);
+    this.syncTimers.length = 0;
+    if (this.syncHeartbeat !== 0) {
+      window.clearInterval(this.syncHeartbeat);
+      this.syncHeartbeat = 0;
+    }
+    this.syncPending.length = 0;
+  }
+
+  /** 恢复触发面共用（visible 沿/pageshow persisted/手动重连成功/60s 心跳）：幂等快照拉取
+   *  + 立即再对时采样一次（契约 E 触发时序）；开着的 ws 才发，死线静默（自动重连=T8）。 */
+  private recoverClockSession(): void {
+    if (this.wsState.value !== "open" || this.ws == null) return;
+    this.sendUpstream({ type: "refresh" });
+    this.sendSyncProbe();
+  }
+
+  /** 单条对时探针：发送时刻先入 pending 队尾，随后上行 sync（应答按队头配对=严格到达序；
+   *  单线程事件模型下「先记账后发出」与应答事件不会倒序交错） */
+  private sendSyncProbe(): void {
+    if (this.wsState.value !== "open" || this.ws == null) return;
+    this.syncPending.push(performance.now());
+    this.sendUpstream({ type: "sync" });
+  }
+
   copyInvite(): void {
     if (!this.code.value) return;
     const link = `${location.origin}${location.pathname}?room=${this.code.value}`;
@@ -312,14 +394,17 @@ class RoomStore {
       if (this.ws !== ws) return; // 已被新连接取代的旧 socket
       this.ws = null;
       this.wsState.value = "closed";
+      this.stopClockSession(); // 对时会话随线收场（心跳/定时器/pending 全清）
       if (this.leaving) return; // 自己发的 leave：backHome 已走，别出横幅
       this.banner.value = "连接已断开";
     };
     this.wsState.value = "open";
+    this.startClockSession(ws); // T7：建连成功即开对时会话（采样阵+60s 保鲜心跳）
     return true;
   }
 
   private disconnect(): void {
+    this.stopClockSession(); // 对时会话随线收场（旧 pending 配对与新连接互不串帐）
     const old = this.ws;
     this.ws = null;
     if (old) {
@@ -336,6 +421,10 @@ class RoomStore {
     switch (msg.type) {
       case "room": {
         const prevPhase = this.snapshot.value?.phase ?? null;
+        // 单发对齐回包（you 非空=upgrade hello / refresh 回包 / error 补差包）=幂等恢复点——
+        // 整段重置缝（契约 C「重连/refresh 全量快照到达时可整段 reset」），与快照覆盖同拍；
+        // 广播 room（you=null）不带我的身份，不吃它（避免被广播时序扰动读数）
+        if (msg.you != null) this.clock.resetAnchor(msg.now);
         this.snapshot.value = msg.room;
         if (msg.you != null) this.mySeat.value = msg.you;
         // phase 生命周期钩子（M2-T6）：intermission 首现=收对局壳+结算缓存（App 视图翻回
@@ -344,6 +433,13 @@ class RoomStore {
         if (msg.room.phase === "intermission" && prevPhase !== "intermission") {
           this.enterIntermission();
         }
+        break;
+      }
+      case "syncNow": {
+        // 对时应答（M2-T7）：pending 队头配对（到达序=发送序，服务端按受理序回）——喂钟做
+        // 最低 RTT 选取；队空（迟到跨会话的应答）静默丢弃。绝不广播：别的连接收不到它。
+        const sentAt = this.syncPending.shift();
+        if (sentAt != null) this.clock.sample(sentAt, msg.now);
         break;
       }
       case "game": {
@@ -414,6 +510,8 @@ class RoomStore {
         this.remoteSource = null;
       },
       this.snapshot.value?.config ?? null,
+      // 服务端权威钟（M2-T7）：store 持有的连接域钟——源收摊/重建复用同一只，插值不重筑
+      this.clock,
     );
     gameStore.bootRemote(src);
     this.remoteSource = src;
@@ -471,8 +569,8 @@ function isDevQuery(): boolean {
   }
 }
 
-/** 联机只读探针（M2-T6，#43；?dev=1 挂 window.__pzroom）：房间面快照摘要——
- *  code/phase/mySeat/hostSeat/ws 状态/座位列/config，联机冒烟的断言口。
+/** 联机只读探针（M2-T6 起挂 __pzroom；M2-T7 #44 追加 __pztime，均 ?dev=1）：房间面快照摘要——
+ *  code/phase/mySeat/hostSeat/ws 状态/座位列/config + ServerClock 对时读数，联机冒烟的断言口。
  *  （对局内的 __pz 仍是 gameStore 的：bindDevSnapshot 单函数双挂位，见 buildRemoteSource。） */
 export function bindRoomProbe(): void {
   if (!isDevQuery()) return;
@@ -491,6 +589,20 @@ export function bindRoomProbe(): void {
           `${s.bot ? "" : s.online ? "" : "(离线)"}${s.roleId ? ` @${s.roleId}` : ""}`,
       ),
       config: snap.config,
+    };
+  };
+  // 对时探针（M2-T7，#44；?dev=1 挂 window.__pztime）：ServerClock 读数全量亮出——
+  // 冒烟判据：serverNow 与本机墙钟解耦（改本机时钟只动 localWallDelta、serverNow 纹丝不动）；
+  // samplesN>0=重对时面到齐（重开?room= 归队后必现）；rttBest 为 null=还无样本（fallback 线在跑）。
+  (window as unknown as Record<string, unknown>).__pztime = () => {
+    const clock = roomStore.clock;
+    const serverNow = clock.serverNow();
+    return {
+      serverNow, // 单调插值读数（epoch ms；任何时刻不倒行、与本机墙钟不可调和的钟漂无关）
+      localWallDelta: serverNow - Date.now(), // 读数-本机墙钟差（改本机时钟=它跟着动，其余钉死）
+      rttBest: clock.rttBest, // 最低 RTT 样本（ms，null=尚无 sync 样本）
+      offset: clock.offset, // 现行 offset（ms，null=尚无 sync 样本）
+      samplesN: clock.samples, // 已采 sync 样本数（重对时后 >0）
     };
   };
 }

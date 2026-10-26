@@ -294,6 +294,18 @@ export class Room {
       this.handleIntent(ws, seat, msg);
       return;
     }
+    // ── 对时与快照恢复通道（M2-T7，#44）：任何 phase 可发的纯通道 API，单发回该连接绝不广播 ──
+    if (msg?.type === "sync") {
+      // 对时探针直答：now=内核时钟轴 epoch（Date.now()+clockOffset，生产 offset=0；测试缝原样）
+      this.send(ws, { type: "syncNow", now: this.now() });
+      return;
+    }
+    if (msg?.type === "refresh") {
+      // 幂等快照拉取：等价「重连 hello」的 re-alignment——room(you 回发) 一条 + playing 且内核账在时
+      // game(facts=[]) 一条（复用 sendAlignTo 的单发序列，零新增快照形状）；零状态写入、绝不广播
+      this.sendAlignTo(ws);
+      return;
+    }
     if (msg?.type === "leave") {
       if (this.normPhase() === "playing") {
         // 对局中封离席（M2-T5 定案）：内核名册 boot 即定死、无「座位减少」自愈面——真人棋子的
@@ -883,8 +895,9 @@ export class Room {
   }
 
   /**
-   * 单独对齐一个 socket（error 后、非法意图后）—— помощи: room 快照 + 对局快照（若 playing），
-   * 自收补差包不带新事实（facts=[]）。
+   * 单发对齐一个 socket——三条路共用同一幂等序列（M2-T5 起）：error/非法意图后的补差、
+   * refresh 幂等快照拉取（M2-T7，#44）——room 快照（you 回发）一条 + 对局快照（若 playing，
+   * 内核账懒加载在）一条，facts=[] 自收包不带新事实。
    */
   private sendAlignTo(ws: WebSocket): void {
     const att = ws.deserializeAttachment() as WsAttach | null;

@@ -35,7 +35,8 @@ export type LobbyConfig = Pick<
 /** 客户端 → 服务端（房间面；T5 起在此扩展对局意图，一律带 turn）。
  *  turn 豁免：房间生命周期与大厅消息（leave/dissolve/pickRole/…）不带 turn——对局未开、
  *  无「过期操作」可言，动作合法性由 DO 按房间账即时校验（座位在不在/是不是房主/大厅态），
- *  等效于 turn 的防过期职责。 */
+ *  等效于 turn 的防过期职责。对时与快照恢复通道（sync/refresh，M2-T7 #44）同章豁免——
+ *  纯通道 API、最小载荷，任何 phase 都可发，动作合法性无关对局回合。 */
 export type Upstream =
   | { type: "leave" } // 主动离房：座位即刻释放、token 作废（断线≠离房——只关 WS 座位保留，可凭 token 归队）
   | { type: "dissolve" } // 房主解散：全员请出、房间销毁
@@ -45,9 +46,14 @@ export type Upstream =
   | { type: "addBot" } // 加 1 假人凑局：仅房主；假人 ≤7 且真人+假人 ≤8
   | { type: "removeBot" } // 减最近加的 1 假人：仅房主
   | { type: "start" } // 开始：仅房主；≥2 人（真人+假人）——按下后 boot 内核转对局态（M2-T5 实装），含局间再来一局
-  | { type: "intent"; turn: number; intent: Intent }; // 对局意图（M2-T5，#42）：pid 恒写 0=发送者视角，
+  | { type: "intent"; turn: number; intent: Intent } // 对局意图（M2-T5，#42）：pid 恒写 0=发送者视角，
 // DO 按源 socket 的 token→座位折算成真实 pid 后才交内核（服务端替视角转译，客户端不知道自己的全局 pid）；
 // turn=客户端已知的内核回合号，DO 与 kernel.state.turn 对账（过期=「操作过期」error+快照对齐）
+  // ── 对时与快照恢复通道（M2-T7，#44；任何 phase 可发）──
+  | { type: "sync" } // 对时探针：最小载荷无参——DO 直答一条 syncNow（多采样取最低 RTT 的样本面）
+  | { type: "refresh" }; // 幂等快照拉取：等价「重连 hello」的 re-alignment——对该 socket 依序回发
+// room(you 回发) 一条 + playing 且内核账在时 game(facts=[]) 一对（复用既有 hello 形状，不另造快照消息），
+// 绝不广播——客户端回前台/pageshow/重连后发它，用全量快照覆盖本地锁屏期间的一切（绝不补算）
 
 /** 座位的公开视图（座位互见：昵称/在线/房主标记/已选角色；token 绝不下发） */
 export interface RoomSeatView {
@@ -85,6 +91,9 @@ export type Downstream =
   | { type: "game"; now: number; facts: Fact[]; messages: MessageEntry[]; state: GameState }
   | { type: "replaced" } // 同 token 新连接顶掉旧连（双开防漂移）：旧连接收到即失效，以最新连接为准
   | { type: "dissolved" } // 房主解散/房间销毁：全员收到后回首页
+  // 对时探针应答（M2-T7，#44）：push 单发回发起 sync 的该连接、绝不广播——客户端多采样
+  // （最低 RTT 定 offset）与 performance.now() 单调插值全靠它；now=DO 内核时钟轴 epoch ms。
+  | { type: "syncNow"; now: number }
   | { type: "error"; message: string }; // 上行动作被拒（非房主解散等）；轻提示用，快照随后强制对齐
 
 /** POST /api/rooms 响应：创建即入座（创建者=房主=座位 0），token 客户端落 localStorage */
