@@ -61,9 +61,16 @@ jobs:
         with:
           node-version: 24
           cache: npm
-          cache-dependency-path: server/package-lock.json
+          cache-dependency-path: |
+            client/package-lock.json
+            server/package-lock.json
       - run: npm ci
         working-directory: server
+      # wrangler.jsonc 的 assets 指 ../client/dist——部署前必须先构建 client（#46 T9）
+      - run: npm ci
+        working-directory: client
+      - run: npm run build
+        working-directory: client
       - id: guard
         env:
           CF_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}

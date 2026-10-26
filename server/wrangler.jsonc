@@ -10,6 +10,8 @@
   },
   // 静态资产同域全包：Worker 域名（如 sync.<域名>）打开即是页面，与 WS 同源；
   // GitHub Pages 为主发布位（deploy.yml 的 pages job），这里是同域备用路径。
-  "assets": { "directory": "../client" },
+  // assets 指 dist 构建产物（Vite build 输出）——deploy.yml 的 worker job 在 wrangler 前
+  // 先跑 client 构建（#46 T9），本地验证用 wrangler deploy --dry-run 同口径检查。
+  "assets": { "directory": "../client/dist" },
   "observability": { "enabled": true }
 }

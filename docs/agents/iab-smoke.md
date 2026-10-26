@@ -86,6 +86,27 @@
    坑：户内 HTTP join（页内 fetch）**不触 socket=不算在线**，不再撤销毁钟——测「有真人但没上线」时
    别把 join 当「续命」，那是语义而非坑。
 
+## M2-T9 双端联机全流程冒烟（#46；开/打/收/再开一整局）
+
+> 判定工具：既有 `__pz()`/`__pzroom()`/`__pztime()`（对局内 `__pz` 由服务端 rebase＝我恒 pid 0）。
+> 双端起手：`localhost:5173`（房主 origin）＋ `[::1]:5173`（另一端 origin）——**host 字符串不同＝不同 origin＝两份 localStorage＝两个玩家身份**，两个 origin 的 `/ws`、`/api` 都各经自己的 vite 代理到同一 8787＝同一房间同一局。浏览器地址栏写 `127.0.0.1:5173` 会 ERR_CONNECTION_REFUSED（vite 默认只绑 localhost/`[::1]`，**000 属正常**，不必换 `--host` 起法）。
+
+1. **起手双端**：A 端 localhost 首页 page 内派发 `.roomBtn`（🏠 创建房间）→ 进房页 `input`（value 设置器＋`input` 事件）填昵称 → `button.primary` 提交 → `__pzroom()` 断 `code/phase=lobby/hostSeat=0/ws=open`。B 端 `[::1]` 直接开 `?room=<码>&dev=1`（码已自动填）→ `.primary` 加入 → 断 `mySeat=1`、座位列两端同形。
+2. **凑局+配置（房主）**：房主页点 `.cfgBtn` 开配置弹窗 → `.stepper button` 第二颗（＋）加假人 → ConfigPanel：**页内唯一 `select`**（世界回合窗）value 设置器＋`change` 事件才上行；滑条（局长/休息）value＋`input`＋`change` 三连 → `__pzroom().config` 断收账（实测：`windowMs=10000/turnCap=5/restMs=0`，座位 `2🤖`)。`.sheetBody button.close` 关弹窗 → footer `.start` 开局 → 断 `phase=playing`。
+3. **双端手选暗牌**（开局暗牌每局都要手点，无人手点全桌死等 drafting；bot 由服务端代定谳）：双端 wait 到 `.goal`（×**2**，**SecretDraft 浮层按钮是 `.goal` 不是 `.opt`**——`.opt` 是 CardChoice/RouteBar 的）→ 各点一张 → `button.ok` 确认 → `__pz()` phase 进 acting（第 1 窗开张）。
+4. **双端各走一手**（一窗动一手即可，其余落空走替掷/整窗收口都合法）：`__pz().phase=acting` 时 `#rollBtn`（`!disabled` 才点）→ `#confirmBtn`；撞上选路点 `.routeBar button.opt`、抉择卡点 `.choiceOverlay button.opt`（判断「无浮层即直读」，替掷默认直行/默认项代选兜底，永不卡死整局）。判据：两端 `__pz().turn` 同步单调、`me` 段 R/CT 记账出现；实测 A 端选路+掷+确认、B 端掷+确认均一次落账（`me:"11m net10RC"`）。
+5. **战报尾片→结算**：局长到点进年兽战（尾片读「⚔ 第 N 波/砍出 X 伤/波间补给」）→ 终局 room `phase` 翻 `intermission` → RoomLobby interCard「🏁 上一局结算」→ 断 winLine＋名次行；**双端同一事实各自 rebase**（实测一局：「小黄」33 分登顶文字全同，名次行各自标「我」）。
+6. **局间再来一局**：`.start`（「🎴 开下一局」）→ `phase=playing` → **双端又各自手点 `.goal`（再来一局绝不自动代选）** → 新局 `__pz().turn` 从 1 重起（实测 1→acting）、config 沿用、两端 `ws=open/banner=null`。
+
+**T9 实测坑（回写）**
+
+- **ConfigPanel 页内唯一 select 必须 fire change**：JS 幻改 `value` 只派 `change` 才被 Vue 收口（select 不听 `input`）；滑条却是 `input`＋`change` 双发——两族控件收口事件不同，写脚本别混。
+- **同 token 并存页签＝replaced 替位是正常分支**：同一 origin 的第二张同房间页签会把旧连接顶掉（旧页签横幅「已让位」）——这不是断线故障，是 token 顶替语义；双端身份**只靠 origin 切**，别开两张页签冒充第二玩家。
+- **长局页签收管蒸发**（T9 摸底池）：IAB 冒烟跑长局时若受管页签从 `browser.tabs.list()` 蒸发（id 失效），处置＝重新 list 后按 URL 重新 `tabs.new()`，别复用旧 id。
+- **chrome-error 页签重建**（T9 摸底池）：重建页签直线跳老 URL 得先防 chrome-error 主体——`goto` 后按页面标题/页面内探针（`__pzroom()!==null`）确认是本游戏页，才可继续操纵。
+
+**分工裁定**（Spec #37 User Story 26 口径）：本档＝**开发者侧双端联机冒烟**——薄一局（配置缩窗缩局长＋少量手操作、大量替掷代跑）验「进房→凑满→开→双端收实事→结算→再来一局」骨架；**完整 15 回合含世界恶意/年兽全过程的真完整局＝用户侧真机验收路径**（局域网 `wrangler dev --ip 0.0.0.0` 双真机或上线后正式域名），不由 IAB 档代跑——IAB 后台节流/页签收管不适合长局保真，也验不到锁屏/外网等真机面。
+
 ## 冒烟后必做
 
 - 把新发现的坑**回写本页**（一行一行加，别攒）。
