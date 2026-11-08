@@ -1,0 +1,351 @@
+<!doctype html>
+<!--
+  [PROTOTYPE] M3 音效试听台 · 第 3 轮 —— 一次性代码
+  目的：解决「胜利 sting 想要童真惊叹」+「失败 sting 不满意」两件事。
+  不做音效系统、不改 client / kernel / server。
+-->
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>[原型] 音效试听台 · 第 3 轮</title>
+<style>
+:root{--bg:#17222c;--bg-deep:#0e161d;--card:#22303c;--card-2:#263238;--ink:#eceff1;--sub:#90a4ae;--dim:#607d8b;
+--line:rgba(236,239,241,.13);--gold:#ffcc80;--red:#ef5350;--green:#66bb6a;--mono:ui-monospace,SFMono-Regular,Consolas,monospace}
+*{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+html{overflow-x:hidden}
+body{margin:0;min-height:100%;color:var(--ink);font:15px/1.5 system-ui,-apple-system,"PingFang SC","Microsoft YaHei",sans-serif;
+background:radial-gradient(120% 70% at 50% 0%,#1e2c38 0%,var(--bg) 42%,var(--bg-deep) 100%) fixed;
+padding-bottom:calc(24px + env(safe-area-inset-bottom))}
+button{font-family:inherit;color:inherit;cursor:pointer;touch-action:manipulation}
+#top{position:sticky;top:0;z-index:20;background:rgba(17,27,35,.94);backdrop-filter:blur(10px);border-bottom:1px solid var(--line);padding:calc(9px + env(safe-area-inset-top)) 12px 9px}
+.wrap{max-width:640px;margin:0 auto}
+#top .bar{display:flex;align-items:center;gap:8px}
+#top .tag{font:800 10px/1 var(--mono);letter-spacing:.08em;color:#0e161d;background:var(--gold);border-radius:4px;padding:4px 6px}
+#top h1{font-size:16px;margin:0;flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+#muteBtn{background:var(--card);border:1px solid var(--line);border-radius:999px;padding:6px 11px;font-size:12px;font-weight:700}
+#muteBtn.off{color:var(--dim);text-decoration:line-through}
+#top .lead{font-size:11.5px;color:var(--sub);line-height:1.55;margin:7px 0 0}
+main{padding:12px}
+.sec{background:linear-gradient(165deg,var(--card),var(--card-2));border:1px solid var(--line);border-radius:13px;padding:12px;margin-bottom:12px}
+.sec h2{margin:0 0 4px;font-size:15px}
+.sec .lead{font-size:12px;color:var(--sub);line-height:1.6;margin:0 0 10px}
+.sec .lead b{color:var(--gold)}
+.opts{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:7px}
+.opt{position:relative;text-align:left;background:rgba(13,20,26,.5);border:1px solid rgba(236,239,241,.18);border-radius:10px;padding:8px 10px 8px 30px;transition:.14s}
+.opt:active{transform:scale(.985)}
+.opt::before{content:"▶";position:absolute;left:10px;top:50%;transform:translateY(-50%);font-size:9px;color:var(--dim)}
+.opt .nm{display:block;font:700 12px/1.3 var(--mono);word-break:break-all}
+.opt .meta{display:block;font-size:10.5px;color:var(--dim);margin-top:2px}
+.opt .lic{display:inline-block;margin-top:3px;font-size:9px;padding:0 4px;border-radius:3px}
+.opt .lic.ok{color:var(--green);background:rgba(102,187,106,.14)}
+.opt .lic.bad{color:#ffb74d;background:rgba(255,167,38,.14)}
+.opt.sel{border-color:rgba(102,187,106,.72);background:rgba(102,187,106,.12)}
+.opt.sel::before{content:"✓";color:var(--green);font-size:10px}
+.opt.playing{border-color:var(--gold);background:rgba(255,204,128,.14)}
+.opt.playing::before{content:"❚❚";color:var(--gold)}
+#box{margin:0 12px;background:var(--card);border:1px solid var(--line);border-radius:12px;padding:12px}
+#box h3{margin:0 0 6px;font-size:13px}
+#box .hint{font-size:11px;color:var(--sub);margin:0 0 9px;line-height:1.55}
+#out{width:100%;min-height:96px;background:rgba(13,20,26,.6);color:var(--ink);border:1px solid var(--line);border-radius:8px;padding:9px;font:700 12px/1.7 var(--mono);resize:vertical}
+#copy{width:100%;margin-top:9px;background:var(--gold);color:#0e161d;border:0;border-radius:10px;padding:11px;font-weight:800;font-size:14px}
+#toast{position:fixed;left:50%;bottom:26px;transform:translate(-50%,14px);opacity:0;pointer-events:none;background:rgba(0,0,0,.86);color:#fff;font-size:12.5px;padding:8px 14px;border-radius:999px;transition:.18s;z-index:50}
+#toast.on{opacity:1;transform:translate(-50%,0)}
+</style>
+</head>
+<body>
+<div id="top"><div class="wrap">
+  <div class="bar"><span class="tag">STUB · 第3轮</span><h1>「哇！」童真惊叹 + 失败重挑</h1><button id="muteBtn">🔊 开</button></div>
+  <p class="lead">上一轮你选的 6 条已记下。这轮只解决两件事：<b>给你的胜利音找一声「哇」</b>，以及<b>重挑失败音</b>。挑完复制底部清单发我。</p>
+</div></div>
+
+<main class="wrap">
+  <section class="sec">
+    <h2>🐣 A · 「哇！」童真惊叹</h2>
+    <p class="lead">从三个方向找的：<b>真人小女孩语音</b>（12 段，得你自己听出哪段像「哇」——我听不了）、<b>可爱战斗语音</b>（6 条）、<b>Kenney 语音</b>（5 条）、以及<b>真人欢呼（10 条，自动取最响爆点）/ 掌声 / 童趣结束乐</b>。<br>
+    标 <span style="color:#ffb74d">CC-BY</span> 的要署名，标 <span style="color:#66bb6a">CC0</span> 的不用。<b>「童趣结束乐」授权仍在核查</b>，暂标问号。</p>
+    <div class="opts" id="wow">
+      <button class="opt" data-name="wow-mary-00" data-file="sfx3/wow-mary-00.mp3">
+        <span class="nm">wow-mary-00</span>
+        <span class="meta">真人小女孩 · 第 1 段（2.64s）</span>
+        <span class="lic bad">CC-BY</span>
+      </button>
+      <button class="opt" data-name="wow-mary-01" data-file="sfx3/wow-mary-01.mp3">
+        <span class="nm">wow-mary-01</span>
+        <span class="meta">真人小女孩 · 第 2 段（1.22s）</span>
+        <span class="lic bad">CC-BY</span>
+      </button>
+      <button class="opt" data-name="wow-mary-02" data-file="sfx3/wow-mary-02.mp3">
+        <span class="nm">wow-mary-02</span>
+        <span class="meta">真人小女孩 · 第 3 段（0.96s）</span>
+        <span class="lic bad">CC-BY</span>
+      </button>
+      <button class="opt" data-name="wow-mary-03" data-file="sfx3/wow-mary-03.mp3">
+        <span class="nm">wow-mary-03</span>
+        <span class="meta">真人小女孩 · 第 4 段（0.44s）</span>
+        <span class="lic bad">CC-BY</span>
+      </button>
+      <button class="opt" data-name="wow-mary-04" data-file="sfx3/wow-mary-04.mp3">
+        <span class="nm">wow-mary-04</span>
+        <span class="meta">真人小女孩 · 第 5 段（0.86s）</span>
+        <span class="lic bad">CC-BY</span>
+      </button>
+      <button class="opt" data-name="wow-mary-05" data-file="sfx3/wow-mary-05.mp3">
+        <span class="nm">wow-mary-05</span>
+        <span class="meta">真人小女孩 · 第 6 段（0.42s）</span>
+        <span class="lic bad">CC-BY</span>
+      </button>
+      <button class="opt" data-name="wow-mary-06" data-file="sfx3/wow-mary-06.mp3">
+        <span class="nm">wow-mary-06</span>
+        <span class="meta">真人小女孩 · 第 7 段（1.30s）</span>
+        <span class="lic bad">CC-BY</span>
+      </button>
+      <button class="opt" data-name="wow-mary-07" data-file="sfx3/wow-mary-07.mp3">
+        <span class="nm">wow-mary-07</span>
+        <span class="meta">真人小女孩 · 第 8 段（0.54s）</span>
+        <span class="lic bad">CC-BY</span>
+      </button>
+      <button class="opt" data-name="wow-mary-08" data-file="sfx3/wow-mary-08.mp3">
+        <span class="nm">wow-mary-08</span>
+        <span class="meta">真人小女孩 · 第 9 段（0.58s）</span>
+        <span class="lic bad">CC-BY</span>
+      </button>
+      <button class="opt" data-name="wow-mary-09" data-file="sfx3/wow-mary-09.mp3">
+        <span class="nm">wow-mary-09</span>
+        <span class="meta">真人小女孩 · 第 10 段（0.66s）</span>
+        <span class="lic bad">CC-BY</span>
+      </button>
+      <button class="opt" data-name="wow-mary-10" data-file="sfx3/wow-mary-10.mp3">
+        <span class="nm">wow-mary-10</span>
+        <span class="meta">真人小女孩 · 第 11 段（0.64s）</span>
+        <span class="lic bad">CC-BY</span>
+      </button>
+      <button class="opt" data-name="wow-mary-11" data-file="sfx3/wow-mary-11.mp3">
+        <span class="nm">wow-mary-11</span>
+        <span class="meta">真人小女孩 · 第 12 段（0.54s）</span>
+        <span class="lic bad">CC-BY</span>
+      </button>
+      <button class="opt" data-name="wow-cute-bonzai" data-file="sfx3/wow-cute-bonzai.mp3">
+        <span class="nm">wow-cute-bonzai</span>
+        <span class="meta">可爱女声「Bonzai!」（2.32s）</span>
+        <span class="lic bad">CC-BY</span>
+      </button>
+      <button class="opt" data-name="wow-cute-geronimo" data-file="sfx3/wow-cute-geronimo.mp3">
+        <span class="nm">wow-cute-geronimo</span>
+        <span class="meta">可爱女声「Geronimo!」（3.31s）</span>
+        <span class="lic bad">CC-BY</span>
+      </button>
+      <button class="opt" data-name="wow-cute-invincible" data-file="sfx3/wow-cute-invincible.mp3">
+        <span class="nm">wow-cute-invincible</span>
+        <span class="meta">可爱女声「I'm invincible!」（2.65s）</span>
+        <span class="lic bad">CC-BY</span>
+      </button>
+      <button class="opt" data-name="wow-cute-victory" data-file="sfx3/wow-cute-victory.mp3">
+        <span class="nm">wow-cute-victory</span>
+        <span class="meta">可爱女声「Onward to victory!」（2.67s）</span>
+        <span class="lic bad">CC-BY</span>
+      </button>
+      <button class="opt" data-name="wow-cute-hiya" data-file="sfx3/wow-cute-hiya.mp3">
+        <span class="nm">wow-cute-hiya</span>
+        <span class="meta">可爱女声「Hiya!」（1.47s）</span>
+        <span class="lic bad">CC-BY</span>
+      </button>
+      <button class="opt" data-name="wow-cute-charge" data-file="sfx3/wow-cute-charge.mp3">
+        <span class="nm">wow-cute-charge</span>
+        <span class="meta">可爱女声「Charge!」（1.74s）</span>
+        <span class="lic bad">CC-BY</span>
+      </button>
+      <button class="opt" data-name="wow-v40-f-congrats" data-file="sfx3/wow-v40-f-congrats.mp3">
+        <span class="nm">wow-v40-f-congrats</span>
+        <span class="meta">Kenney 女声「Congratulations」（1.52s）</span>
+        <span class="lic ok">CC0</span>
+      </button>
+      <button class="opt" data-name="wow-v40-f-levelup" data-file="sfx3/wow-v40-f-levelup.mp3">
+        <span class="nm">wow-v40-f-levelup</span>
+        <span class="meta">Kenney 女声「Level up」（1.00s）</span>
+        <span class="lic ok">CC0</span>
+      </button>
+      <button class="opt" data-name="wow-v40-f-yay" data-file="sfx3/wow-v40-f-yay.mp3">
+        <span class="nm">wow-v40-f-yay</span>
+        <span class="meta">Kenney 女声「You win」（1.16s）</span>
+        <span class="lic ok">CC0</span>
+      </button>
+      <button class="opt" data-name="wow-v40-m-congrats" data-file="sfx3/wow-v40-m-congrats.mp3">
+        <span class="nm">wow-v40-m-congrats</span>
+        <span class="meta">Kenney 男声「Congratulations」（1.75s）</span>
+        <span class="lic ok">CC0</span>
+      </button>
+      <button class="opt" data-name="wow-v40-m-yay" data-file="sfx3/wow-v40-m-yay.mp3">
+        <span class="nm">wow-v40-m-yay</span>
+        <span class="meta">Kenney 男声「You win」（1.23s）</span>
+        <span class="lic ok">CC0</span>
+      </button>
+      <button class="opt" data-name="wow-cheerful-cut" data-file="sfx3/wow-cheerful-cut.mp3">
+        <span class="nm">wow-cheerful-cut</span>
+        <span class="meta">童趣结束乐（截 2.2s）</span>
+        <span class="lic ok">CC0?</span>
+      </button>
+      <button class="opt" data-name="wow-cheerful-full" data-file="sfx3/wow-cheerful-full.mp3">
+        <span class="nm">wow-cheerful-full</span>
+        <span class="meta">童趣结束乐（完整 3.98s）</span>
+        <span class="lic ok">CC0?</span>
+      </button>
+      <button class="opt" data-name="wow-crowd-01" data-file="sfx3/wow-crowd-01.mp3">
+        <span class="nm">wow-crowd-01</span>
+        <span class="meta">人群欢呼 · 最响爆点（01，2.5s）</span>
+        <span class="lic bad">CC-BY</span>
+      </button>
+      <button class="opt" data-name="wow-crowd-02" data-file="sfx3/wow-crowd-02.mp3">
+        <span class="nm">wow-crowd-02</span>
+        <span class="meta">人群欢呼 · 最响爆点（02，2.5s）</span>
+        <span class="lic bad">CC-BY</span>
+      </button>
+      <button class="opt" data-name="wow-crowd-03" data-file="sfx3/wow-crowd-03.mp3">
+        <span class="nm">wow-crowd-03</span>
+        <span class="meta">人群欢呼 · 最响爆点（03，2.5s）</span>
+        <span class="lic bad">CC-BY</span>
+      </button>
+      <button class="opt" data-name="wow-crowd-04" data-file="sfx3/wow-crowd-04.mp3">
+        <span class="nm">wow-crowd-04</span>
+        <span class="meta">人群欢呼 · 最响爆点（04，2.5s）</span>
+        <span class="lic bad">CC-BY</span>
+      </button>
+      <button class="opt" data-name="wow-crowd-05" data-file="sfx3/wow-crowd-05.mp3">
+        <span class="nm">wow-crowd-05</span>
+        <span class="meta">人群欢呼 · 最响爆点（05，2.5s）</span>
+        <span class="lic bad">CC-BY</span>
+      </button>
+      <button class="opt" data-name="wow-crowd-06" data-file="sfx3/wow-crowd-06.mp3">
+        <span class="nm">wow-crowd-06</span>
+        <span class="meta">人群欢呼 · 最响爆点（06，2.5s）</span>
+        <span class="lic bad">CC-BY</span>
+      </button>
+      <button class="opt" data-name="wow-crowd-07" data-file="sfx3/wow-crowd-07.mp3">
+        <span class="nm">wow-crowd-07</span>
+        <span class="meta">人群欢呼 · 最响爆点（07，2.5s）</span>
+        <span class="lic bad">CC-BY</span>
+      </button>
+      <button class="opt" data-name="wow-crowd-08" data-file="sfx3/wow-crowd-08.mp3">
+        <span class="nm">wow-crowd-08</span>
+        <span class="meta">人群欢呼 · 最响爆点（08，2.5s）</span>
+        <span class="lic bad">CC-BY</span>
+      </button>
+      <button class="opt" data-name="wow-crowd-09" data-file="sfx3/wow-crowd-09.mp3">
+        <span class="nm">wow-crowd-09</span>
+        <span class="meta">人群欢呼 · 最响爆点（09，2.5s）</span>
+        <span class="lic bad">CC-BY</span>
+      </button>
+      <button class="opt" data-name="wow-crowd-10" data-file="sfx3/wow-crowd-10.mp3">
+        <span class="nm">wow-crowd-10</span>
+        <span class="meta">人群欢呼 · 最响爆点（10，2.5s）</span>
+        <span class="lic bad">CC-BY</span>
+      </button>
+      <button class="opt" data-name="wow-applause-cut" data-file="sfx3/wow-applause-cut.mp3">
+        <span class="nm">wow-applause-cut</span>
+        <span class="meta">人群掌声（截 2.5s）</span>
+        <span class="lic bad">CC-BY</span>
+      </button>
+      <button class="opt" data-name="wow-roundend" data-file="sfx3/wow-roundend.mp3">
+        <span class="nm">wow-roundend</span>
+        <span class="meta">街机式回合结束（1.94s）</span>
+        <span class="lic ok">CC0</span>
+      </button>
+    </div>
+    <p style="font-size:11px;color:var(--dim);margin:9px 0 0">选中即记到清单 A。</p>
+  </section>
+
+  <section class="sec">
+    <h2>💀 B · 失败 sting 重挑</h2>
+    <p class="lead">你说上轮的 <code>s07-fail-giant2</code>（巨人低吼）不满意。这批把所有下行/沉重类重新摆一遍，另加两条非音乐类（食人魔、狼人）和一条 8-bit 死亡音。</p>
+    <div class="opts" id="fail">
+      <button class="opt" data-name="fail-steel14" data-file="sfx3/fail-steel14.mp3">
+        <span class="nm">fail-steel14</span><span class="meta">低音区下行，最丧（1.60s）</span>
+      </button>
+      <button class="opt" data-name="fail-sax07" data-file="sfx3/fail-sax07.mp3">
+        <span class="nm">fail-sax07</span><span class="meta">萨克斯长音收尾（1.96s）</span>
+      </button>
+      <button class="opt" data-name="fail-shade13" data-file="sfx3/fail-shade13.mp3">
+        <span class="nm">fail-shade13</span><span class="meta">幽魂下行（1.37s）</span>
+      </button>
+      <button class="opt" data-name="fail-shade11" data-file="sfx3/fail-shade11.mp3">
+        <span class="nm">fail-shade11</span><span class="meta">幽魂叫，最阴（1.35s）</span>
+      </button>
+      <button class="opt" data-name="fail-ogre3" data-file="sfx3/fail-ogre3.mp3">
+        <span class="nm">fail-ogre3</span><span class="meta">食人魔低吼（0.80s）</span>
+      </button>
+      <button class="opt" data-name="fail-wolfman" data-file="sfx3/fail-wolfman.mp3">
+        <span class="nm">fail-wolfman</span><span class="meta">狼人短啸（0.63s）</span>
+      </button>
+      <button class="opt" data-name="fail-pizza07" data-file="sfx3/fail-pizza07.mp3">
+        <span class="nm">fail-pizza07</span><span class="meta">滑稽的丧，派对感（1.54s）</span>
+      </button>
+      <button class="opt" data-name="fail-death" data-file="sfx3/fail-death.mp3">
+        <span class="nm">fail-death</span><span class="meta">8-bit 死亡音（0.71s）</span>
+      </button>
+    </div>
+    <p style="font-size:11px;color:var(--dim);margin:9px 0 0">选中即记到清单 B。</p>
+  </section>
+</main>
+
+<div id="box" class="wrap">
+  <h3>已选清单</h3>
+  <p class="hint">A = 新胜利音（哇）；B = 新失败音。选完复制发我。</p>
+  <textarea id="out" readonly></textarea>
+  <button id="copy">📋 复制全部</button>
+</div>
+
+<div id="toast"></div>
+<audio id="au" preload="none"></audio>
+
+<script>
+"use strict";
+const picks = {};
+let cur = null, muted = false;
+const au = document.getElementById("au");
+const muteBtn = document.getElementById("muteBtn");
+
+muteBtn.addEventListener("click", () => {
+  muted = !muted;
+  if (muted) { au.pause(); muteBtn.textContent = "🔇 关"; muteBtn.classList.add("off"); }
+  else { muteBtn.textContent = "🔊 开"; muteBtn.classList.remove("off"); }
+});
+au.addEventListener("ended", () => { if (cur) { cur.classList.remove("playing"); cur = null; } });
+
+document.addEventListener("click", (e) => {
+  const btn = e.target.closest(".opt");
+  if (!btn) return;
+  const group = btn.closest(".sec").querySelector("h2").textContent.indexOf("A ·") >= 0 ? "A" : "B";
+  picks[group] = btn.dataset.name;
+  btn.closest(".opts").querySelectorAll(".opt").forEach(b => b.classList.toggle("sel", b === btn));
+  render();
+  if (cur && cur !== btn) cur.classList.remove("playing");
+  if (!muted) {
+    au.pause(); au.src = btn.dataset.file; au.currentTime = 0;
+    const p = au.play();
+    btn.classList.add("playing"); cur = btn;
+  }
+});
+
+const LABEL = { A: "胜利·哇", B: "失败" };
+function render() {
+  document.getElementById("out").value = ["A", "B"].map(k => `${k} ${LABEL[k]} = ${picks[k] || "（未选）"}`).join("\n");
+}
+
+document.getElementById("copy").addEventListener("click", async () => {
+  const t = document.getElementById("out").value;
+  try { await navigator.clipboard.writeText(t); toast("已复制"); }
+  catch (_) {
+    const ta = document.getElementById("out"); ta.focus(); ta.select();
+    try { document.execCommand("copy"); toast("已复制"); } catch (__) { toast("复制失败，请手动选择"); }
+  }
+});
+
+function toast(t) {
+  const el = document.getElementById("toast");
+  el.textContent = t; el.classList.add("on");
+  clearTimeout(toast._t); toast._t = setTimeout(() => el.classList.remove("on"), 1600);
+}
+render();
+</script>
+</body>
+</html>

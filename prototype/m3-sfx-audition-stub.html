@@ -1,0 +1,490 @@
+<!doctype html>
+<!--
+  [PROTOTYPE] M3 音效试听台 stub —— 一次性代码
+  目的：把 12 个「时机格」的候选音效摆成一页，用户用手机/桌面耳机逐个点听、逐格挑定，
+        挑完点底部「复制全部」把结果发回，供后续正式接音效时照单入库。
+  口径：
+    - 只做试听与记账，不做音效系统、不做解锁流程、不改 client / kernel / server。
+    - 12 格 × 2–3 条候选 = 30 条，全部 64 kbps 单声道 mp3，总量 < 400 KB。
+    - 单一 <audio> 复用，点新的会掐掉旧的，避免叠音。
+    - 选择只记在内存（刷新即丢），页面底部生成可复制的文本清单。
+  素材：Kenney Casino Audio / Interface Sounds / Music Jingles + OpenGameArt RPG Sound Pack，全部 CC0。
+       逐条来源见同目录 sfx/LICENSES.md。
+  运行：双击本文件即可；手机可 `python -m http.server 8137` 后访问同 Wi-Fi 局域网地址。
+  说明：文件名语义不对口的候选已就地标注「语义不对口」，须人耳复核；本页不写生产代码。
+-->
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>[原型] 音效试听台 stub · 12 时机格</title>
+<style>
+:root{
+  /* 深色庄园底（对齐 client/src/style.css 与 BaseSheet）：夜蓝墨绿 + 暖金强调 */
+  --bg:#17222c; --bg-deep:#0e161d; --card:#22303c; --card-2:#263238;
+  --ink:#eceff1; --sub:#90a4ae; --dim:#607d8b; --line:rgba(236,239,241,.13);
+  --gold:#ffcc80; --gold-soft:#ffab40; --red:#ef5350; --green:#66bb6a;
+  --mono:ui-monospace,SFMono-Regular,Consolas,"Liberation Mono",monospace;
+}
+*{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+html{overflow-x:hidden}
+body{
+  margin:0;min-height:100%;
+  color:var(--ink);
+  font:15px/1.5 system-ui,-apple-system,"PingFang SC","Microsoft YaHei",sans-serif;
+  background:
+    radial-gradient(120% 70% at 50% 0%, #1e2c38 0%, var(--bg) 42%, var(--bg-deep) 100%) fixed;
+  padding-bottom:calc(24px + env(safe-area-inset-bottom));
+}
+button{font-family:inherit;color:inherit;cursor:pointer;touch-action:manipulation}
+
+/* ===== 顶栏 ===== */
+#top{
+  position:sticky;top:0;z-index:20;
+  background:rgba(17,27,35,.94);
+  backdrop-filter:blur(10px);-webkit-backdrop-filter:blur(10px);
+  border-bottom:1px solid var(--line);
+  padding:calc(9px + env(safe-area-inset-top)) 12px 9px;
+}
+.wrap{max-width:620px;margin:0 auto}
+#top .bar{display:flex;align-items:center;gap:8px}
+#top .tag{
+  font:800 10px/1 var(--mono);letter-spacing:.08em;color:#0e161d;background:var(--gold);
+  border-radius:4px;padding:4px 6px;flex:0 0 auto;
+}
+#top h1{font-size:16px;margin:0;letter-spacing:.02em;flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+#muteBtn{
+  flex:0 0 auto;background:var(--card);border:1px solid var(--line);
+  border-radius:999px;padding:6px 11px;font-size:12px;font-weight:700;color:var(--ink);
+}
+#muteBtn.off{color:var(--dim);border-color:rgba(96,125,139,.4);text-decoration:line-through}
+#top .lead{font-size:11.5px;color:var(--sub);line-height:1.55;margin:7px 0 0}
+#audioWarn{
+  display:none;margin:8px 0 0;font-size:12px;line-height:1.5;
+  color:#ffcdd2;background:rgba(239,83,80,.14);
+  border:1px solid rgba(239,83,80,.45);border-radius:8px;padding:7px 10px;
+}
+#audioWarn.on{display:block}
+
+/* ===== 时机格 ===== */
+main{padding:12px}
+.slot{
+  background:linear-gradient(165deg,var(--card),var(--card-2));
+  border:1px solid var(--line);border-radius:13px;
+  padding:11px 12px 12px;margin-bottom:10px;
+  box-shadow:0 2px 10px rgba(0,0,0,.22);
+}
+.slotHead{display:flex;align-items:baseline;gap:8px;margin-bottom:3px}
+.num{
+  flex:0 0 auto;width:20px;height:20px;border-radius:50%;
+  border:1px solid rgba(255,204,128,.5);color:var(--gold);
+  font:800 11px/18px var(--mono);text-align:center;
+}
+.slotHead h2{font-size:14.5px;margin:0;letter-spacing:.01em;flex:1;min-width:0}
+.optTag{
+  flex:0 0 auto;font-size:9.5px;font-weight:800;border-radius:999px;padding:1px 7px;
+  color:var(--gold);border:1px solid rgba(255,204,128,.45);background:rgba(255,171,64,.1);
+}
+.optTag.cut{color:var(--dim);border-color:rgba(96,125,139,.5);background:transparent}
+.desc{font-size:11.5px;color:var(--sub);line-height:1.55;margin:0 0 9px}
+
+.opts{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:7px}
+.opt{
+  position:relative;text-align:left;
+  background:rgba(13,20,26,.5);
+  border:1px solid rgba(236,239,241,.18);
+  border-radius:10px;padding:8px 10px 8px 30px;
+  transition:border-color .14s,background .14s,transform .06s;
+}
+.opt:active{transform:scale(.985)}
+.opt::before{
+  content:"▶";position:absolute;left:10px;top:50%;transform:translateY(-50%);
+  font-size:9px;color:var(--dim);
+}
+.opt .nm{display:block;font:700 12.5px/1.3 var(--mono);word-break:break-all}
+.opt .meta{display:block;font-size:10.5px;color:var(--dim);margin-top:2px}
+.opt .flag{
+  display:inline-block;margin-top:4px;font-size:9.5px;line-height:1.4;
+  color:#ffcc80;background:rgba(255,171,64,.12);
+  border:1px solid rgba(255,171,64,.35);border-radius:5px;padding:1px 5px;
+}
+/* 选中（会写进底部清单） */
+.opt.sel{
+  border-color:rgba(102,187,106,.72);
+  background:rgba(102,187,106,.12);
+  box-shadow:inset 0 0 0 1px rgba(102,187,106,.35);
+}
+.opt.sel::before{content:"✓";color:var(--green);font-size:10px}
+/* 正在播（点谁谁亮，播完自动灭） */
+.opt.playing{
+  border-color:var(--gold);
+  background:rgba(255,204,128,.16);
+  box-shadow:0 0 0 1px rgba(255,204,128,.45),0 0 16px rgba(255,171,64,.16);
+}
+.opt.playing::before{
+  content:"";left:11px;top:50%;width:9px;height:11px;margin-top:-5px;
+  border-radius:1px;
+  background:
+    linear-gradient(to top,var(--gold) 0 100%) 0 50%/2px 60% no-repeat,
+    linear-gradient(to top,var(--gold) 0 100%) 3.5px 50%/2px 100% no-repeat,
+    linear-gradient(to top,var(--gold) 0 100%) 7px 50%/2px 40% no-repeat;
+  animation:eq .7s ease-in-out infinite alternate;
+}
+@keyframes eq{from{background-size:2px 30%,2px 70%,2px 50%}to{background-size:2px 90%,2px 40%,2px 100%}}
+.opt.sel.playing::before{content:""}
+
+/* ===== 底部已选清单 ===== */
+#pickedCard{
+  background:linear-gradient(165deg,#1d2a35,#1a242d);
+  border:1px solid rgba(255,204,128,.3);
+  border-radius:13px;padding:12px;margin-top:14px;
+}
+#pickedCard h2{font-size:14.5px;margin:0 0 3px;display:flex;align-items:baseline;gap:7px;flex-wrap:wrap}
+#pickedCard h2 small{font-size:11px;font-weight:400;color:var(--sub)}
+#pickedText{
+  margin:9px 0 0;padding:10px 11px;border-radius:9px;
+  background:rgba(6,11,15,.72);border:1px solid rgba(236,239,241,.12);
+  color:#dbe4ea;font:12.5px/1.9 var(--mono);
+  white-space:pre-wrap;word-break:break-word;
+  user-select:text;-webkit-user-select:text;
+  max-height:44vh;overflow:auto;
+}
+#pickedText .unpicked{color:var(--dim)}
+.acts{display:flex;gap:8px;margin-top:10px}
+#copyBtn{
+  flex:1;padding:12px;border-radius:10px;border:1px solid rgba(255,204,128,.5);
+  background:rgba(255,171,64,.16);color:var(--gold);
+  font-size:13.5px;font-weight:800;
+}
+#copyBtn:active{background:rgba(255,171,64,.26)}
+#copyBtn.done{background:rgba(102,187,106,.18);border-color:rgba(102,187,106,.6);color:#a5d6a7}
+.foot{font-size:10.5px;color:var(--dim);line-height:1.6;text-align:center;margin:12px 2px 0}
+.foot code{font-family:var(--mono);color:#a8b8c2}
+
+#toast{
+  position:fixed;left:50%;bottom:calc(22px + env(safe-area-inset-bottom));
+  transform:translateX(-50%) translateY(10px);
+  max-width:84vw;background:#0b1218;color:#fff;
+  border:1px solid rgba(255,204,128,.45);
+  font-size:12px;font-weight:700;padding:8px 14px;border-radius:999px;
+  opacity:0;pointer-events:none;transition:opacity .16s,transform .16s;z-index:40;
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
+}
+#toast.on{opacity:1;transform:translateX(-50%)}
+
+@media (max-width:400px){
+  #top h1{font-size:14.5px}
+  .opts{grid-template-columns:1fr 1fr}
+  .opt{padding:7px 8px 7px 26px}
+  .opt .nm{font-size:11.5px}
+}
+</style>
+</head>
+<body>
+
+<header id="top">
+  <div class="wrap">
+    <div class="bar">
+      <span class="tag">SFX STUB</span>
+      <h1>🎧 年兽庄园 · 音效试听台</h1>
+      <button id="muteBtn" type="button" aria-pressed="true">🔊 音效总开关</button>
+    </div>
+    <p class="lead">一次性试听台 · 音效全部 CC0（Kenney / OpenGameArt）· 点候选即播 · 挑完点底部复制发回</p>
+    <div id="audioWarn">⚠️ 音频没播起来：浏览器可能拦了播放或音量被静音。再点一次候选，或检查系统音量 / 页面静音。</div>
+  </div>
+</header>
+
+<main class="wrap" id="slots"></main>
+
+<section class="wrap" id="pickedCard">
+  <h2>📋 已选清单 <small id="pickedCount">已选 0 / 12</small></h2>
+  <pre id="pickedText"></pre>
+  <div class="acts">
+    <button id="copyBtn" type="button">📋 复制全部</button>
+  </div>
+  <p class="foot">
+    选择只记在内存里，刷新即丢。复制不了时按钮会退化为全选，按 <code>Ctrl+C</code> / 长按复制即可。<br>
+    素材来源与授权见 <code>prototype/sfx/LICENSES.md</code> · 全部 CC0，无署名义务。
+  </p>
+</section>
+
+<div id="toast"></div>
+
+<script>
+"use strict";
+
+/* ===== 数据：12 时机格 × 2–3 候选 =====
+   f=文件名（不含 .mp3，对应 prototype/sfx/ 下的文件）
+   d=时长（秒，ffmpeg 实测） b=体积（字节）
+   note=人耳复核提示；不明说就不显示 */
+const SLOTS = [
+  { key:"掷骰落定", desc:"自己掷完骰子、走格之前（骰子落桌那一下）", opts:[
+    { f:"dice-throw-1", d:0.63, b:5641 },
+    { f:"dice-throw-2", d:0.40, b:3760 },
+    { f:"die-throw-3",  d:0.73, b:6477 },
+  ]},
+  { key:"抽卡 / 发牌", desc:"抽事件卡、发道具卡", opts:[
+    { f:"card-slide-1",    d:0.60, b:5223 },
+    { f:"card-take-out-1", d:0.49, b:4387 },
+    { f:"card-fan-1",      d:0.72, b:6268 },
+  ]},
+  { key:"打出道具卡", desc:"道具卡打出去那一下，想要一声清脆的「啪」", opts:[
+    { f:"chip-lay-3",      d:0.27, b:2715, note:"筹码落下，接近「啪」" },
+    { f:"chips-collide-3", d:0.26, b:2506, note:"筹码互撞，最脆" },
+    { f:"card-place-2",    d:0.46, b:4178, note:"卡牌拍桌" },
+  ]},
+  { key:"自己扣血", desc:"被陷阱 / 恶意 / 年兽咬，自己掉血", opts:[
+    { f:"bite-small-1",   d:0.38, b:3551, note:"虫咬，语义正对口" },
+    { f:"bite-small-3",   d:0.52, b:4596, note:"虫咬，更长更重" },
+    { f:"iface-error-005",d:0.50, b:4596, note:"UI 报错音，语义半对口" },
+  ]},
+  { key:"得分 / 结算加分", desc:"结算页逐项加分", opts:[
+    { f:"coin-1", d:0.60, b:5432 },
+    { f:"coin-3", d:0.31, b:2924 },
+  ]},
+  { key:"年兽吼 / 重击", desc:"最后一波，年兽出场与砍击", opts:[
+    { f:"mnstr-14",  d:1.06, b:8985,  note:"兽吼，语义最正" },
+    { f:"shade-12",  d:1.31, b:11074, note:"阴魂人声，气氛向" },
+    { f:"shade-8",   d:1.64, b:13582, note:"阴魂吼，最长" },
+  ]},
+  { key:"失败 sting", desc:"群体失败盖章", opts:[
+    { f:"jingle-sax-07", d:1.74, b:14418, note:"jingle 无胜负语义，按音高下行判断，须耳听复核" },
+    { f:"jingle-sax-03", d:1.12, b:9403,  note:"同上，音高下行" },
+  ]},
+  { key:"胜利 sting", desc:"登顶", opts:[
+    { f:"jingle-nes-00",   d:1.76, b:14627, note:"jingle 无胜负语义，按音高上行判断，须耳听复核" },
+    { f:"jingle-steel-02", d:1.39, b:11701, note:"同上，音高上行" },
+  ]},
+  { key:"UI 轻点", desc:"按钮点击（极短）", opts:[
+    { f:"click-001",  d:0.22, b:2297 },
+    { f:"toggle-001", d:0.22, b:2297 },
+    { f:"drop-003",   d:0.22, b:2297 },
+  ]},
+  { key:"走格脚步", desc:"棋子逐格走（可选格，可砍）", tag:"可选，可砍", opts:[
+    { f:"wood-small",  d:0.31, b:2924, note:"文件名语义不对口，备选（木质轻敲）" },
+    { f:"chip-lay-2",  d:0.23, b:2297, note:"文件名语义不对口，备选（短促嗒声）" },
+  ]},
+  { key:"轮到自己", desc:"轮班模式轮到你", opts:[
+    { f:"confirm-003", d:0.32, b:3133 },
+    { f:"interface-6", d:0.50, b:4596, note:"RPG 界面音，语义半对口" },
+  ]},
+  { key:"观战 / 出局", desc:"自己出局那一下", opts:[
+    { f:"iface-error-003", d:0.53, b:4805, note:"报错音，语义半对口（判负/关门）" },
+    { f:"door",            d:1.00, b:8567, note:"关门声，语义半对口" },
+  ]},
+];
+
+const TOTAL_FILES = SLOTS.reduce((n,s)=>n+s.opts.length,0);
+const TOTAL_BYTES = SLOTS.reduce((n,s)=>n+s.opts.reduce((m,o)=>m+o.b,0),0);
+const KB = (b)=> (b/1024).toFixed(1);
+
+/* ===== 渲染 ===== */
+const $ = (s)=>document.querySelector(s);
+const slotsEl = $("#slots");
+const pickedText = $("#pickedText");
+const pickedCount = $("#pickedCount");
+
+const picked = new Array(SLOTS.length).fill(null);  // 每格选中的文件名
+
+function buildPage(){
+  const frag = document.createDocumentFragment();
+  SLOTS.forEach((slot, si)=>{
+    const card = document.createElement("section");
+    card.className = "slot";
+
+    const head = document.createElement("div");
+    head.className = "slotHead";
+    head.innerHTML = '<span class="num">'+(si+1)+'</span><h2></h2>';
+    head.querySelector("h2").textContent = slot.key;
+    if (slot.tag){
+      const t = document.createElement("span");
+      t.className = "optTag cut";
+      t.textContent = slot.tag;
+      head.appendChild(t);
+    }
+    card.appendChild(head);
+
+    const desc = document.createElement("p");
+    desc.className = "desc";
+    desc.textContent = slot.desc;
+    card.appendChild(desc);
+
+    const opts = document.createElement("div");
+    opts.className = "opts";
+    slot.opts.forEach((o)=>{
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = "opt";
+      btn.dataset.slot = String(si);
+      btn.dataset.file = o.f;
+      btn.title = o.f + ".mp3";
+
+      const nm = document.createElement("span");
+      nm.className = "nm";
+      nm.textContent = o.f;
+      btn.appendChild(nm);
+
+      const meta = document.createElement("span");
+      meta.className = "meta";
+      meta.textContent = o.d.toFixed(2) + "s · " + KB(o.b) + " KB";
+      btn.appendChild(meta);
+
+      if (o.note){
+        const flag = document.createElement("span");
+        flag.className = "flag";
+        flag.textContent = o.note;
+        btn.appendChild(flag);
+      }
+      opts.appendChild(btn);
+    });
+    card.appendChild(opts);
+    frag.appendChild(card);
+  });
+  slotsEl.appendChild(frag);
+
+  const t = document.createElement("p");
+  t.className = "foot";
+  t.innerHTML = '共 <b>'+TOTAL_FILES+'</b> 条候选 · 合计 <b>'+KB(TOTAL_BYTES)+' KB</b>（上限 400 KB）· 统一 64 kbps 单声道 mp3';
+  slotsEl.appendChild(t);
+}
+
+/* ===== 播放：单一 audio 复用，避免叠音 ===== */
+const audio = new Audio();
+audio.preload = "auto";
+let soundOn = true;
+let playingBtn = null;
+let audioWarnShown = false;
+
+const warnEl = $("#audioWarn");
+function showAudioWarn(){
+  if (audioWarnShown) return;
+  audioWarnShown = true;
+  warnEl.classList.add("on");
+}
+
+function clearPlaying(){
+  if (playingBtn){ playingBtn.classList.remove("playing"); playingBtn = null; }
+}
+
+function playFile(btn, file){
+  if (!soundOn){ toast("🔇 音效总开关关着，先打开再听"); return; }
+  clearPlaying();
+  try{
+    audio.pause();
+    audio.currentTime = 0;
+  }catch(_){}
+  audio.src = "sfx/" + file + ".mp3";
+  playingBtn = btn;
+  btn.classList.add("playing");
+  const p = audio.play();
+  if (p && typeof p.then === "function"){
+    p.catch(()=>{ clearPlaying(); showAudioWarn(); });
+  }
+}
+
+audio.addEventListener("ended", clearPlaying);
+audio.addEventListener("error", ()=>{ clearPlaying(); showAudioWarn(); });
+audio.addEventListener("stalled", ()=>{ /* 网络慢不报错，等 durationchange */ });
+
+/* ===== 选中与清单 ===== */
+function renderPicked(){
+  const lines = SLOTS.map((s,i)=>{
+    const v = picked[i];
+    return (i+1) + " " + s.key + " = " + (v ? v : "（未选）");
+  });
+  /* 用可选中的 <pre>：未选行单独上色，但复制出来仍是纯文本 */
+  pickedText.textContent = "";
+  lines.forEach((ln,i)=>{
+    const span = document.createElement("span");
+    if (!picked[i]) span.className = "unpicked";
+    span.textContent = ln + "\n";
+    pickedText.appendChild(span);
+  });
+  const n = picked.filter(Boolean).length;
+  pickedCount.textContent = "已选 " + n + " / " + SLOTS.length;
+}
+
+function markSlot(si, file){
+  slotsEl.querySelectorAll('.opt[data-slot="'+si+'"]').forEach((el)=>{
+    el.classList.toggle("sel", el.dataset.file === file);
+  });
+}
+
+slotsEl.addEventListener("click", (e)=>{
+  const btn = e.target.closest(".opt");
+  if (!btn) return;
+  const si = Number(btn.dataset.slot);
+  const file = btn.dataset.file;
+
+  /* 点候选 = 记住选择 + 试听一次 */
+  picked[si] = file;
+  markSlot(si, file);
+  renderPicked();
+  playFile(btn, file);
+});
+
+/* ===== 总开关 ===== */
+const muteBtn = $("#muteBtn");
+muteBtn.addEventListener("click", ()=>{
+  soundOn = !soundOn;
+  audio.muted = !soundOn;
+  if (!soundOn){ audio.pause(); clearPlaying(); }
+  muteBtn.classList.toggle("off", !soundOn);
+  muteBtn.setAttribute("aria-pressed", String(soundOn));
+  muteBtn.textContent = soundOn ? "🔊 音效总开关" : "🔇 音效已关";
+  toast(soundOn ? "🔊 音效：开" : "🔇 音效：关（仍可挑，只是不播）");
+});
+
+/* ===== 复制 ===== */
+const copyBtn = $("#copyBtn");
+function plainText(){
+  return SLOTS.map((s,i)=> (i+1)+" "+s.key+" = "+(picked[i] || "（未选）")).join("\n");
+}
+
+copyBtn.addEventListener("click", async ()=>{
+  const text = plainText();
+  let ok = false;
+  try{
+    if (navigator.clipboard && navigator.clipboard.writeText){
+      await navigator.clipboard.writeText(text);
+      ok = true;
+    }
+  }catch(_){ ok = false; }
+
+  if (!ok){
+    /* fallback：选中整个 <pre>，用户自己 Ctrl+C / 长按复制 */
+    try{
+      const range = document.createRange();
+      range.selectNodeContents(pickedText);
+      const sel = window.getSelection();
+      sel.removeAllRanges();
+      sel.addRange(range);
+      try { ok = document.execCommand("copy"); } catch(_){ ok = false; }
+    }catch(_){ ok = false; }
+  }
+
+  copyBtn.classList.add("done");
+  copyBtn.textContent = ok ? "✅ 已复制" : "已全选，请 Ctrl+C 复制";
+  setTimeout(()=>{
+    copyBtn.classList.remove("done");
+    copyBtn.textContent = "📋 复制全部";
+  }, 1800);
+  toast(ok ? "✅ 清单已复制" : "已全选文本，按 Ctrl+C 复制");
+});
+
+/* ===== toast ===== */
+let toastTimer = null;
+function toast(msg){
+  const el = $("#toast");
+  el.textContent = msg;
+  el.classList.add("on");
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(()=> el.classList.remove("on"), 1700);
+}
+
+/* ===== init ===== */
+buildPage();
+renderPicked();
+</script>
+</body>
+</html>

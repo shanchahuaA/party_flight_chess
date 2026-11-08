@@ -12,3 +12,9 @@ dist/
 # wrangler 本地状态与密钥
 .wrangler/
 .dev.vars
+
+# 音效试听中间产物（一次性，不入库）
+.sfx-raw/
+.pip-cache/
+.tools/
+.tmp-issue/

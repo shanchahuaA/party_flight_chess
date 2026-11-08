@@ -1,0 +1,1612 @@
+<!doctype html>
+<!--
+  [PROTOTYPE] M3 界面四页全流程低保真可点 stub —— 一次性代码（GitHub issue #48）
+  目的：把「进房 → 大厅 → 游戏 → 结算」四页串起来给用户实点，暴露缺件与交互断点。
+  口径：
+    - 页内一律浮层，不切页；四页之间才导航。
+    - 低保真：灰框 / 占位文案 / 简单色块，不做视觉皮（视觉皮属超级升级）。
+    - 每页按《界面呈现定案》标「已有 / 缺失 / 待定」；右上「标注」开关看页内小标签，
+      「盘点」看本页清单。
+    - 重点缺件：新手引导、帮助速查、局中设置（音效/震动）、观战横幅、中局踢人 UI、
+      结算页「再来一局 / 回大厅调配置」。
+  运行：双击本文件即可；手机可 `python -m http.server 8137` 后访问同 Wi-Fi 局域网地址。
+  说明：本文件不写生产代码，不改 client / kernel / server；定案后只留结论，不留实现。
+-->
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
+<title>[原型] M3 四页走查 stub · #48</title>
+<style>
+:root{
+  --ink:#2b2b2b; --sub:#707070; --line:#8d8d8d; --wire:#cfcfc9;
+  --paper:#f7f7f3; --panel:#fff; --shell:#212121;
+  --red:#c62828; --green:#2e7d32; --amber:#a86200; --blue:#1f5fa8;
+}
+*{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+html,body{margin:0;height:100%;overflow:hidden}
+body{background:#e6e6e1;color:var(--ink);font:14px/1.5 system-ui,-apple-system,"PingFang SC","Microsoft YaHei",sans-serif}
+button,input,select{font:inherit;color:inherit}
+button{cursor:pointer}
+.sp{flex:1}
+.hint{font-size:11px;color:var(--sub);line-height:1.55;margin:6px 0 0}
+.stubNote{font-size:10px;color:#999;line-height:1.5;margin:10px 0 0;text-align:center}
+
+/* ===== 原型外壳（不属于设计） ===== */
+#stubbar{position:fixed;top:0;left:0;right:0;height:46px;display:flex;align-items:center;gap:5px;padding:0 8px;background:var(--shell);color:#eee;z-index:150;overflow-x:auto;white-space:nowrap;scrollbar-width:none}
+#stubbar::-webkit-scrollbar{display:none}
+#stubbar .tag{font:800 10px/1 ui-monospace,Consolas,monospace;letter-spacing:.08em;color:#ffd54f;border:1px solid #ffd54f;border-radius:4px;padding:3px 5px;flex:0 0 auto}
+#nav{display:flex;gap:4px;flex:0 0 auto}
+#nav button{background:#333;border:1px solid #555;color:#bbb;border-radius:6px;padding:5px 9px;font-size:12px}
+#nav button.on{background:#eee;color:#222;border-color:#eee;font-weight:800}
+#stubbar .tool{background:#333;border:1px solid #555;color:#ddd;border-radius:6px;padding:5px 9px;font-size:12px;flex:0 0 auto}
+#stubbar .tool.on{background:#ffd54f;color:#222;border-color:#ffd54f;font-weight:800}
+#stage{position:fixed;top:46px;left:50%;transform:translateX(-50%);width:min(100%,560px);bottom:0;background:var(--paper);border-left:1px solid #c4c4be;border-right:1px solid #c4c4be;overflow:hidden}
+.page{position:absolute;inset:0;display:none;overflow-y:auto;padding:12px 12px calc(22px + env(safe-area-inset-bottom))}
+.page.on{display:block}
+.page.game{padding:0;overflow:hidden}
+.page.game.on{display:flex;flex-direction:column}
+
+/* ===== 通用线框 ===== */
+.pageHead{padding:2px 0 10px}
+.pageHead h1{font-size:19px;margin:0 0 3px;letter-spacing:.02em}
+.pageHead .hint{margin:0}
+.wcard{background:var(--panel);border:1.5px solid var(--line);border-radius:9px;padding:11px 12px;margin-bottom:9px}
+.wcard h2,.wcard h3{font-size:13px;margin:0 0 7px}
+.row{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.block{display:block;width:100%}
+.wbtn{background:#fff;border:1.5px solid #555;border-radius:7px;padding:8px 11px;font-weight:700;font-size:12.5px}
+.wbtn:active{transform:translateY(1px)}
+.wbtn.primary{background:#333;color:#fff;border-color:#333}
+.wbtn.danger{color:var(--red);border-color:var(--red)}
+.wbtn.miniBtn{padding:3px 7px;font-size:10.5px;font-weight:700}
+.wbtn.big{padding:13px;font-size:14px}
+.wbtn:disabled{opacity:.42;cursor:default;transform:none}
+.segTabs{display:flex;gap:6px;margin-bottom:10px}
+.segTabs button{flex:1;background:#fff;border:1.5px solid #888;border-radius:7px;padding:8px;font-weight:700;font-size:12.5px;color:#555}
+.segTabs button.on{background:#333;border-color:#333;color:#fff}
+.field{display:flex;align-items:center;gap:8px;margin-bottom:8px;font-size:12.5px}
+.field span{width:62px;flex:0 0 auto;color:#555}
+.field input{flex:1;width:auto;border:1.5px solid #777;border-radius:6px;padding:8px 9px;background:#fff}
+.field input:disabled{background:#eee;color:#999}
+.err{font-size:11.5px;color:var(--red);min-height:16px;margin:2px 0 4px}
+.wip{border:1.5px dashed var(--red);background:repeating-linear-gradient(45deg,#fff,#fff 6px,#f4f4f0 6px,#f4f4f0 12px);border-radius:8px;padding:10px;font-size:11.5px;color:#7d1f1f;line-height:1.55;margin-bottom:9px}
+.wip.tbd{border-color:var(--amber);color:#744500;background:repeating-linear-gradient(45deg,#fff,#fff 6px,#f7f3e9 6px,#f7f3e9 12px)}
+.wip b{font-size:12px}
+.codeBig{font:800 17px/1 ui-monospace,Consolas,monospace;letter-spacing:.12em;border:1.5px solid #555;border-radius:6px;padding:4px 8px;background:#f4f4f0}
+.wtag{display:inline-block;font-size:9.5px;font-weight:800;border:1px solid;border-radius:999px;padding:1px 7px;vertical-align:1px}
+.wtag.ok{color:var(--green);border-color:var(--green);background:#f1f8f1}
+.wtag.miss{color:var(--red);border-color:var(--red);background:#fdf1f1}
+.wtag.tbd{color:var(--amber);border-color:var(--amber);background:#faf5e9}
+
+/* ===== 进房页 ===== */
+#codeField.hide{display:none}
+
+/* ===== 大厅页 ===== */
+.seatList{list-style:none;margin:8px 0 0;padding:0;display:flex;flex-direction:column;gap:5px}
+.seat{display:flex;align-items:center;gap:7px;border:1px solid #bbb;border-radius:6px;padding:5px 8px;font-size:12px;background:#fcfcfa;flex-wrap:wrap}
+.seat.off{opacity:.55}
+.seat.kicked{text-decoration:line-through;opacity:.45}
+.seatNo{width:17px;height:17px;border:1px solid #888;border-radius:4px;display:flex;align-items:center;justify-content:center;font-size:10px;font-weight:800;flex:0 0 auto}
+.seatName{font-weight:800}
+.seatName i{font-style:normal;font-weight:400;font-size:10.5px;color:var(--red)}
+.seatRole{font-size:11px;border:1px solid #bbb;border-radius:999px;padding:0 7px;color:#555}
+.tagSmall{font-size:10px;border:1px solid #bbb;border-radius:4px;padding:0 4px;color:#666}
+.dot{font-size:10.5px;color:#999}
+.dot.on{color:var(--green)}
+.roleGrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(86px,1fr));gap:7px;margin-top:7px}
+.roleCard{position:relative;border:1.5px solid #999;border-radius:7px;background:#fcfcfa;padding:9px 5px 7px;text-align:center;cursor:pointer}
+.roleCard.on{border-color:#333;background:#eee;box-shadow:inset 0 0 0 1px #333}
+.roleEmoji{display:block;font-size:20px;line-height:1.1}
+.roleName{display:block;font-size:11px;font-weight:800;margin-top:3px}
+.roleCard .infoBtn{position:absolute;top:2px;right:2px;border:1px solid #bbb;background:#fff;border-radius:50%;width:17px;height:17px;font-size:10px;line-height:1;padding:0}
+.summaryLine{font-size:12px;color:#444;background:#f4f4f0;border:1px solid #ccc;border-radius:6px;padding:6px 8px;margin:7px 0}
+
+/* ===== 游戏页 ===== */
+.gameRoot{display:flex;flex-direction:column;height:100%;background:#fff}
+.hud{display:flex;align-items:center;gap:6px;padding:7px 9px;border-bottom:1.5px solid var(--wire);flex:0 0 auto;background:#fafaf7}
+.pill{border:1.5px solid #666;background:#fff;border-radius:999px;padding:3px 8px;font-size:10.5px;font-weight:800;white-space:nowrap}
+.iconBtn{width:31px;height:31px;border:1.5px solid #666;border-radius:7px;background:#fff;font-size:15px;line-height:1;flex:0 0 auto}
+.worldBand{flex:0 0 auto;margin:5px 9px 0;border:1.5px solid #777;border-radius:7px;background:#fff;padding:3px 8px 2px;font-size:10.5px;cursor:pointer;overflow:hidden}
+.worldBand .row{display:flex;align-items:baseline;gap:5px;white-space:nowrap;overflow:hidden;padding:1px 0}
+.worldBand .who{font-weight:800;flex:0 0 auto}
+.worldBand .txt{overflow:hidden;text-overflow:ellipsis}
+.worldBand .more{font-size:9px;color:#999;text-align:right;line-height:1.4}
+.boardWrap{flex:1;min-height:0;display:flex;align-items:center;justify-content:center;position:relative;padding:3px 5px;background:#fcfcfa}
+#boardSvg{width:100%;height:100%;display:block}
+.spectateBanner{position:absolute;top:7px;left:50%;transform:translateX(-50%);z-index:12;background:#333;color:#fff;border-radius:999px;padding:5px 13px;font-size:11.5px;font-weight:800;white-space:nowrap;box-shadow:0 2px 8px rgba(0,0,0,.2)}
+.dock{flex:0 0 auto;border-top:1.5px solid var(--wire);padding:4px 9px calc(6px + env(safe-area-inset-bottom));background:#fafaf7}
+.taskSlots{display:flex;flex-direction:column;gap:3px;margin-bottom:3px}
+.task{border:1.5px solid #777;border-radius:7px;background:#fff;padding:3px 7px;display:flex;align-items:center;gap:6px;font-size:10.5px;line-height:1.25}
+.handStrip{display:flex;gap:6px;overflow-x:auto;padding:2px 0 4px;scrollbar-width:none}
+.handStrip::-webkit-scrollbar{display:none}
+.mini{position:relative;flex:0 0 52px;height:60px;border:1.5px solid #666;border-radius:6px;background:#fff;display:flex;flex-direction:column;justify-content:flex-end;align-items:center;padding:4px 3px;gap:2px;font-size:10px;text-align:center}
+.mini .mt{font-weight:800;font-size:10.5px;line-height:1.15;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+.mini .mr{font-size:8px;color:#888;font-weight:700}
+.mini .cbDot{position:absolute;top:-5px;right:-5px;width:14px;height:14px;border-radius:50%;background:var(--red);color:#fff;font-size:8px;font-weight:900;display:flex;align-items:center;justify-content:center;border:1px solid #fff}
+.btnRow{display:flex;align-items:center;gap:9px}
+#rollBtn{width:62px;height:62px;border-radius:50%;border:2px solid #333;background:#fff;font-weight:900;font-size:12px;line-height:1.2;flex:0 0 auto;white-space:pre-line}
+#rollBtn.done{background:#ddd;color:#888;border-color:#aaa}
+#confirmBtn{flex:1;padding:14px 8px;border:2px solid #333;border-radius:9px;background:#fff;font-weight:800;font-size:12.5px}
+#confirmBtn.armed{border-color:var(--green);color:var(--green);background:#f0f8f0}
+#confirmBtn.waited{background:#eee;color:#888;border-color:#aaa}
+.dockHint{font-size:9px;color:#999;text-align:center;margin:3px 0 0;min-height:13px}
+
+/* ===== 结算页 ===== */
+.settlePage{display:flex;flex-direction:column;gap:9px}
+.settleHead{text-align:center;position:relative;padding-top:2px}
+.settleHead h1{font-size:20px;margin:0}
+.winLine{font-size:12px;color:#555;margin:3px 0 0}
+.winLine b{color:#a86200;font-size:16px}
+.stamp{display:none;position:absolute;right:2%;top:-6px;transform:rotate(-9deg);border:3px double var(--red);color:var(--red);border-radius:8px;padding:3px 10px;font-size:14px;font-weight:900;letter-spacing:2px;background:#fff}
+.failNote{display:none;text-align:center;font-size:11px;color:#a33;margin:0}
+.settlePage.groupfail .stamp{display:block}
+.settlePage.groupfail .failNote{display:block}
+.settleBoard{display:flex;flex-direction:column;gap:7px}
+.srow{background:#fff;border:1.5px solid #999;border-radius:8px;padding:8px 10px}
+.srow.me{border-color:var(--red);background:#fdf6f6}
+.rankLine{display:flex;align-items:baseline;gap:7px}
+.medal{font-size:13px;width:28px;flex:0 0 auto}
+.sname{font-weight:800;font-size:13px;flex:1;min-width:0}
+.sname i{font-style:normal;font-size:10.5px;color:var(--red)}
+.stotal{font-size:18px;font-weight:900;color:#a86200}
+.stotal small{font-size:9px;color:#777;font-weight:400;margin-left:2px}
+.sitems{display:flex;flex-wrap:wrap;gap:3px 5px;margin-top:5px}
+.sit{font-size:9.5px;color:#555;background:#f1f1ed;border:1px solid #ddd;border-radius:999px;padding:1px 6px}
+.titles{display:flex;flex-wrap:wrap;gap:5px;margin-top:6px;min-height:19px;align-items:center}
+.titleChip{font-size:10.5px;font-weight:800;border:1px solid #888;border-radius:6px;padding:1px 6px;background:#fcfcfa}
+.titleChip.lit{color:#7a4b00;border-color:#c99a3d;background:#fdf7ea}
+.noTitle{font-size:10px;color:#999}
+.voided{display:none;font-size:10.5px;font-weight:800;color:var(--red);border:1.5px dashed var(--red);border-radius:6px;padding:1px 7px;transform:rotate(-2deg)}
+.settlePage.groupfail .voided{display:inline-block}
+.settlePage.groupfail .titleChip,.settlePage.groupfail .noTitle{display:none}
+.darkLine{font-size:10.5px;color:#777;margin:5px 0 0}
+.darkLine b{font-weight:800;margin-left:4px}
+.hitTxt{color:var(--green)}
+.missTxt{color:#777}
+.voidTxt{display:none;color:var(--red)}
+.settlePage.groupfail .voidTxt{display:inline}
+.settlePage.groupfail .hitTxt,.settlePage.groupfail .missTxt{display:none}
+.culprits h3{margin:0 0 6px}
+.culprit{border-top:1px dashed #ccc;padding:6px 0;font-size:11.5px}
+.culprit:first-of-type{border-top:0;padding-top:0}
+.cHead{display:flex;align-items:baseline;gap:6px;flex-wrap:wrap}
+.cName{font-weight:800}
+.cKind{font-size:10px;color:#a33;border:1px solid #d9a5a5;border-radius:999px;padding:0 6px;background:#fdf3f3}
+.cDetail{margin:3px 0 4px;color:#555;line-height:1.5}
+.cEvi{display:flex;gap:5px;align-items:center;flex-wrap:wrap}
+.cEvi .lab{font-size:9.5px;color:#888}
+.eviBtn{border:1px solid #888;background:#fff;border-radius:999px;font-size:9.5px;padding:1px 7px;text-decoration:underline dotted;color:#1f5fa8}
+.acts{display:flex;flex-direction:column;gap:7px;padding-bottom:4px}
+
+/* ===== 浮层 ===== */
+.overlay{position:fixed;inset:0;background:rgba(25,25,25,.48);z-index:200;display:flex;align-items:flex-end;justify-content:center}
+.overlay.center{align-items:center;padding:16px}
+.overlay .sheet{width:100%;max-width:560px;max-height:84vh;overflow-y:auto;background:#fff;border:2px solid #333;border-bottom:0;border-radius:13px 13px 0 0;padding:13px 13px calc(18px + env(safe-area-inset-bottom))}
+.overlay.center .sheet{border:2px solid #333;border-radius:12px;max-height:86vh;padding:15px}
+.sheetHead{display:flex;align-items:center;gap:7px;margin-bottom:7px;flex-wrap:wrap}
+.sheetHead h3,.sheetHead h4{margin:0;font-size:15px}
+.sheetHead h4{font-size:12.5px}
+.sheet hr{border:0;border-top:1px dashed #ccc;margin:11px 0}
+.goalGrid{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin:9px 0}
+.goalCard{border:1.5px solid #888;border-radius:8px;background:#fcfcfa;padding:10px 8px;text-align:left;display:flex;flex-direction:column;gap:5px;font-size:11px;color:#555}
+.goalCard b{font-size:13px;color:#2b2b2b}
+.goalCard.on{border-color:var(--red);background:#fdf3f3;box-shadow:inset 0 0 0 1px var(--red)}
+.settingRow{display:flex;align-items:center;justify-content:space-between;gap:8px;border:1px solid #ccc;border-radius:6px;padding:7px 9px;margin-bottom:6px;font-size:12px;background:#fcfcfa}
+.switch{border:1.5px solid #888;background:#fff;border-radius:999px;padding:3px 11px;font-size:11px;font-weight:800;color:#777;min-width:42px}
+.switch.on{background:#333;border-color:#333;color:#fff}
+.memberList{display:flex;flex-direction:column;gap:4px;margin:7px 0}
+.memberRow{display:flex;align-items:center;gap:7px;border:1px solid #ccc;border-radius:6px;padding:5px 8px;font-size:11.5px;background:#fcfcfa}
+.memberRow .mname{font-weight:800;flex:1}
+.helpList{margin:8px 0;padding-left:20px;font-size:12px;line-height:1.7}
+.helpList li{margin-bottom:4px}
+.guideSheet{border-style:dashed !important}
+.guideStep{font-size:10px;color:#888;font-weight:800;letter-spacing:.08em;margin-bottom:4px}
+.guideTitle{font-size:16px;font-weight:900;margin:0 0 6px}
+.guideBody{font-size:12.5px;line-height:1.65;color:#444;margin:0 0 9px}
+.guideMock{border:1.5px dashed #999;border-radius:7px;background:#f7f7f3;padding:12px 8px;text-align:center;font-size:12px;color:#555;margin-bottom:10px}
+.reportList{max-height:52vh;overflow-y:auto;margin:7px 0;overscroll-behavior:contain}
+.turnLine{margin:8px 0 3px;font-size:10px;font-weight:800;color:#8a6d00;text-align:center;border-top:1px dashed #bbb;padding-top:6px}
+.reportList > .turnLine:first-child{margin-top:0}
+.drow{padding:3px 0;border-bottom:1px solid #eee;cursor:pointer;font-size:11.5px}
+.drow .rowMain{display:flex;align-items:baseline;gap:5px}
+.drow .who{font-weight:800;flex:0 0 auto}
+.drow .txt{flex:1}
+.drow .flavor{margin:2px 0 3px 19px;font-size:10.5px;font-style:italic;color:#777;line-height:1.5}
+.drow.flash{animation:flashBg .55s ease-in-out 3;border-radius:5px}
+@keyframes flashBg{0%,100%{background:transparent}50%{background:#fff1c1}}
+.invGroup{margin:8px 0}
+.invTag{display:inline-block;font-size:10px;font-weight:800;color:#fff;border-radius:4px;padding:1px 7px;margin-bottom:4px}
+.invTag.ok{background:var(--green)}
+.invTag.miss{background:var(--red)}
+.invTag.tbd{background:var(--amber)}
+.invList{margin:0;padding:0;list-style:none;display:flex;flex-direction:column;gap:4px}
+.invItem{border:1px solid #ddd;border-radius:6px;padding:5px 8px;font-size:11.5px;background:#fcfcfa}
+.invNote{font-size:10px;color:#888;margin-top:2px;line-height:1.5}
+.toolGrid{display:grid;grid-template-columns:1fr 1fr;gap:7px;margin:9px 0}
+.toolGrid .wbtn{padding:11px 7px}
+
+/* ===== 标注 ===== */
+body.ann-on [data-ann]{position:relative;outline:2px dashed rgba(0,0,0,.3);outline-offset:3px;overflow:visible}
+body.ann-on [data-ann]::after{content:attr(data-ann);position:absolute;top:-10px;left:-3px;z-index:30;font:800 9.5px/1 ui-monospace,Consolas,monospace;color:#fff;background:var(--green);border-radius:3px;padding:2px 4px;pointer-events:none;white-space:nowrap}
+body.ann-on [data-ann="缺失"]::after{background:var(--red)}
+body.ann-on [data-ann="待定"]::after{background:var(--amber)}
+#toast{position:fixed;left:50%;bottom:calc(110px + env(safe-area-inset-bottom));transform:translateX(-50%) translateY(8px);max-width:82vw;background:#222;color:#fff;font-size:11.5px;font-weight:700;padding:7px 13px;border-radius:999px;z-index:400;opacity:0;pointer-events:none;transition:opacity .16s ease,transform .16s ease;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+#toast.on{opacity:1;transform:translateX(-50%)}
+
+/* ===== 棋盘 ===== */
+#boardSvg text{user-select:none}
+.boardCellLabel{font-size:7px;font-weight:700}
+.token{cursor:pointer}
+.token .core{transition:stroke-width .15s}
+.token.legal .core{stroke:#2e7d32;stroke-width:3}
+.token.dim{opacity:.32}
+.token.dead{opacity:.35}
+.token.pulse .core{animation:tkPulse .9s ease-out}
+.token.pulse .hpBg,.token.pulse .hpFill{animation:tkPulse .9s ease-out}
+@keyframes tkPulse{0%,100%{stroke-width:2}50%{stroke-width:7;stroke:#c62828}}
+
+@media (max-width:420px){
+  #stubbar{font-size:11px}
+  #stubbar .tool{padding:4px 7px;font-size:11px}
+  #nav button{padding:4px 7px;font-size:11px}
+  .wcard{padding:9px 10px}
+}
+</style>
+</head>
+<body>
+<div id="stubbar">
+  <span class="tag">STUB · #48</span>
+  <nav id="nav">
+    <button data-go="join" class="on">进房</button>
+    <button data-go="lobby">大厅</button>
+    <button data-go="game">游戏</button>
+    <button data-go="settle">结算</button>
+  </nav>
+  <span class="sp"></span>
+  <button class="tool" id="annBtn" data-act="ann-toggle" title="标注：已有/缺失/待定">🏷</button>
+  <button class="tool" data-act="inventory" title="本页盘点">📋</button>
+  <button class="tool" data-act="tools" title="场景工具（仅原型）">🧪</button>
+</div>
+
+<main id="stage">
+  <!-- ============ 进房页 ============ -->
+  <section class="page on" data-page="join">
+    <header class="pageHead">
+      <h1>🏮 庄园法会 · 进房</h1>
+      <p class="hint">输房间码或点朋友的分享链接；创建房间后把邀请链接发给朋友。</p>
+    </header>
+
+    <div class="segTabs">
+      <button class="on" data-act="join-mode" data-mode="join">加入房间</button>
+      <button data-act="join-mode" data-mode="create">创建房间</button>
+    </div>
+
+    <div class="wcard" data-ann="已有">
+      <label class="field" id="codeField"><span>房间码</span><input id="joinCode" type="text" maxlength="5" placeholder="如 K7M2X" value="K7M2X"></label>
+      <label class="field"><span>你的昵称</span><input id="joinNick" type="text" maxlength="12" placeholder="最多 12 字" value="你"></label>
+      <p class="hint">链接直达会自动填码；本机存过 token 会静默归队，刷新/断线免重输。</p>
+      <p class="err" id="joinErr"></p>
+      <button class="wbtn primary block" id="joinSubmit" data-act="join-submit">🚪 加入房间</button>
+    </div>
+
+    <div class="wip" data-ann="缺失">
+      <b>新手引导（缺失）</b><br>
+      第一次进房 / 第一回合怎么教、教什么、能不能跳过——都还没定。这里先放一个占位入口，点开是 3 步占位引导。
+      <div style="margin-top:7px"><button class="wbtn" data-act="join-guide">预览引导占位</button></div>
+    </div>
+
+    <button class="wbtn block" data-act="join-link">🔗 点朋友分享链接直达（演示：自动填码）</button>
+    <p class="stubNote">本页「加入 / 创建」都会进同一个演示大厅；真实流程里创建=房主。</p>
+  </section>
+
+  <!-- ============ 大厅页 ============ -->
+  <section class="page" data-page="lobby">
+    <header class="pageHead">
+      <h1>🛖 房间大厅</h1>
+      <p class="hint" id="lobbySub">明选角色、等人进房，房主配好局就能开。</p>
+    </header>
+
+    <div class="wcard" data-ann="已有">
+      <div class="row">
+        <b style="font-size:13px">📡 房间码</b>
+        <span class="codeBig">K7M2X</span>
+        <span class="sp"></span>
+        <button class="wbtn miniBtn" data-act="copy-code">📋 复制邀请链接</button>
+      </div>
+      <p class="hint">朋友输码进房，或点链接直达（码已自动填好）。</p>
+    </div>
+
+    <div class="wcard" data-ann="已有">
+      <div class="row">
+        <b style="font-size:13px">🪑 座位</b>
+        <span class="sp"></span>
+        <button class="wbtn miniBtn" data-act="add-bot">＋ 假人</button>
+      </div>
+      <ul class="seatList" id="seatList"></ul>
+      <p class="hint">断线不丢座：掉线后棋子由系统暂管，自动重连归队；房主可在座位列「🥾 请出」（大厅内已有）。</p>
+    </div>
+
+    <div class="wcard" data-ann="已有">
+      <b style="font-size:13px">🎭 明选角色（可重复选）</b>
+      <div class="roleGrid" id="roleGrid"></div>
+      <p class="hint" id="roleHint">点角色卡选角，ⓘ 看被动；不选也行，默认「轻装上阵」。</p>
+    </div>
+
+    <div class="wcard" data-ann="已有">
+      <div class="row">
+        <b style="font-size:13px">⚙️ 开局配置</b>
+        <span class="sp"></span>
+        <button class="wbtn miniBtn" data-act="config">🔧 修改配置</button>
+      </div>
+      <p class="summaryLine" id="cfgSummary"></p>
+      <p class="hint">房主改配置全员实时可见；下一局开始后数值冻结。</p>
+    </div>
+
+    <div class="wcard" id="interCard" style="display:none" data-ann="待定">
+      <b style="font-size:13px">🏁 上一局结算</b>
+      <p class="summaryLine" style="margin-bottom:4px">「小美」以 <b>50</b> 分登顶 · 用时 18 分</p>
+      <div class="row">
+        <button class="wbtn miniBtn" data-act="review-last">📜 回看战况</button>
+        <button class="wbtn miniBtn" data-act="open-next">🎴 开下一局</button>
+      </div>
+      <p class="hint">〔待定：结算 → 回大厅 → 改配置 → 开下一局，这条路径的顺滑度本次重点看。〕</p>
+    </div>
+
+    <button class="wbtn primary block big" data-act="start-game" id="startBtn">▶ 开始游戏（4/4 到齐）</button>
+    <p class="stubNote">开始后会先弹「抽暗牌目标」浮层（2 选 1），确认后进入游戏页。</p>
+  </section>
+
+  <!-- ============ 游戏页 ============ -->
+  <section class="page game" data-page="game">
+    <div class="gameRoot" id="gameRoot">
+      <div class="hud" data-ann="已有">
+        <span class="pill" id="hudTurn">回合 5/15 · ⏳ 18s</span>
+        <span class="pill" id="hudHp">❤ 7/10</span>
+        <span class="sp"></span>
+        <button class="iconBtn" data-act="secret" title="我的暗牌目标" data-ann="已有">🎯</button>
+        <button class="iconBtn" data-act="help" title="规则速查（缺失）" data-ann="缺失">📖</button>
+        <button class="iconBtn" data-act="settings" title="局中设置（缺失）" data-ann="缺失">⚙</button>
+      </div>
+
+      <div class="worldBand" data-act="report" data-ann="已有" title="点开全量战报">
+        <div class="rows" id="bandRows"></div>
+        <div class="more">点开全量战报 ▸</div>
+      </div>
+
+      <div class="boardWrap">
+        <div class="spectateBanner" id="spectateBanner" style="display:none" data-ann="缺失">☠ 观战中 · 看得到全局，不再行动</div>
+        <svg id="boardSvg" viewBox="0 0 360 472" preserveAspectRatio="xMidYMid meet" aria-label="棋盘（低保真占位）"></svg>
+      </div>
+
+      <div class="dock" id="dock">
+        <div class="taskSlots" id="taskSlots" data-ann="已有"></div>
+        <div class="handStrip" id="handStrip" data-ann="已有"></div>
+        <div class="btnRow" data-ann="已有">
+          <button id="rollBtn" data-act="roll">🎲<br>掷骰</button>
+          <button id="confirmBtn" data-act="confirm">先掷骰，再确认</button>
+        </div>
+        <p class="dockHint" id="dockHint"></p>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ 结算页 ============ -->
+  <section class="page" data-page="settle">
+    <div class="settlePage" id="settlePage">
+      <header class="settleHead">
+        <h1>🏁 终局结算</h1>
+        <p class="winLine">「小美」以 <b>50</b> 分登顶</p>
+        <div class="stamp">💀 群体失败</div>
+      </header>
+      <p class="failNote">全员倒在最后一波——全员暗牌目标作废（含已达成），结算盖章进入找战犯。</p>
+
+      <div class="settleBoard" id="settleBoard" data-ann="已有"></div>
+
+      <div class="wcard culprits" data-ann="已有">
+        <h3>🧾 找战犯</h3>
+        <div class="culprit">
+          <div class="cHead"><span>🛋</span><span class="cName">阿强</span><span class="cKind">全程划水</span></div>
+          <p class="cDetail">整局只打出 1 张卡；第 3–5 回合两次任务槽全程挂机，最后一波没砍一刀。</p>
+          <div class="cEvi"><span class="lab">证据：</span><button class="eviBtn" data-act="evidence" data-id="5">战报 #5</button><button class="eviBtn" data-act="evidence" data-id="10">战报 #10</button></div>
+        </div>
+        <div class="culprit">
+          <div class="cHead"><span>💊</span><span class="cName">懒猫</span><span class="cKind">治疗吞到死</span></div>
+          <p class="cDetail">满血连喝 2 瓶药水，溢出 2 点治疗；最后一次治疗时踩中陷阱。</p>
+          <div class="cEvi"><span class="lab">证据：</span><button class="eviBtn" data-act="evidence" data-id="7">战报 #7</button><button class="eviBtn" data-act="evidence" data-id="11">战报 #11</button></div>
+        </div>
+      </div>
+
+      <div class="wip tbd" data-ann="待定">
+        <b>待定：再来一局怎么走？</b><br>
+        当前实现是两条路——「再来一局」同配置直接重开；「回大厅调配置」走大厅。要不要在结算页直接给配置入口，本次实点后拍板。
+      </div>
+
+      <div class="acts" data-ann="待定">
+        <button class="wbtn primary big" data-act="again">🔄 再来一局（同配置）</button>
+        <div class="row">
+          <button class="wbtn" style="flex:1" data-act="review-report">📜 回看战报</button>
+          <button class="wbtn" style="flex:1" data-act="to-lobby">⚙️ 回大厅调配置</button>
+        </div>
+        <p class="hint" style="text-align:center">〔待定：重开要不要过渡反馈？同屏重开 vs 回大厅再开。〕</p>
+      </div>
+    </div>
+  </section>
+</main>
+
+<div id="toast"></div>
+
+<script>
+"use strict";
+
+/* ==================== 数据 ==================== */
+
+const ROLES = [
+  { id: "light", emoji: "🎒", name: "轻装上阵", axes: "力1 · 敏3 · 运2", specialty: "无特技", passive: "穿戴类负面（脚镣 / 削面）减半；开局手牌 +1。" },
+  { id: "tough", emoji: "🛡", name: "皮糙肉厚", axes: "力4 · 敏1 · 运1", specialty: "蛮力：力检掷 2 取高", passive: "免疫第一次扣血（每局 1 次）。" },
+  { id: "boss", emoji: "💼", name: "黑市老板", axes: "力1 · 敏1 · 运4", specialty: "狡运：运检掷 2 取高", passive: "警长窗转让（报备合格）时摸 1 张。" },
+  { id: "woe", emoji: "🍂", name: "倒霉蛋", axes: "力2 · 敏1 · 运3", specialty: "菜狗翻身：检定骰 1 改判大成功", passive: "踩陷阱时走格骰掷出 10 则无事。" },
+  { id: "beast", emoji: "🐾", name: "野性直觉", axes: "力3 · 敏2 · 运1", specialty: "猎手：野狗遭遇战检定 +4", passive: "被咬 −1 血改为弃 1 张道具卡（无卡才扣血）。" }
+];
+
+const KIND_ICON = { event: "🃏", trap: "⚠️", item: "🎁", malice: "🌲", system: "📣", summary: "📜", score: "📣" };
+
+const MSGS = [
+  { id: 1, turn: 3, kind: "summary", text: "回合 3 小结：小美 回血 1，阿强 踩陷阱 −1" },
+  { id: 2, turn: 3, kind: "trap", who: "阿强", text: "踩中扣血陷阱 → −1 💔", flavor: "年久失修的捕兽夹在落叶里咬住了脚踝。" },
+  { id: 3, turn: 3, kind: "event", who: "小美", text: "抽到「脚滑」→ 回退 2", flavor: "雪后的石阶比谁都滑。" },
+  { id: 4, turn: 4, kind: "summary", text: "回合 4 小结：你 打出弹弓，小美 回退 2" },
+  { id: 5, turn: 4, kind: "item", who: "你", text: "打出「弹弓」→ 小美 回退 2", flavor: "一颗石子精准地敲在对方脚后跟。" },
+  { id: 6, turn: 4, kind: "malice", text: "世界恶意：木头砸落 3 格 → 阿强 −1", flavor: "头顶的朽木裂开，尘土先到，木头后到。" },
+  { id: 7, turn: 4, kind: "event", who: "懒猫", text: "抽到「温泉房」→ 回 1 血", flavor: "门缝里漏出暖融融的雾气。" },
+  { id: 8, turn: 5, kind: "summary", text: "回合 5 小结：黑市开张，警长 小美 上岗" },
+  { id: 9, turn: 5, kind: "system", text: "黑市开张：小美 当选警长，可查验报备" },
+  { id: 10, turn: 5, kind: "item", who: "阿强", text: "报备转让「假古董」→ 小美", flavor: "他把假古董裹了三层布，像抱着个真祖宗。" },
+  { id: 11, turn: 5, kind: "trap", who: "你", text: "踩中扣血陷阱 → −1 💔", flavor: "脚下一空，半截身子掉进了旧井。" },
+  { id: 12, turn: 5, kind: "event", who: "小美", text: "抽到「断桥」→ 正在抉择…", flavor: "桥断了一半，下面深不见底。" }
+];
+
+const HAND = {
+  slingshot: { title: "弹弓", route: "指向他人", no: 7, flavor: "一根树杈，一条皮筋，足以让前面的人摔个跟头。", lines: ["指向一名对手：回退 2 格", "世界·即时：下一世界回合开始时结算"], contraband: false },
+  potion: { title: "治疗药水", route: "自用", no: 12, flavor: "玻璃瓶上贴着「喝了就好」的手写标签。", lines: ["回复 1 点血量"], contraband: false },
+  banana: { title: "香蕉皮", route: "场地 · 搁脚下", no: 3, flavor: "谁丢的？不知道。谁踩？看命。", lines: ["搁在脚下这格", "下一踩上的人（含自己）罚停 1 回合"], contraband: false },
+  fake: { title: "假古董", route: "指向他人", no: 18, flavor: "底款写着「大明乾隆年制」——两个朝代拼在一起。", lines: ["交给他人：对方 −1 血", "违禁品：被查验会罚没"], contraband: true }
+};
+
+const SETTLE_ROWS = [
+  { name: "小美", me: false, total: 50, progress: 28, finish: 8, finishRank: 2, survive: 4, titleScore: 8, titles: ["雪原孤狼"], grudgeScore: 2, grudgeCount: 1, dark: "雪原孤狼", achieved: true },
+  { name: "阿强", me: false, total: 46, progress: 22, finish: 10, finishRank: 1, survive: 4, titleScore: 8, titles: ["火中取栗"], grudgeScore: 2, grudgeCount: 1, dark: "火中取栗", achieved: true },
+  { name: "你", me: true, total: 34, progress: 24, finish: 6, finishRank: 3, survive: 4, titleScore: 0, titles: [], grudgeScore: 0, grudgeCount: 0, dark: "拾荒者", achieved: false },
+  { name: "懒猫", me: false, total: 28, progress: 18, finish: 0, finishRank: 0, survive: 4, titleScore: 0, titles: [], grudgeScore: 6, grudgeCount: 3, dark: "拾荒者", achieved: false }
+];
+
+const INVENTORY = {
+  join: {
+    title: "进房页",
+    items: [
+      ["已有", "房间码 / 昵称输入、创建 / 加入双模式"],
+      ["已有", "?room= 链接直填房号、本机 token 静默归队"],
+      ["已有", "错误提示（昵称空 / 房号空）"],
+      ["缺失", "新手引导（入口、时机、文案都未定）", "草拟：必须补。建议先定「第一次进房自动弹一次，可跳过」，内容只讲目标 + 一回合三步。"],
+      ["待定", "引导从进房页开始，还是第一回合才出现", "草拟：进房页只放「30 秒上手」入口；第一回合的引导单独再做一次短提示。"]
+    ]
+  },
+  lobby: {
+    title: "大厅页",
+    items: [
+      ["已有", "房间码 + 复制邀请链接"],
+      ["已有", "座位列（真人 / 假人 / 在线态）、房主大厅内踢人"],
+      ["已有", "明选角色 + 角色详情浮层（可重复选）"],
+      ["已有", "房主配置弹窗 / 非房主只读预览"],
+      ["已有", "开局暗牌抽 2 选 1、局间上一局结算摘要"],
+      ["待定", "结算 → 回大厅 → 改配置 → 开下一局的衔接", "草拟：保留两条路；结算页的「再来一局」同配置直开，「回大厅调配置」才切页。"]
+    ]
+  },
+  game: {
+    title: "游戏页",
+    items: [
+      ["已有", "满屏棋盘、HUD（回合 / 血量 / 暗牌入口）"],
+      ["已有", "战报让位带 + 点条目开全量抽屉（含 flavor 展开）"],
+      ["已有", "dock：掷骰与确认结束分离、情境任务槽、手牌横滑 + 半屏抽屉"],
+      ["已有", "抉择卡中央浮层、目标选择、海关任务条组、年兽战"],
+      ["缺失", "帮助速查弹窗（一页纸手机版；入口已有，内容未定）", "草拟：必须补。先定内容范围（目标 / 回合三步 / 四类格子 / 最后一波 / 结算），入口独立「📖」。"],
+      ["缺失", "局中设置（音效 / 震动开关）", "草拟：必须补。无音效资源时先只留震动，音效开关先隐藏或置灰，不放假开关。"],
+      ["缺失", "观战横幅（出局后 dock 隐藏、顶部「☠ 观战中」）", "草拟：必须补。规则已有（淘汰观战），呈现缺件。"],
+      ["缺失", "中局踢人 UI（房主局中只能解散）", "草拟：必须补。入口与二次确认形态待定；假人不可踢。"],
+      ["缺失", "新手引导（第一回合的掷骰/确认分离讲解）", "草拟：必须补。短、可跳过，重点讲「掷骰不自动确认」。"],
+      ["待定", "HUD 四角摆位与遮挡感", "草拟：保持顶部一行 + 棋子旁微血条，真机再验遮挡。"],
+      ["待定", "帮助入口用独立按钮还是收进设置", "草拟：独立 📖 按钮，查看类浮层不切页。"]
+    ]
+  },
+  settle: {
+    title: "结算页",
+    items: [
+      ["已有", "排名 + 五项分项透明、称号亮牌、暗牌亮牌"],
+      ["已有", "找战犯聚合 + 证据条目点开溯源战报"],
+      ["已有", "群体失败盖章、再来一局、回大厅调配置、回看战报"],
+      ["缺失", "暂无结构性缺件"],
+      ["待定", "「再来一局」是否在结算页直接改配置（当前要回大厅）", "草拟：先保留两条路径，真机各点一次再定；倾向「同配置直开 + 改配置才回大厅」。"],
+      ["待定", "重开的过渡反馈（同屏重开 vs 回大厅再开）", "草拟：同配置重开给 1 秒反馈，不切页；回大厅再开保持现路径。"]
+    ]
+  }
+};
+
+const BAND = [MSGS[11], MSGS[10]];
+
+/* ==================== 状态 ==================== */
+
+const initialGame = () => ({
+  rolled: false, confirmed: false, face: null, hp: 7,
+  targeting: false, targetingDone: false,
+  choiceDone: false, choiceFolded: false,
+  spectate: false, pulsePid: null
+});
+const initialSeats = () => [
+  { name: "你", me: true, host: true, role: "light", online: true, bot: false, kicked: false },
+  { name: "阿强", me: false, host: false, role: "tough", online: true, bot: false, kicked: false },
+  { name: "小美", me: false, host: false, role: "boss", online: true, bot: false, kicked: false },
+  { name: "懒猫", me: false, host: false, role: null, online: true, bot: true, kicked: false }
+];
+const initialConfig = () => ({ turnCap: 15, maxHp: 10, windowSeconds: 30, restSeconds: 10, timerMode: "world", maliceLevel: "mild", maliceEvery: 3 });
+
+const S = {
+  page: "join",
+  joinMode: "join",
+  ann: false,
+  guideSeen: false,
+  game: initialGame(),
+  seats: initialSeats(),
+  myRole: "light",
+  config: initialConfig(),
+  lobbyMode: "lobby",
+  settle: { groupFail: false },
+  settings: { sound: false, vibe: true },
+  goalPick: null,
+  pendingKick: null
+};
+
+/* ==================== 工具 ==================== */
+
+const $ = (sel, root = document) => root.querySelector(sel);
+const $$ = (sel, root = document) => Array.from(root.querySelectorAll(sel));
+
+function toast(msg) {
+  const t = $("#toast");
+  t.textContent = msg;
+  t.classList.add("on");
+  clearTimeout(toast._timer);
+  toast._timer = setTimeout(() => t.classList.remove("on"), 2200);
+}
+
+function sheet(html, opts = {}) {
+  const ov = document.createElement("div");
+  ov.className = "overlay" + (opts.center ? " center" : "") + (opts.cls ? " " + opts.cls : "");
+  ov.innerHTML = '<div class="sheet">' + html + '</div>';
+  if (!opts.noBackdropClose) {
+    ov.addEventListener("click", (e) => { if (e.target === ov) ov.remove(); });
+  }
+  document.body.appendChild(ov);
+  return ov;
+}
+
+function closeOverlay(el) {
+  const ov = el && el.closest ? el.closest(".overlay") : null;
+  if (ov) ov.remove();
+}
+
+function roleDef(id) {
+  return ROLES.find((r) => r.id === id) || null;
+}
+
+/* ==================== 页面切换 ==================== */
+
+function showPage(name) {
+  S.page = name;
+  $$(".page").forEach((p) => p.classList.toggle("on", p.dataset.page === name));
+  $$("#nav button").forEach((b) => b.classList.toggle("on", b.dataset.go === name));
+  if (name === "join") renderJoin();
+  if (name === "lobby") renderLobby();
+  if (name === "game") {
+    renderGame();
+    if (!S.guideSeen) {
+      S.guideSeen = true;
+      setTimeout(() => openGuide(), 280);
+    }
+  }
+  if (name === "settle") renderSettle();
+}
+
+/* ==================== 进房页 ==================== */
+
+function renderJoin() {
+  const isJoin = S.joinMode === "join";
+  $$('[data-act="join-mode"]').forEach((b) => b.classList.toggle("on", b.dataset.mode === S.joinMode));
+  $("#codeField").classList.toggle("hide", !isJoin);
+  $("#joinSubmit").textContent = isJoin ? "🚪 加入房间" : "🏮 创建房间";
+  $("#joinErr").textContent = "";
+}
+
+function submitJoin() {
+  const nick = $("#joinNick").value.trim();
+  const code = $("#joinCode").value.trim().toUpperCase();
+  if (!nick) { $("#joinErr").textContent = "先给自己起个昵称"; return; }
+  if (S.joinMode === "join" && !code) { $("#joinErr").textContent = "填一下房间码（或点分享链接直达）"; return; }
+  $("#joinErr").textContent = "";
+  showPage("lobby");
+  toast(S.joinMode === "create" ? "🏮 房间已创建（演示）" : "🚪 已进房 K7M2X（演示）");
+}
+
+/* ==================== 大厅页 ==================== */
+
+function renderLobby() {
+  $("#lobbySub").textContent = S.lobbyMode === "intermission"
+    ? "上一局收官——改配置、选角，房主可开下一局。"
+    : "明选角色、等人进房，房主配好局就能开。";
+  $("#interCard").style.display = S.lobbyMode === "intermission" ? "block" : "none";
+
+  $("#seatList").innerHTML = S.seats.map((s, i) => {
+    const role = s.role ? roleDef(s.role) : null;
+    const roleTxt = role ? role.emoji + " " + role.name : (s.bot ? "🎲 随机" : "未选");
+    const kickBtn = (S.seats[0].host && !s.me && !s.bot && !s.kicked)
+      ? '<button class="wbtn miniBtn danger" data-act="kick-lobby" data-name="' + s.name + '">🥾</button>'
+      : "";
+    return '<li class="seat ' + (s.online ? "" : "off") + " " + (s.kicked ? "kicked" : "") + '">'
+      + '<span class="seatNo">' + (i + 1) + '</span>'
+      + '<span class="seatName">' + s.name + (s.me ? "<i>（你）</i>" : "") + '</span>'
+      + (s.host ? '<span class="tagSmall">👑 房主</span>' : "")
+      + '<span class="seatRole">' + roleTxt + '</span>'
+      + (s.bot ? '<span class="tagSmall">🤖 假人</span>' : '<span class="dot ' + (s.online ? "on" : "") + '">' + (s.kicked ? "已请出" : s.online ? "在线" : "离线") + '</span>')
+      + '<span class="sp"></span>' + kickBtn + '</li>';
+  }).join("");
+
+  $("#roleGrid").innerHTML = ROLES.map((r) => {
+    const on = S.myRole === r.id;
+    return '<div class="roleCard ' + (on ? "on" : "") + '" data-act="role-pick" data-role="' + r.id + '">'
+      + '<button class="infoBtn" data-act="role-info" data-role="' + r.id + '">ⓘ</button>'
+      + '<span class="roleEmoji">' + r.emoji + '</span>'
+      + '<span class="roleName">' + r.name + '</span></div>';
+  }).join("");
+
+  const mine = roleDef(S.myRole);
+  $("#roleHint").textContent = mine
+    ? "你已选「" + mine.name + "」，点其他卡可换选；ⓘ 看属性与被动。"
+    : "不选也行，默认「轻装上阵」；ⓘ 看属性与被动。";
+
+  const c = S.config;
+  const mode = c.timerMode === "turn" ? "轮班·限时" : "世界·即时";
+  const malice = c.maliceLevel === "off" ? "无恶意" : "恶意" + (c.maliceLevel === "mild" ? "温和" : "猛") + "/每" + c.maliceEvery + "回合";
+  $("#cfgSummary").textContent = c.turnCap + " 回合 · " + c.maxHp + "❤ · " + c.windowSeconds + "s 窗 · " + c.restSeconds + "s 休息 · " + mode + " · " + malice;
+
+  $("#startBtn").textContent = S.lobbyMode === "intermission" ? "🎴 开下一局（4/4 到齐）" : "▶ 开始游戏（4/4 到齐）";
+  $("#startBtn").disabled = S.seats.filter((s) => !s.kicked).length < 4;
+}
+
+function openRoleInfo(roleId) {
+  const r = roleDef(roleId);
+  if (!r) return;
+  sheet('<div class="sheetHead"><h3>' + r.emoji + " " + r.name + '</h3><span class="wtag ok">已有</span></div>'
+    + '<p class="hint" style="margin-top:0">属性轴：' + r.axes + '</p>'
+    + '<p class="hint">专长：' + r.specialty + '</p>'
+    + '<div class="wcard" style="margin-bottom:0"><b style="font-size:12px">被动</b><p class="hint" style="margin-top:3px;color:#444">' + r.passive + '</p></div>'
+    + '<button class="wbtn block" style="margin-top:10px" data-act="sheet-close">收 起</button>');
+}
+
+function openConfig() {
+  const c = S.config;
+  const ov = sheet('<div class="sheetHead"><h3>⚙ 开局配置</h3><span class="wtag ok">已有</span></div>'
+    + '<p class="hint" style="margin-top:0">房主可改；非房主是只读预览。数值滑条 / 选项落定即上行（演示不落服务器）。</p>'
+    + '<div class="field"><span>局长</span><input data-cfg="turnCap" type="range" min="5" max="30" step="1" value="' + c.turnCap + '"><b id="cfgTurnVal" style="width:52px;text-align:right">' + c.turnCap + '</b></div>'
+    + '<div class="field"><span>血量上限</span><input data-cfg="maxHp" type="range" min="3" max="15" step="1" value="' + c.maxHp + '"><b id="cfgHpVal" style="width:52px;text-align:right">' + c.maxHp + '</b></div>'
+    + '<div class="field"><span>世界回合窗</span><select data-cfg="windowSeconds">' + [10, 15, 20, 30, 60, 90].map((s) => '<option value="' + s + '"' + (c.windowSeconds === s ? " selected" : "") + '>' + s + ' 秒</option>').join("") + '</select></div>'
+    + '<div class="field"><span>回合间休息</span><input data-cfg="restSeconds" type="range" min="0" max="30" step="1" value="' + c.restSeconds + '"><b id="cfgRestVal" style="width:52px;text-align:right">' + c.restSeconds + 's</b></div>'
+    + '<div class="field"><span>计时模式</span><select data-cfg="timerMode"><option value="world"' + (c.timerMode === "world" ? " selected" : "") + '>世界·即时（默认）</option><option value="turn"' + (c.timerMode === "turn" ? " selected" : "") + '>轮班·限时</option></select></div>'
+    + '<div class="field"><span>世界恶意</span><select data-cfg="maliceLevel"><option value="off"' + (c.maliceLevel === "off" ? " selected" : "") + '>关</option><option value="mild"' + (c.maliceLevel === "mild" ? " selected" : "") + '>温和</option><option value="fierce"' + (c.maliceLevel === "fierce" ? " selected" : "") + '>猛</option></select></div>'
+    + '<div class="field"><span>恶意波周期</span><input data-cfg="maliceEvery" type="range" min="1" max="6" step="1" value="' + c.maliceEvery + '"><b id="cfgEveryVal" style="width:52px;text-align:right">' + c.maliceEvery + '</b></div>'
+    + '<button class="wbtn primary block" style="margin-top:8px" data-act="sheet-close">完 成</button>');
+
+  ov.addEventListener("input", (e) => {
+    const el = e.target.closest("[data-cfg]");
+    if (!el) return;
+    const key = el.dataset.cfg;
+    let v = el.value;
+    if (key !== "timerMode" && key !== "maliceLevel") v = Number(v);
+    S.config[key] = v;
+    if (key === "turnCap") $("#cfgTurnVal", ov).textContent = v;
+    if (key === "maxHp") $("#cfgHpVal", ov).textContent = v;
+    if (key === "restSeconds") $("#cfgRestVal", ov).textContent = v + "s";
+    if (key === "maliceEvery") $("#cfgEveryVal", ov).textContent = v;
+    renderLobby();
+  });
+  ov.addEventListener("change", (e) => {
+    const el = e.target.closest("[data-cfg]");
+    if (!el) return;
+    const key = el.dataset.cfg;
+    if (key === "windowSeconds") { S.config.windowSeconds = Number(el.value); renderLobby(); }
+    if (key === "timerMode") { S.config.timerMode = el.value; renderLobby(); }
+    if (key === "maliceLevel") { S.config.maliceLevel = el.value; renderLobby(); }
+  });
+}
+
+function openSecretDraft() {
+  S.goalPick = null;
+  const ov = sheet('<div class="sheetHead"><h3>🎯 抽暗牌目标</h3><span class="wtag ok">已有</span></div>'
+    + '<p class="hint" style="margin-top:0">从 2 条里选 1 条，对局中只有你自己看得见；终局亮牌判定（达成 = 称号 +8 分）。</p>'
+    + '<div class="goalGrid">'
+    + '<button class="goalCard" data-act="goal-pick" data-goal="0"><b>雪原孤狼</b><span>在霜顶雪山完成一次通关。</span></button>'
+    + '<button class="goalCard" data-act="goal-pick" data-goal="1"><b>拾荒者</b><span>一局内捡到 3 张道具卡。</span></button>'
+    + '</div>'
+    + '<button class="wbtn primary block" data-act="goal-confirm" disabled>确认目标 · 开局</button>'
+    + '<button class="wbtn block" style="margin-top:6px" data-act="sheet-close">先跳过（演示回大厅）</button>', { noBackdropClose: true, cls: "secretDraftSheet" });
+  return ov;
+}
+
+function pickGoal(el) {
+  S.goalPick = Number(el.dataset.goal);
+  const ov = el.closest(".overlay");
+  $$(".goalCard", ov).forEach((g, i) => g.classList.toggle("on", i === S.goalPick));
+  const btn = $('[data-act="goal-confirm"]', ov);
+  btn.disabled = false;
+}
+
+function confirmGoal(el) {
+  if (S.goalPick == null) return;
+  const ov = el.closest(".overlay");
+  if (ov) ov.remove();
+  S.game = initialGame();
+  S.lobbyMode = "lobby";
+  showPage("game");
+  toast("🎯 暗牌已定，第一回合开始");
+}
+
+/* ==================== 游戏页 ==================== */
+
+function renderGame() {
+  const g = S.game;
+  $("#hudTurn").textContent = g.spectate ? "☠ 观战中 · 回合 5/15" : "回合 5/15 · ⏳ 18s · 轮到 你";
+  $("#hudHp").textContent = "❤ " + g.hp + "/10";
+
+  $("#bandRows").innerHTML = BAND.map((m) =>
+    '<div class="row"><span>' + KIND_ICON[m.kind] + '</span>'
+    + (m.who ? '<span class="who">' + m.who + '</span>' : "")
+    + '<span class="txt">' + m.text + '</span></div>'
+  ).join("");
+
+  const slots = [];
+  if (!g.spectate) {
+    if (!g.choiceDone) {
+      slots.push('<div class="task" data-ann="已有"><span>🃏 待抉择「断桥」' + (g.choiceFolded ? "" : " · 12s") + '</span><span class="sp"></span>'
+        + '<button class="wbtn miniBtn" data-act="choice-open">' + (g.choiceFolded ? "打开" : "处理") + '</button></div>');
+    }
+    if (g.targeting) {
+      slots.push('<div class="task" data-ann="已有"><span>🎯 选目标：弹弓</span><span class="sp"></span><button class="wbtn miniBtn" data-act="target-cancel">取消</button></div>');
+    } else if (!g.targetingDone) {
+      slots.push('<div class="task" data-ann="已有"><span>🎯 弹弓 · 指向他人</span><span class="sp"></span><button class="wbtn miniBtn" data-act="target-start">选目标</button></div>');
+    }
+    slots.push('<div class="task" data-ann="已有"><span>🚢 海关风云 · 报备转让</span><span class="sp"></span><button class="wbtn miniBtn" data-act="customs">打开</button></div>');
+  }
+  $("#taskSlots").innerHTML = slots.join("");
+
+  $("#handStrip").innerHTML = Object.keys(HAND).map((key) => {
+    const c = HAND[key];
+    return '<button class="mini" data-act="hand" data-card="' + key + '" data-ann="已有">'
+      + (c.contraband ? '<span class="cbDot">违</span>' : "")
+      + '<span class="mt">' + c.title + '</span><span class="mr">' + c.route + '</span></button>';
+  }).join("");
+
+  const roll = $("#rollBtn");
+  roll.innerHTML = g.confirmed ? "✔<br>已确认" : (g.rolled ? "🎲 " + g.face : "🎲<br>掷骰");
+  roll.disabled = g.confirmed || g.spectate;
+  roll.classList.toggle("done", g.confirmed);
+
+  const cf = $("#confirmBtn");
+  cf.textContent = g.confirmed ? "⏳ 已确认 · 等待区" : (g.rolled ? "✔ 确认结束（可先打牌/任务）" : "先掷骰，再确认");
+  cf.disabled = g.confirmed || !g.rolled || g.spectate;
+  cf.className = "wbtn" + (g.rolled && !g.confirmed ? " armed" : "") + (g.confirmed ? " waited" : "");
+
+  $("#dockHint").textContent = g.spectate
+    ? "观战态：dock 与手牌隐藏，暗牌入口仍可看（界面呈现定案 §六）"
+    : (g.rolled && !g.confirmed ? "硬规格：掷骰后不自动确认——现在还能打牌 / 做任务。" : "掷骰与确认分离；确认前不锁操作，确认后才进等待区。");
+
+  $("#spectateBanner").style.display = g.spectate ? "block" : "none";
+  $("#dock").style.display = g.spectate ? "none" : "block";
+
+  renderTokens();
+}
+
+function renderTokens() {
+  const g = S.game;
+  const grp = $("#tokens");
+  if (!grp) return;
+  grp.innerHTML = "";
+  const NS = "http://www.w3.org/2000/svg";
+  const players = [
+    { pid: 0, name: "你", color: "#c62828", cell: [6, 0], hp: g.hp },
+    { pid: 1, name: "阿强", color: "#ef6c00", cell: [12, 4], hp: 5 },
+    { pid: 2, name: "小美", color: "#2e7d32", cell: [0, 17], hp: 3 },
+    { pid: 3, name: "懒猫", color: "#1565c0", cell: [12, 17], hp: 10 }
+  ];
+  const offs = [[-3, -3], [3, -3], [-3, 3], [3, 3]];
+  for (const p of players) {
+    const [c, r] = p.cell;
+    const cx = 48 + c * 22 + offs[p.pid][0];
+    const cy = 16 + r * 22 + offs[p.pid][1];
+    const cls = ["token"];
+    if (g.spectate && p.pid === 0) cls.push("dead");
+    if (g.targeting && p.pid !== 0) cls.push("legal");
+    if (g.targeting && p.pid === 0) cls.push("dim");
+    if (g.pulsePid === p.pid) cls.push("pulse");
+    const tg = document.createElementNS(NS, "g");
+    tg.setAttribute("class", cls.join(" "));
+    tg.setAttribute("data-act", "token");
+    tg.setAttribute("data-pid", String(p.pid));
+    tg.setAttribute("transform", "translate(" + cx + "," + cy + ")");
+
+    const ring = document.createElementNS(NS, "circle");
+    ring.setAttribute("r", "9.5");
+    ring.setAttribute("fill", "none");
+    ring.setAttribute("stroke", p.pid === 0 ? "#fff" : "rgba(0,0,0,.18)");
+    ring.setAttribute("stroke-width", p.pid === 0 ? "1.4" : "1");
+    ring.setAttribute("stroke-dasharray", p.pid === 0 ? "2.5 2" : "0");
+    tg.appendChild(ring);
+
+    const core = document.createElementNS(NS, "circle");
+    core.setAttribute("class", "core");
+    core.setAttribute("r", "7.5");
+    core.setAttribute("fill", p.color);
+    core.setAttribute("stroke", "#fff");
+    core.setAttribute("stroke-width", "2");
+    tg.appendChild(core);
+
+    const label = document.createElementNS(NS, "text");
+    label.setAttribute("x", "0");
+    label.setAttribute("y", "2.6");
+    label.setAttribute("text-anchor", "middle");
+    label.setAttribute("font-size", "6.5");
+    label.setAttribute("font-weight", "800");
+    label.setAttribute("fill", "#fff");
+    label.textContent = p.name[0];
+    tg.appendChild(label);
+
+    const bg = document.createElementNS(NS, "rect");
+    bg.setAttribute("class", "hpBg");
+    bg.setAttribute("x", "-8");
+    bg.setAttribute("y", "9");
+    bg.setAttribute("width", "16");
+    bg.setAttribute("height", "2.6");
+    bg.setAttribute("rx", "1.3");
+    bg.setAttribute("fill", "rgba(0,0,0,.22)");
+    tg.appendChild(bg);
+
+    const hp = document.createElementNS(NS, "rect");
+    hp.setAttribute("class", "hpFill");
+    hp.setAttribute("x", "-8");
+    hp.setAttribute("y", "9");
+    hp.setAttribute("width", (16 * Math.max(0, Math.min(1, p.hp / 10))).toFixed(1));
+    hp.setAttribute("height", "2.6");
+    hp.setAttribute("rx", "1.3");
+    hp.setAttribute("fill", p.hp / 10 > 0.6 ? "#43a047" : p.hp / 10 > 0.3 ? "#f9a825" : "#e53935");
+    tg.appendChild(hp);
+
+    grp.appendChild(tg);
+  }
+}
+
+function rollDice() {
+  const g = S.game;
+  if (g.confirmed) { toast("本回合已确认，等下一回合（演示可用场景工具重置）"); return; }
+  if (g.rolled) { toast("本回合已掷过；可以直接打牌 / 做任务，或点确认"); return; }
+  g.face = 1 + Math.floor(Math.random() * 6);
+  g.rolled = true;
+  renderGame();
+  toast("🎲 掷出 " + g.face + " 点——还没结束，可继续打牌 / 做任务");
+}
+
+function confirmTurn() {
+  const g = S.game;
+  if (g.confirmed) return;
+  if (!g.rolled) { toast("先掷骰，再确认"); return; }
+  g.confirmed = true;
+  renderGame();
+  toast("✔ 已确认 · 进入等待区（本回合锁操作）");
+}
+
+function resetRound() {
+  const g = S.game;
+  g.rolled = false;
+  g.confirmed = false;
+  g.face = null;
+  g.targeting = false;
+  g.pulsePid = null;
+  renderGame();
+}
+
+function startTargeting() {
+  const g = S.game;
+  if (g.confirmed) { toast("已确认 · 等待区，不能再出牌"); return; }
+  g.targeting = true;
+  renderGame();
+  toast("点棋盘上的对手头像（绿色框=可指向）");
+}
+
+function cancelTargeting() {
+  S.game.targeting = false;
+  renderGame();
+  toast("已取消目标选择");
+}
+
+function clickToken(el) {
+  const pid = Number(el.dataset.pid);
+  const g = S.game;
+  if (!g.targeting) {
+    toast(pid === 0 ? "这是你（演示）" : "目标选择未开启：先从任务槽或手牌发起" );
+    return;
+  }
+  if (pid === 0) { toast("不能选自己"); return; }
+  const names = { 1: "阿强", 2: "小美", 3: "懒猫" };
+  g.targeting = false;
+  g.targetingDone = true;
+  g.pulsePid = pid;
+  renderGame();
+  toast("🎯 弹弓 → " + names[pid] + "：回退 2 格（演示）");
+  setTimeout(() => {
+    if (S.game.pulsePid === pid) { S.game.pulsePid = null; renderTokens(); }
+  }, 1000);
+}
+
+/* ==================== 浮层：手牌 / 抉择 / 战报 / 帮助 / 设置 / 暗牌 ==================== */
+
+function openHand(key) {
+  const c = HAND[key];
+  if (!c) return;
+  const g = S.game;
+  const locked = g.confirmed || g.spectate;
+  const reason = g.spectate ? "☠ 观战中，不能出牌" : "⏳ 已确认 · 等待区，本回合不能再出牌";
+  const actions = locked
+    ? '<p class="err" style="text-align:center;margin:8px 0">' + reason + '</p>'
+    : (key === "slingshot"
+      ? '<button class="wbtn primary block" data-act="target-start">🎯 指向他人 · 去棋盘点目标</button>'
+      : '<button class="wbtn primary block" data-act="play-card" data-card="' + key + '">' + (key === "banana" ? "⚠ 搁在脚下" : key === "potion" ? "▶ 喝下（回 1 血）" : "▶ 打出") + '</button>');
+  sheet('<div class="sheetHead"><h3>🎁 道具 · 第 ' + c.no + ' 张</h3>'
+    + (c.contraband ? '<span class="wtag miss">🚫 违禁品</span>' : '<span class="wtag ok">已有</span>') + '</div>'
+    + '<h4 style="margin:4px 0 3px;font-size:18px">' + c.title + '</h4>'
+    + '<p class="hint" style="font-style:italic;margin-top:0">' + c.flavor + '</p>'
+    + '<p class="hint" style="margin-bottom:5px">路由：<b>' + c.route + '</b></p>'
+    + '<div class="wcard" style="margin-bottom:8px">' + c.lines.map((l) => '<div style="font-size:12px">▸ ' + l + '</div>').join("") + '</div>'
+    + actions
+    + '<button class="wbtn block" style="margin-top:6px" data-act="sheet-close">先不下</button>');
+}
+
+function playCard(key) {
+  const g = S.game;
+  if (g.confirmed || g.spectate) { toast("已锁定，不能出牌"); return; }
+  if (key === "potion") {
+    g.hp = Math.min(10, g.hp + 1);
+    renderGame();
+    toast("💊 你回 1 血（" + g.hp + "/10）");
+  } else if (key === "banana") {
+    toast("🍌 香蕉皮已搁在脚下（演示）");
+  } else if (key === "fake") {
+    toast("🎁 假古董已打出——等查验（演示）");
+  }
+  const ov = document.querySelector(".overlay");
+  if (ov) ov.remove();
+}
+
+function openChoice() {
+  if (S.game.choiceDone) { toast("这张抉择卡已经处理过了"); return; }
+  const ov = sheet('<div class="sheetHead"><h3>🃏 事件 · 第 23 张</h3><span class="wtag ok">已有</span>'
+    + '<span class="sp"></span><button class="wbtn miniBtn" data-act="choice-fold">✕ 收起</button></div>'
+    + '<h4 style="margin:4px 0 3px;font-size:18px">断桥</h4>'
+    + '<p class="hint" style="font-style:italic;margin-top:0">桥断了一半，下面深不见底。</p>'
+    + '<button class="goalCard" style="width:100%;margin-bottom:7px;text-align:left" data-act="choice-opt" data-opt="0"><b>绕远路（回退 2）</b><span>★ 默认项：超时未选按此代选</span></button>'
+    + '<button class="goalCard" style="width:100%;text-align:left" data-act="choice-opt" data-opt="1"><b>冒险跳过去（前进 3，扣 1 血）</b><span>赌一把，摔了也认</span></button>'
+    + '<p class="hint" style="text-align:center;margin-top:8px">⏳ 12s 后未选，按默认项代选</p>', { center: true, cls: "choiceSheet" });
+  return ov;
+}
+
+function foldChoice(el) {
+  const ov = el.closest(".overlay");
+  if (ov) ov.remove();
+  S.game.choiceFolded = true;
+  renderGame();
+  toast("已收起；任务槽保留「待抉择」钩子");
+}
+
+function chooseOption(el) {
+  const opt = Number(el.dataset.opt);
+  S.game.choiceDone = true;
+  S.game.choiceFolded = false;
+  const ov = el.closest(".overlay");
+  if (ov) ov.remove();
+  renderGame();
+  toast(opt === 0 ? "你选了「绕远路」→ 回退 2（演示）" : "你选了「冒险跳过去」→ 前进 3，扣 1 血（演示）");
+  if (opt === 1) { S.game.hp = Math.max(0, S.game.hp - 1); renderGame(); }
+}
+
+function openReport(jumpId) {
+  let lastTurn = null;
+  const rows = MSGS.map((m) => {
+    let out = "";
+    if (m.turn !== lastTurn) {
+      out += '<div class="turnLine">📜 ── 回合 ' + m.turn + ' ──</div>';
+      lastTurn = m.turn;
+    }
+    if (m.kind === "summary") {
+      return out + '<div class="turnLine">' + m.text + '</div>';
+    }
+    return out + '<div class="drow' + (m.id === jumpId ? " flash" : "") + '" data-act="flavor" data-id="' + m.id + '">'
+      + '<div class="rowMain"><span>' + KIND_ICON[m.kind] + '</span>'
+      + (m.who ? '<span class="who">' + m.who + '</span>' : "")
+      + '<span class="txt">' + m.text + '</span></div>'
+      + (m.flavor ? '<div class="flavor" style="display:none">' + m.flavor + '</div>' : "")
+      + '</div>';
+  }).join("");
+
+  const ov = sheet('<div class="sheetHead"><h3>📜 战报</h3><small style="font-size:10px;color:#888">' + MSGS.length + ' 条 · 点条目看卡面文案</small></div>'
+    + '<div class="reportList" id="reportList">' + rows + '</div>'
+    + '<p class="hint" style="text-align:center">〔上滑加载更早条目；stub 只放了 ' + MSGS.length + ' 条〕</p>'
+    + '<button class="wbtn block" data-act="sheet-close">收 起</button>');
+  const list = $("#reportList", ov);
+  requestAnimationFrame(() => {
+    if (jumpId != null) {
+      const el = $('[data-id="' + jumpId + '"]', ov);
+      if (el) {
+        el.scrollIntoView({ block: "center" });
+        return;
+      }
+    }
+    list.scrollTop = list.scrollHeight;
+  });
+  return ov;
+}
+
+function toggleFlavor(el) {
+  const f = el.querySelector(".flavor");
+  if (!f) return;
+  f.style.display = f.style.display === "none" ? "block" : "none";
+}
+
+function openHelp() {
+  sheet('<div class="sheetHead"><h3>📖 规则速查（一页纸手机版）</h3><span class="wtag miss">缺失 · 内容待定</span></div>'
+    + '<div class="wip" style="margin-top:0"><b>这一页的正文、版式、是否可离线都还没定。</b>下面是占位大纲：</div>'
+    + '<ol class="helpList">'
+    + '<li><b>目标</b>：绕主干攒净步，走进自家终点；达成暗牌目标拿称号分。</li>'
+    + '<li><b>一回合</b>：掷骰 → 可打牌 / 做任务 → 自己点确认结束。</li>'
+    + '<li><b>格子</b>：事件卡 / 道具 / 陷阱 / 世界恶意。</li>'
+    + '<li><b>最后一波</b>：全员合力砍年兽；团灭 = 群体失败。</li>'
+    + '<li><b>结算</b>：进度 / 通关 / 存活 / 称号 / 整蛊五项分。</li>'
+    + '</ol>'
+    + '<p class="hint">〔待定：要短到一屏，还是允许上滑？要不要配图？〕</p>'
+    + '<button class="wbtn block" data-act="sheet-close">收 起</button>');
+}
+
+function openSettings() {
+  const members = [
+    { name: "你", tag: "👑 房主 · 你", kick: false },
+    { name: "阿强", tag: "在线", kick: true },
+    { name: "小美", tag: "在线", kick: true },
+    { name: "懒猫", tag: "🤖 假人 · 不可踢", kick: false }
+  ];
+  const memberRows = members.map((m) =>
+    '<div class="memberRow"><span class="mname">' + m.name + '</span><span class="tagSmall">' + m.tag + '</span>'
+    + (m.kick ? '<button class="wbtn miniBtn danger" data-act="kick-game" data-name="' + m.name + '">🥾 请出</button>' : "")
+    + '</div>'
+  ).join("");
+
+  sheet('<div class="sheetHead"><h3>⚙ 局中设置</h3><span class="wtag miss">缺失 · 空壳</span></div>'
+    + '<p class="hint" style="margin-top:0">局中数值一律冻结；设置只含展示类开关。</p>'
+    + '<div class="settingRow" data-ann="待定"><span>🔊 音效</span><button class="switch ' + (S.settings.sound ? "on" : "") + '" data-act="toggle-sound">' + (S.settings.sound ? "开" : "关") + '</button></div>'
+    + '<p class="hint">〔待定：没有音效资源时，是只留震动，还是先留空壳？〕</p>'
+    + '<div class="settingRow"><span>📳 震动</span><button class="switch ' + (S.settings.vibe ? "on" : "") + '" data-act="toggle-vibe">' + (S.settings.vibe ? "开" : "关") + '</button></div>'
+    + '<hr>'
+    + '<div data-ann="缺失">'
+    + '<div class="sheetHead"><h4>房主 · 成员管理（中局踢人）</h4><span class="wtag miss">缺失</span></div>'
+    + '<div class="memberList">' + memberRows + '</div>'
+    + '<p class="hint">〔待定：入口放设置里，还是 HUD 玩家头像？二次确认用什么形态？假人不可踢。〕</p>'
+    + '</div>'
+    + '<hr>'
+    + '<button class="wbtn danger block" data-act="dissolve">💥 解散房间（已有）</button>'
+    + '<button class="wbtn block" style="margin-top:6px" data-act="sheet-close">关 闭</button>', { cls: "settingsSheet" });
+}
+
+function toggleSwitch(el) {
+  const key = el.dataset.act === "toggle-sound" ? "sound" : "vibe";
+  S.settings[key] = !S.settings[key];
+  el.textContent = S.settings[key] ? "开" : "关";
+  el.classList.toggle("on", S.settings[key]);
+  toast((key === "sound" ? "🔊 音效" : "📳 震动") + (S.settings[key] ? "已开" : "已关") + "（演示）");
+}
+
+function kickGame(el) {
+  const name = el.dataset.name;
+  if (S.pendingKick !== name) {
+    S.pendingKick = name;
+    el.textContent = "确认请出？";
+    el.classList.add("primary");
+    toast("再点一次确认请出 " + name);
+    setTimeout(() => {
+      if (S.pendingKick === name && document.body.contains(el)) {
+        S.pendingKick = null;
+        el.textContent = "🥾 请出";
+        el.classList.remove("primary");
+      }
+    }, 3000);
+    return;
+  }
+  S.pendingKick = null;
+  const row = el.closest(".memberRow");
+  if (row) {
+    row.querySelector(".mname").style.textDecoration = "line-through";
+    row.querySelector(".tagSmall").textContent = "已请出 · 系统托管";
+    el.remove();
+  }
+  toast("已请出 " + name + "（中局踢人演示；形态待定）");
+}
+
+function openSecret() {
+  sheet('<div class="sheetHead"><h3>🎯 我的暗牌目标</h3><span class="wtag ok">仅自己可见</span></div>'
+    + '<div class="goalCard on" style="margin:8px 0"><b>雪原孤狼</b><span>在霜顶雪山完成一次通关。</span></div>'
+    + '<p class="hint">终局亮牌判定；达成 = 称号 +8 分。淘汰观战也保留此入口（界面呈现定案 §六）。</p>'
+    + '<button class="wbtn block" style="margin-top:9px" data-act="sheet-close">收 起</button>');
+}
+
+function openCustoms() {
+  sheet('<div class="sheetHead"><h3>🚢 海关风云 · 警长 小美</h3><span class="wtag ok">已有</span></div>'
+    + '<p class="hint" style="margin-top:0">查验 2 次 · 报备 1 单。任务条组按可用性点亮，做完即消失。</p>'
+    + '<div class="wcard"><b style="font-size:12px">报备单</b><p class="hint" style="margin-top:3px;color:#444">阿强 → 小美 · 申报「老式怀表」</p></div>'
+    + '<div class="row">'
+    + '<button class="wbtn" data-act="toast" data-msg="📦 报备转让面板（已有）">📦 报备转让</button>'
+    + '<button class="wbtn" data-act="toast" data-msg="🔎 查验面板（已有）">🔎 查验</button>'
+    + '<button class="wbtn" data-act="toast" data-msg="🎁 交卡面板（已有）">🎁 交卡</button>'
+    + '</div>'
+    + '<button class="wbtn block" style="margin-top:9px" data-act="sheet-close">收 起</button>');
+}
+
+/* ==================== 新手引导 ==================== */
+
+const GUIDE = [
+  {
+    title: "掷骰之后，还没结束",
+    body: "〔文案待定〕掷骰只负责走格。走完之后你仍可以打道具、做任务，直到自己点「确认结束」。",
+    mock: "[ 🎲 掷骰 ]  →  [ 🃏 打牌 / 做任务 ]  →  [ ✔ 确认结束 ]"
+  },
+  {
+    title: "顶部战报带",
+    body: "〔文案待定〕最新的世界消息挂在棋盘上方。点一下，展开整局战报。",
+    mock: "[ 战报让位带 ]  →  [ 全量战报抽屉 ]"
+  },
+  {
+    title: "底部一条龙",
+    body: "〔文案待定〕任务槽在最上，手牌横滑在中间，掷骰与确认在底部。",
+    mock: "[ 任务槽 ]  [ 手牌横滑 ]  [ 🎲 / ✔ ]"
+  }
+];
+let guideStep = 0;
+
+function renderGuide(ov) {
+  const step = GUIDE[guideStep];
+  ov.querySelector(".sheet").innerHTML =
+    '<div class="sheetHead"><h3>新手引导</h3><span class="wtag miss">缺失 · 文案占位</span></div>'
+    + '<p class="guideStep">STEP ' + (guideStep + 1) + " / " + GUIDE.length + '</p>'
+    + '<h4 class="guideTitle">' + step.title + '</h4>'
+    + '<p class="guideBody">' + step.body + '</p>'
+    + '<div class="guideMock">' + step.mock + '</div>'
+    + '<div class="row">'
+    + '<button class="wbtn" data-act="guide-skip">跳过</button>'
+    + '<span class="sp"></span>'
+    + '<button class="wbtn primary" data-act="guide-next">' + (guideStep === GUIDE.length - 1 ? "开始游戏" : "下一步") + '</button>'
+    + '</div>';
+}
+
+function openGuide() {
+  guideStep = 0;
+  const ov = sheet("", { center: true, cls: "guideSheet" });
+  renderGuide(ov);
+  return ov;
+}
+
+function guideNext(el) {
+  const ov = el.closest(".overlay");
+  if (guideStep >= GUIDE.length - 1) { ov.remove(); toast("引导结束（占位）"); return; }
+  guideStep++;
+  renderGuide(ov);
+}
+
+/* ==================== 盘点 / 场景工具 ==================== */
+
+function openInventory() {
+  const data = INVENTORY[S.page];
+  let html = '<div class="sheetHead"><h3>📋 本页盘点 · ' + data.title + '</h3></div>'
+    + '<p class="hint" style="margin-top:0">绿=已有 · 红=缺失 · 黄=待定。「建议」是草拟，实点后你再拍板必须补 / 可后置。</p>';
+  for (const tag of ["已有", "缺失", "待定"]) {
+    const items = data.items.filter((it) => it[0] === tag);
+    if (!items.length) continue;
+    const cls = tag === "已有" ? "ok" : tag === "缺失" ? "miss" : "tbd";
+    html += '<div class="invGroup"><span class="invTag ' + cls + '">' + tag + '（' + items.length + '）</span><ul class="invList">';
+    for (const it of items) {
+      html += '<li class="invItem">' + it[1] + (it[2] ? '<div class="invNote">' + it[2] + '</div>' : "") + '</li>';
+    }
+    html += '</ul></div>';
+  }
+  html += '<button class="wbtn block" data-act="sheet-close">收 起</button>';
+  sheet(html);
+}
+
+function openTools() {
+  sheet('<div class="sheetHead"><h3>🧪 场景工具</h3><span class="wtag tbd">仅原型 · 非设计</span></div>'
+    + '<p class="hint" style="margin-top:0">快速跳到要看的画面；真流程请从进房一路点到结算。</p>'
+    + '<div class="toolGrid">'
+    + '<button class="wbtn" data-act="tools-settle">🎬 跳到结算</button>'
+    + '<button class="wbtn" data-act="tools-reset-round">🔄 重置本回合</button>'
+    + '<button class="wbtn" data-act="tools-guide">🧭 重播新手引导</button>'
+    + '<button class="wbtn" data-act="tools-spectate">☠ 观战演示</button>'
+    + '<button class="wbtn" data-act="tools-groupfail">💀 群体失败章</button>'
+    + '<button class="wbtn" data-act="tools-lobby">🏠 回大厅（局间态）</button>'
+    + '<button class="wbtn" data-act="tools-reset-all" style="grid-column:1/-1">♻ 重置全部演示</button>'
+    + '</div>'
+    + '<button class="wbtn block" data-act="sheet-close">关 闭</button>', { cls: "toolsSheet" });
+}
+
+/* ==================== 结算页 ==================== */
+
+function renderSettle() {
+  $("#settlePage").classList.toggle("groupfail", S.settle.groupFail);
+  $("#settleBoard").innerHTML = SETTLE_ROWS.map((r, i) => {
+    const medal = ["🥇", "🥈", "🥉"][i] || "#" + (i + 1);
+    const titles = r.titles.length
+      ? r.titles.map((t) => '<span class="titleChip' + (r.me ? " lit" : "") + '">' + t + '</span>').join("")
+      : '<span class="noTitle">—</span>';
+    return '<div class="srow' + (r.me ? " me" : "") + '">'
+      + '<div class="rankLine"><span class="medal">' + medal + '</span>'
+      + '<span class="sname">' + r.name + (r.me ? "<i>（我）</i>" : "") + '</span>'
+      + '<span class="stotal">' + r.total + '<small>分</small></span></div>'
+      + '<div class="sitems">'
+      + '<span class="sit">进度 +' + r.progress + '</span>'
+      + '<span class="sit">通关 +' + r.finish + (r.finishRank ? '（第 ' + r.finishRank + ' 位）' : "") + '</span>'
+      + '<span class="sit">存活 +' + r.survive + '</span>'
+      + '<span class="sit">称号 +' + r.titleScore + (r.titles.length ? "（" + r.titles.length + " 条）" : "") + '</span>'
+      + '<span class="sit">整蛊 +' + r.grudgeScore + '（' + r.grudgeCount + ' 次）</span>'
+      + '</div>'
+      + '<div class="titles">' + titles + '<span class="voided">🖋 称号作废</span></div>'
+      + '<p class="darkLine">🎯 暗牌「' + r.dark + '」'
+      + '<b class="hitTxt">达成 ✓</b><b class="missTxt">未达成</b><b class="voidTxt">作废</b></p>'
+      + '</div>';
+  }).join("");
+  // 未达成行去掉「达成」标；达成行去掉「未达成」标（保持 HTML 简单，这里二次收口）
+  $$("#settleBoard .srow").forEach((row, i) => {
+    const hit = row.querySelector(".hitTxt");
+    const miss = row.querySelector(".missTxt");
+    const ok = SETTLE_ROWS[i].achieved;
+    if (hit) hit.style.display = ok ? "inline" : "none";
+    if (miss) miss.style.display = ok ? "none" : "inline";
+  });
+}
+
+/* ==================== 棋盘 ==================== */
+
+function buildBoard() {
+  const NS = "http://www.w3.org/2000/svg";
+  const svg = $("#boardSvg");
+  const el = (tag, attrs) => {
+    const e = document.createElementNS(NS, tag);
+    for (const k in attrs) e.setAttribute(k, attrs[k]);
+    return e;
+  };
+  svg.innerHTML = "";
+
+  const RUNS = [
+    { street: "ring", from: [0, 0], to: [12, 0] },
+    { street: "ring", from: [12, 0], to: [12, 20] },
+    { street: "ring", from: [12, 20], to: [0, 20] },
+    { street: "ring", from: [0, 20], to: [0, 0] },
+    { street: "MH", from: [0, 10], to: [12, 10] },
+    { street: "MV", from: [6, 10], to: [6, 20] },
+    { street: "V2", from: [3, 10], to: [3, 16] },
+    { street: "V3", from: [9, 10], to: [9, 16] },
+    { street: "DH", from: [3, 16], to: [9, 16] }
+  ];
+  const SPAWNS = [[6, 0], [12, 1], [12, 4], [12, 9], [12, 17], [0, 17], [0, 9], [0, 1]];
+  const PX = 22, GX0 = 48, GY0 = 16;
+  const key = (c, r) => c + "," + r;
+  const at = new Map();
+  const cells = [];
+
+  const add = (c, r, street, eco) => {
+    const k = key(c, r);
+    let n = at.get(k);
+    if (!n) {
+      n = { c, r, street, eco, links: new Set(), type: "B", spawn: -1 };
+      cells.push(n);
+      at.set(k, n);
+    }
+    return n;
+  };
+  for (const run of RUNS) {
+    const eco = run.street === "ring" ? "plain" : (run.street === "MH" || run.street === "MV") ? "snow" : "gobi";
+    const [c0, r0] = run.from;
+    const [c1, r1] = run.to;
+    const dc = Math.sign(c1 - c0), dr = Math.sign(r1 - r0);
+    const len = Math.abs(c1 - c0) + Math.abs(r1 - r0);
+    let prev = null;
+    for (let i = 0; i <= len; i++) {
+      const n = add(c0 + dc * i, r0 + dr * i, run.street, eco);
+      if (prev) { n.links.add(key(prev.c, prev.r)); prev.links.add(key(n.c, n.r)); }
+      prev = n;
+    }
+  }
+  for (const n of cells) {
+    if (n.links.size >= 3) n.street = "J";
+  }
+  SPAWNS.forEach(([c, r], i) => {
+    const n = at.get(key(c, r));
+    if (n) { n.spawn = i; n.type = "S"; }
+  });
+  for (const n of cells) if (n.street === "J") n.type = "J";
+
+  const hash = (c, r) => {
+    let h = (c * 374761393 + r * 668265263) ^ 0x5bf03635;
+    h = (h ^ (h >>> 13)) * 1274126177;
+    return ((h ^ (h >>> 16)) >>> 0) % 100;
+  };
+  const typeOf = (n) => {
+    if (n.type === "S" || n.type === "J") return n.type;
+    const h = hash(n.c, n.r);
+    if (n.eco === "plain") return h < 52 ? "E" : h < 68 ? "I" : h < 77 ? "T" : "B";
+    if (n.eco === "snow") return h < 40 ? "E" : h < 50 ? "I" : h < 76 ? "T" : "B";
+    return h < 10 ? "E" : h < 52 ? "I" : h < 92 ? "T" : "B";
+  };
+  const fill = { plain: "#e3efdc", snow: "#e2ebf6", gobi: "#f3ead7" };
+  const icon = { E: "🃏", I: "🎁", T: "⚠", B: "", J: "✛", S: "🏠" };
+
+  // 内园占位
+  const yards = [
+    { c: 1, r: 2, w: 4, h: 6, icon: "🏰", name: "庄园主楼" },
+    { c: 8, r: 4, w: 3, h: 3, icon: "🌳", name: "" },
+    { c: 4, r: 12, w: 2, h: 2, icon: "🌳", name: "" },
+    { c: 10, r: 12, w: 2, h: 3, icon: "🐑", name: "" },
+    { c: 1, r: 18, w: 2, h: 2, icon: "🌲", name: "" }
+  ];
+  for (const y of yards) {
+    const x = GX0 + y.c * PX - 10;
+    const yy = GY0 + y.r * PX - 10;
+    svg.appendChild(el("rect", { x, y: yy, width: y.w * PX, height: y.h * PX, rx: 3, fill: "#f1f1ec", stroke: "#c8c8c1", "stroke-width": .8, "stroke-dasharray": "3 2" }));
+    const t = el("text", { x: x + y.w * PX / 2, y: yy + y.h * PX / 2 + 4, "text-anchor": "middle", "font-size": 13 });
+    t.textContent = y.icon;
+    svg.appendChild(t);
+    if (y.name) {
+      const nt = el("text", { x: x + y.w * PX / 2, y: yy + y.h * PX / 2 + 17, "text-anchor": "middle", "font-size": 6.5, fill: "#999" });
+      nt.textContent = y.name;
+      svg.appendChild(nt);
+    }
+  }
+
+  // 街名
+  const tags = [
+    ["中横街", 4.5, 10, 0, -12], ["中竖街", 6, 15.5, 13, 0], ["西巷", 3, 13, -12, 0],
+    ["东巷", 9, 13, 12, 0], ["下横巷", 6, 16, 13, 0], ["外环", 6, 20, 0, 13], ["外环", 0, 4.5, -12, 0], ["外环", 12, 8, 12, 0]
+  ];
+  for (const [name, c, r, ox, oy] of tags) {
+    const t = el("text", { x: GX0 + c * PX + ox, y: GY0 + r * PX + oy, "text-anchor": "middle", "font-size": 6.5, fill: "#9a9a92" });
+    t.textContent = name;
+    svg.appendChild(t);
+  }
+
+  // 格子
+  for (const n of cells) {
+    const type = typeOf(n);
+    const cx = GX0 + n.c * PX;
+    const cy = GY0 + n.r * PX;
+    const isSpawn = type === "S";
+    const spawnOwner = isSpawn ? SPAWNS.findIndex(([c, r]) => c === n.c && r === n.r) : -1;
+    // 4 人档出生槽 = 0/2/5/4，颜色按玩家序（红/橙/绿/蓝）对齐 token
+    const SPAWN_COLOR = { 0: "#c62828", 2: "#ef6c00", 5: "#2e7d32", 4: "#1565c0" };
+    const spawnColor = SPAWN_COLOR[spawnOwner] || "#888";
+    const rect = el("rect", {
+      x: cx - 9, y: cy - 9, width: 18, height: 18, rx: 3,
+      fill: isSpawn ? "#fff" : type === "J" ? "#ecece7" : fill[n.eco],
+      stroke: isSpawn ? spawnColor : "#b9b9b2",
+      "stroke-width": isSpawn ? 1.6 : .8
+    });
+    svg.appendChild(rect);
+    if (type === "E" || type === "I" || type === "T") {
+      const t = el("text", { x: cx, y: cy + 2.6, "text-anchor": "middle", "font-size": 7 });
+      t.textContent = icon[type];
+      svg.appendChild(t);
+    } else if (type === "J") {
+      const t = el("text", { x: cx, y: cy + 2.4, "text-anchor": "middle", "font-size": 6, fill: "#999" });
+      t.textContent = "✛";
+      svg.appendChild(t);
+    } else if (type === "S") {
+      const t = el("text", { x: cx, y: cy + 2.4, "text-anchor": "middle", "font-size": 7, fill: spawnColor });
+      t.textContent = "⌂";
+      svg.appendChild(t);
+    }
+  }
+
+  const grp = el("g", { id: "tokens" });
+  svg.appendChild(grp);
+  renderTokens();
+}
+
+/* ==================== 启动 + 事件 ==================== */
+
+function resetAll() {
+  S.page = "join";
+  S.joinMode = "join";
+  S.guideSeen = false;
+  S.game = initialGame();
+  S.seats = initialSeats();
+  S.myRole = "light";
+  S.config = initialConfig();
+  S.lobbyMode = "lobby";
+  S.settle.groupFail = false;
+  S.settings = { sound: false, vibe: true };
+  S.goalPick = null;
+  S.pendingKick = null;
+  $$(".overlay").forEach((ov) => ov.remove());
+  renderJoin();
+  renderLobby();
+  renderSettle();
+  renderGame();
+  showPage("join");
+}
+
+document.addEventListener("click", (e) => {
+  const go = e.target.closest("[data-go]");
+  if (go) { showPage(go.dataset.go); return; }
+
+  const el = e.target.closest("[data-act]");
+  if (!el) return;
+  const act = el.dataset.act;
+
+  switch (act) {
+    case "ann-toggle":
+      S.ann = !S.ann;
+      document.body.classList.toggle("ann-on", S.ann);
+      $("#annBtn").classList.toggle("on", S.ann);
+      toast(S.ann ? "标注已开：绿=已有 / 红=缺失 / 黄=待定" : "标注已关");
+      break;
+    case "inventory": openInventory(); break;
+    case "tools": openTools(); break;
+    case "sheet-close": closeOverlay(el); break;
+    case "toast": toast(el.dataset.msg || "（演示）"); break;
+
+    case "join-mode": S.joinMode = el.dataset.mode; renderJoin(); break;
+    case "join-link":
+      $("#joinCode").value = "K7M2X";
+      toast("🔗 已按 ?room=K7M2X 填好房间码");
+      break;
+    case "join-submit": submitJoin(); break;
+    case "join-guide": openGuide(); break;
+
+    case "copy-code":
+      if (navigator.clipboard) navigator.clipboard.writeText("https://example.invalid/?room=K7M2X").catch(() => {});
+      toast("📋 邀请链接已复制（演示）");
+      break;
+    case "kick-lobby":
+      kickLobby(el.dataset.name);
+      break;
+    case "add-bot": toast("＋ 假人（已有；演示不新增）"); break;
+    case "role-pick":
+      S.myRole = el.dataset.role;
+      if (S.seats[0]) S.seats[0].role = S.myRole;
+      renderLobby();
+      break;
+    case "role-info": openRoleInfo(el.dataset.role); break;
+    case "config": openConfig(); break;
+    case "start-game": openSecretDraft(); break;
+    case "open-next": openSecretDraft(); break;
+    case "review-last": openReport(); break;
+    case "goal-pick": pickGoal(el); break;
+    case "goal-confirm": confirmGoal(el); break;
+
+    case "report": openReport(); break;
+    case "flavor": toggleFlavor(el); break;
+    case "help": openHelp(); break;
+    case "settings": openSettings(); break;
+    case "secret": openSecret(); break;
+    case "customs": openCustoms(); break;
+    case "hand": openHand(el.dataset.card); break;
+    case "play-card": playCard(el.dataset.card); break;
+    case "choice-open": openChoice(); break;
+    case "choice-fold": foldChoice(el); break;
+    case "choice-opt": chooseOption(el); break;
+    case "roll": rollDice(); break;
+    case "confirm": confirmTurn(); break;
+    case "target-start":
+      closeOverlay(el);
+      startTargeting();
+      break;
+    case "target-cancel": cancelTargeting(); break;
+    case "token": clickToken(el); break;
+    case "toggle-sound":
+    case "toggle-vibe": toggleSwitch(el); break;
+    case "kick-game": kickGame(el); break;
+    case "dissolve":
+      closeOverlay(el);
+      toast("💥 房间已解散（已有；演示回进房页）");
+      showPage("join");
+      break;
+
+    case "guide-next": guideNext(el); break;
+    case "guide-skip":
+      closeOverlay(el);
+      toast("已跳过新手引导（演示）");
+      break;
+
+    case "again":
+      S.game = initialGame();
+      S.lobbyMode = "lobby";
+      showPage("game");
+      toast("🔄 同配置重开（换新种子；演示）");
+      break;
+    case "to-lobby":
+      S.lobbyMode = "intermission";
+      showPage("lobby");
+      toast("回大厅：可改配置再开下一局（重点看这段顺不顺）");
+      break;
+    case "review-report": openReport(); break;
+    case "evidence": openReport(Number(el.dataset.id)); break;
+
+    case "tools-settle":
+      closeOverlay(el);
+      showPage("settle");
+      break;
+    case "tools-reset-round":
+      closeOverlay(el);
+      resetRound();
+      toast("本回合已重置（演示）");
+      break;
+    case "tools-guide":
+      closeOverlay(el);
+      openGuide();
+      break;
+    case "tools-spectate":
+      closeOverlay(el);
+      toggleSpectate();
+      break;
+    case "tools-groupfail":
+      closeOverlay(el);
+      S.settle.groupFail = !S.settle.groupFail;
+      renderSettle();
+      toast(S.settle.groupFail ? "群体失败章：开" : "群体失败章：关");
+      break;
+    case "tools-lobby":
+      closeOverlay(el);
+      S.lobbyMode = "intermission";
+      showPage("lobby");
+      toast("已回大厅（局间态）");
+      break;
+    case "tools-reset-all":
+      closeOverlay(el);
+      resetAll();
+      toast("全部演示已重置");
+      break;
+  }
+});
+
+function kickLobby(name) {
+  const seat = S.seats.find((s) => s.name === name);
+  if (!seat) return;
+  seat.online = false;
+  seat.kicked = true;
+  renderLobby();
+  toast("🥾 已请出 " + name + "（大厅踢人已有；演示）");
+}
+
+function toggleSpectate() {
+  S.game.spectate = !S.game.spectate;
+  renderGame();
+  toast(S.game.spectate ? "☠ 观战演示：dock/手牌隐藏，暗牌入口仍在" : "已退出观战演示");
+}
+
+/* init */
+renderJoin();
+renderLobby();
+renderSettle();
+buildBoard();
+renderGame();
+showPage("join");
+</script>
+</body>
+</html>

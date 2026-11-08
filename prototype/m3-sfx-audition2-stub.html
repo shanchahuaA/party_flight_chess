@@ -1,0 +1,434 @@
+<!doctype html>
+<!--
+  [PROTOTYPE] M3 音效试听台 · 第二轮（7-12 号扩充）—— 一次性代码
+  做什么：第一轮 1-6 号已定；7-12 号用户"听得过去但不满意"，本页给出每格 7-8 条新候选。
+  其中 ★ 标记是「变调版」：把上轮选中的素材升降调，用来验证"是不是只有音高不合"。
+  素材：全部 CC0（Kenney / OpenGameArt），授权逐条见 sfx/LICENSES.md 与 sfx2/LICENSES.md。
+  不做音效系统、不改 client / kernel / server、不写生产代码。
+-->
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>[原型] 音效试听台 · 第 2 轮</title>
+<style>
+:root{
+  --bg:#17222c;--bg-deep:#0e161d;--card:#22303c;--card-2:#263238;
+  --ink:#eceff1;--sub:#90a4ae;--dim:#607d8b;--line:rgba(236,239,241,.13);
+  --gold:#ffcc80;--gold-soft:#ffab40;--red:#ef5350;--green:#66bb6a;
+  --mono:ui-monospace,SFMono-Regular,Consolas,"Liberation Mono",monospace;
+}
+*{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+html{overflow-x:hidden}
+body{margin:0;min-height:100%;color:var(--ink);font:15px/1.5 system-ui,-apple-system,"PingFang SC","Microsoft YaHei",sans-serif;
+  background:radial-gradient(120% 70% at 50% 0%,#1e2c38 0%,var(--bg) 42%,var(--bg-deep) 100%) fixed;
+  padding-bottom:calc(24px + env(safe-area-inset-bottom));}
+button{font-family:inherit;color:inherit;cursor:pointer;touch-action:manipulation}
+#top{position:sticky;top:0;z-index:20;background:rgba(17,27,35,.94);backdrop-filter:blur(10px);-webkit-backdrop-filter:blur(10px);
+  border-bottom:1px solid var(--line);padding:calc(9px + env(safe-area-inset-top)) 12px 9px}
+.wrap{max-width:620px;margin:0 auto}
+#top .bar{display:flex;align-items:center;gap:8px}
+#top .tag{font:800 10px/1 var(--mono);letter-spacing:.08em;color:#0e161d;background:var(--gold);border-radius:4px;padding:4px 6px;flex:0 0 auto}
+#top h1{font-size:16px;margin:0;flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+#muteBtn{flex:0 0 auto;background:var(--card);border:1px solid var(--line);border-radius:999px;padding:6px 11px;font-size:12px;font-weight:700}
+#muteBtn.off{color:var(--dim);border-color:rgba(96,125,139,.4);text-decoration:line-through}
+#top .lead{font-size:11.5px;color:var(--sub);line-height:1.55;margin:7px 0 0}
+#audioWarn{display:none;margin:8px 0 0;font-size:12px;line-height:1.5;color:#ffcdd2;background:rgba(239,83,80,.14);border:1px solid rgba(239,83,80,.45);border-radius:8px;padding:7px 10px}
+#audioWarn.on{display:block}
+main{padding:12px}
+.locked{background:rgba(102,187,106,.08);border:1px solid rgba(102,187,106,.3);border-radius:11px;padding:9px 11px;margin-bottom:12px;font-size:12px;color:var(--sub);line-height:1.7}
+.locked b{color:var(--green)}
+.slot{background:linear-gradient(165deg,var(--card),var(--card-2));border:1px solid var(--line);border-radius:13px;padding:11px 12px 12px;margin-bottom:10px;box-shadow:0 2px 10px rgba(0,0,0,.22)}
+.slotHead{display:flex;align-items:baseline;gap:8px;margin-bottom:3px}
+.num{flex:0 0 auto;width:20px;height:20px;border-radius:50%;border:1px solid rgba(255,204,128,.5);color:var(--gold);font:800 11px/18px var(--mono);text-align:center}
+.slotHead h2{font-size:14.5px;margin:0;flex:1;min-width:0}
+.desc{font-size:11.5px;color:var(--sub);line-height:1.55;margin:0 0 6px}
+.snote{font-size:11px;color:#ffcc80;background:rgba(255,171,64,.08);border-left:2px solid rgba(255,171,64,.5);padding:6px 8px;border-radius:0 6px 6px 0;line-height:1.6;margin:0 0 9px}
+.prevRow{display:flex;align-items:center;gap:7px;margin-bottom:9px;padding-bottom:9px;border-bottom:1px dashed var(--line)}
+.prevLab{font-size:10px;color:var(--dim);flex:0 0 auto;letter-spacing:.04em}
+.opt.prev{flex:1;min-width:0;opacity:.72}
+.opt{position:relative;text-align:left;background:rgba(13,20,26,.5);border:1px solid rgba(236,239,241,.18);border-radius:10px;padding:8px 10px 8px 30px;transition:border-color .14s,background .14s,transform .06s}
+.opt:active{transform:scale(.985)}
+.opt::before{content:"▶";position:absolute;left:10px;top:50%;transform:translateY(-50%);font-size:9px;color:var(--dim)}
+.opt .nm{display:block;font:700 12.5px/1.3 var(--mono);word-break:break-all}
+.opt .meta{display:block;font-size:10.5px;color:var(--dim);margin-top:2px}
+.opt.sel{border-color:rgba(102,187,106,.72);background:rgba(102,187,106,.12);box-shadow:inset 0 0 0 1px rgba(102,187,106,.35)}
+.opt.sel::before{content:"✓";color:var(--green);font-size:10px}
+.opt.playing{border-color:var(--gold);background:rgba(255,204,128,.14)}
+.opt.playing::before{content:"❚❚";color:var(--gold)}
+.opts{display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:7px}
+.pick{margin-top:7px;font-size:11px;color:var(--green);min-height:16px}
+#box{margin:14px 12px 0;background:var(--card);border:1px solid var(--line);border-radius:12px;padding:12px}
+#box h3{margin:0 0 6px;font-size:13px}
+#box .hint{font-size:11px;color:var(--sub);margin:0 0 9px;line-height:1.55}
+#out{width:100%;min-height:132px;background:rgba(13,20,26,.6);color:var(--ink);border:1px solid var(--line);border-radius:8px;padding:9px;font:700 12px/1.7 var(--mono);resize:vertical}
+#copy{width:100%;margin-top:9px;background:var(--gold);color:#0e161d;border:0;border-radius:10px;padding:11px;font-weight:800;font-size:14px}
+#copy:active{filter:brightness(.94)}
+#toast{position:fixed;left:50%;bottom:26px;transform:translate(-50%,14px);opacity:0;pointer-events:none;background:rgba(0,0,0,.86);color:#fff;font-size:12.5px;padding:8px 14px;border-radius:999px;transition:.18s;z-index:50}
+#toast.on{opacity:1;transform:translate(-50%,0)}
+</style>
+</head>
+<body>
+<div id="top"><div class="wrap">
+  <div class="bar"><span class="tag">STUB · 第2轮</span><h1>音效试听台 · 7-12 号扩充</h1><button id="muteBtn">🔊 开</button></div>
+  <p class="lead">1-6 号已定（见下方绿色条）。这一轮只解决 7-12：每格 7-8 条新候选，★ = 把你上轮选的素材变调后的版本。挑完点最底下「复制全部」发回。</p>
+  <div id="audioWarn">⚠️ 音频似乎播不动——多半是浏览器拦截。点一下页面任意处再试。</div>
+</div></div>
+
+<main class="wrap">
+  <div class="locked">已定 1-6：<b>dice-throw-1 / card-take-out-1 / card-place-2 / bite-small-1 / coin-1 / shade-8</b>（本轮不动）</div>
+
+  <section class="slot">
+    <div class="slotHead"><span class="num">7</span><h2>失败 sting</h2></div>
+    <p class="desc">群体失败盖章；也可能用在年度结算「全员没撑过」。</p>
+    <p class="snote">第一轮你选的是 jingle-sax-03（现列在下方「上轮已选」）。这批全部换了新面孔，并加了一条「降 3 半音」变调版——变调是让 jingle 立刻变沉重的捷径。</p>
+    <div class="prevRow">
+      <span class="prevLab">上轮已选</span>
+      <button class="opt prev" data-slot="7" data-name="jingle-sax-03" data-file="sfx/jingle-sax-03.mp3">
+        <span class="nm">jingle-sax-03</span><span class="meta">上轮已选 · 1.12s</span>
+      </button>
+    </div>
+    <div class="opts" data-slot="7">
+      <button class="opt" data-slot="7" data-name="s07-fail-steel14">
+        <span class="nm">s07-fail-steel14</span>
+        <span class="meta">1.6s · 低音区、下行，最「丧」的一条</span>
+      </button>
+      <button class="opt" data-slot="7" data-name="s07-fail-steel01">
+        <span class="nm">s07-fail-steel01</span>
+        <span class="meta">1.6s · 同族，稍亮一点</span>
+      </button>
+      <button class="opt" data-slot="7" data-name="s07-fail-pizza07">
+        <span class="nm">s07-fail-pizza07</span>
+        <span class="meta">1.54s · 有点滑稽的丧，适合派对</span>
+      </button>
+      <button class="opt" data-slot="7" data-name="s07-fail-pizza01">
+        <span class="nm">s07-fail-pizza01</span>
+        <span class="meta">1.22s · 短促下行，干脆</span>
+      </button>
+      <button class="opt" data-slot="7" data-name="s07-fail-sax07">
+        <span class="nm">s07-fail-sax07</span>
+        <span class="meta">1.96s · 萨克斯，长音收尾</span>
+      </button>
+      <button class="opt" data-slot="7" data-name="s07-fail-giant2">
+        <span class="nm">s07-fail-giant2</span>
+        <span class="meta">1.15s · 巨人低吼，非音乐类，很压场</span>
+      </button>
+      <button class="opt" data-slot="7" data-name="s07-fail-shade11">
+        <span class="nm">s07-fail-shade11</span>
+        <span class="meta">1.35s · 幽魂叫声，最阴</span>
+      </button>
+      <button class="opt" data-slot="7" data-name="s07-fail-sax03-down">
+        <span class="nm">s07-fail-sax03-down</span>
+        <span class="meta">1.55s · ★ 你上轮选的 sax-03 降 3 半音，直接变沉重</span>
+      </button>
+    </div>
+  </section>
+
+  <section class="slot">
+    <div class="slotHead"><span class="num">8</span><h2>胜利 sting</h2></div>
+    <p class="desc">登顶那一刻。</p>
+    <p class="snote">第一轮你选的是 jingle-steel-02（现列在下方）。这批是另外 7 条上行 jingle + 一条「升 2 半音」版。注意：jingle 音频来源的文件名不含胜负语义，这批是我按音高上升趋势挑的，仍须耳听。</p>
+    <div class="prevRow">
+      <span class="prevLab">上轮已选</span>
+      <button class="opt prev" data-slot="8" data-name="jingle-steel-02" data-file="sfx/jingle-steel-02.mp3">
+        <span class="nm">jingle-steel-02</span><span class="meta">上轮已选 · 1.39s</span>
+      </button>
+    </div>
+    <div class="opts" data-slot="8">
+      <button class="opt" data-slot="8" data-name="s08-win-steel15">
+        <span class="nm">s08-win-steel15</span>
+        <span class="meta">1.16s · 钢片琴上行，清亮</span>
+      </button>
+      <button class="opt" data-slot="8" data-name="s08-win-hit11">
+        <span class="nm">s08-win-hit11</span>
+        <span class="meta">1.18s · 打击感强，上行</span>
+      </button>
+      <button class="opt" data-slot="8" data-name="s08-win-pizza02">
+        <span class="nm">s08-win-pizza02</span>
+        <span class="meta">1.18s · 跳跃上行，最欢</span>
+      </button>
+      <button class="opt" data-slot="8" data-name="s08-win-steel10">
+        <span class="nm">s08-win-steel10</span>
+        <span class="meta">1.13s · 短促上行，干净</span>
+      </button>
+      <button class="opt" data-slot="8" data-name="s08-win-nes05">
+        <span class="nm">s08-win-nes05</span>
+        <span class="meta">1.13s · 红白机味，复古</span>
+      </button>
+      <button class="opt" data-slot="8" data-name="s08-win-sax12">
+        <span class="nm">s08-win-sax12</span>
+        <span class="meta">1.07s · 萨克斯上行</span>
+      </button>
+      <button class="opt" data-slot="8" data-name="s08-win-sax15">
+        <span class="nm">s08-win-sax15</span>
+        <span class="meta">0.82s · 最短，一瞬就过</span>
+      </button>
+      <button class="opt" data-slot="8" data-name="s08-win-steel02-up">
+        <span class="nm">s08-win-steel02-up</span>
+        <span class="meta">1.46s · ★ 你上轮选的 steel-02 升 2 半音，更亮</span>
+      </button>
+    </div>
+  </section>
+
+  <section class="slot">
+    <div class="slotHead"><span class="num">9</span><h2>UI 轻点</h2></div>
+    <p class="desc">通用按钮。全站最高频，所以必须不烦人。</p>
+    <p class="snote">第一轮你选的是 click-001（现列在下方）。这批从 100 条 Interface Sounds 里另外挑了 7 条不同质感的，都不超过 0.6s。</p>
+    <div class="prevRow">
+      <span class="prevLab">上轮已选</span>
+      <button class="opt prev" data-slot="9" data-name="click-001" data-file="sfx/click-001.mp3">
+        <span class="nm">click-001</span><span class="meta">上轮已选 · 0.10s</span>
+      </button>
+    </div>
+    <div class="opts" data-slot="9">
+      <button class="opt" data-slot="9" data-name="s09-click-002">
+        <span class="nm">s09-click-002</span>
+        <span class="meta">0.23s · 同族，更闷</span>
+      </button>
+      <button class="opt" data-slot="9" data-name="s09-toggle-002">
+        <span class="nm">s09-toggle-002</span>
+        <span class="meta">0.36s · 轻拨，带一点弹</span>
+      </button>
+      <button class="opt" data-slot="9" data-name="s09-toggle-004">
+        <span class="nm">s09-toggle-004</span>
+        <span class="meta">0.28s · 更短更干</span>
+      </button>
+      <button class="opt" data-slot="9" data-name="s09-tick-004">
+        <span class="nm">s09-tick-004</span>
+        <span class="meta">0.28s · 极干，像秒针</span>
+      </button>
+      <button class="opt" data-slot="9" data-name="s09-select-005">
+        <span class="nm">s09-select-005</span>
+        <span class="meta">0.6s · 稍长，有点「选定了」的重量</span>
+      </button>
+      <button class="opt" data-slot="9" data-name="s09-drop-004">
+        <span class="nm">s09-drop-004</span>
+        <span class="meta">0.5s · 落子感</span>
+      </button>
+      <button class="opt" data-slot="9" data-name="s09-metal-small2">
+        <span class="nm">s09-metal-small2</span>
+        <span class="meta">0.55s · 金属轻敲，最清脆</span>
+      </button>
+    </div>
+  </section>
+
+  <section class="slot">
+    <div class="slotHead"><span class="num">10</span><h2>走格脚步</h2></div>
+    <p class="desc">棋子逐格走。上一轮没有真脚步素材，这轮补上了，9 种材质都有。</p>
+    <p class="snote">这一格换素材库：新增素材来自 OGA「Footsteps on different surfaces」（不同材质 10 组）。注意授权不同——tile/wood/boots 是 CC-BY 3.0（要署名），gravel 是 CC0。</p>
+    <div class="prevRow">
+      <span class="prevLab">上轮已选</span>
+      <button class="opt prev" data-slot="10" data-name="wood-small（无真脚步，备用）" data-file="sfx/wood-small.mp3">
+        <span class="nm">wood-small（无真脚步，备用）</span><span class="meta">上轮已选 · 0.31s</span>
+      </button>
+    </div>
+    <div class="opts" data-slot="10">
+      <button class="opt" data-slot="10" data-name="s10-step-tile-0">
+        <span class="nm">s10-step-tile-0</span>
+        <span class="meta">0.35s · 石砖地，最贴庄园方砖街</span>
+      </button>
+      <button class="opt" data-slot="10" data-name="s10-step-tile-3">
+        <span class="nm">s10-step-tile-3</span>
+        <span class="meta">0.35s · 同族另一条</span>
+      </button>
+      <button class="opt" data-slot="10" data-name="s10-step-tile-6">
+        <span class="nm">s10-step-tile-6</span>
+        <span class="meta">0.35s · 同族，稍闷</span>
+      </button>
+      <button class="opt" data-slot="10" data-name="s10-step-wood-0">
+        <span class="nm">s10-step-wood-0</span>
+        <span class="meta">0.5s · 木地板</span>
+      </button>
+      <button class="opt" data-slot="10" data-name="s10-step-wood-4">
+        <span class="nm">s10-step-wood-4</span>
+        <span class="meta">0.5s · 木地板，更重</span>
+      </button>
+      <button class="opt" data-slot="10" data-name="s10-step-gravel-2">
+        <span class="nm">s10-step-gravel-2</span>
+        <span class="meta">0.47s · 碎石（CC0）</span>
+      </button>
+      <button class="opt" data-slot="10" data-name="s10-step-gravel-5">
+        <span class="nm">s10-step-gravel-5</span>
+        <span class="meta">0.45s · 碎石，更碎</span>
+      </button>
+      <button class="opt" data-slot="10" data-name="s10-step-boots-1">
+        <span class="nm">s10-step-boots-1</span>
+        <span class="meta">0.35s · 皮鞋踩硬地</span>
+      </button>
+    </div>
+  </section>
+
+  <section class="slot">
+    <div class="slotHead"><span class="num">11</span><h2>轮到自己</h2></div>
+    <p class="desc">轮班模式点到自己。要「醒」但不能吵。</p>
+    <p class="snote">第一轮你选的是 interface-6（现列在下方）。这批换了 8 条不同音色的提示音，含钟、拨弦、轻敲。</p>
+    <div class="prevRow">
+      <span class="prevLab">上轮已选</span>
+      <button class="opt prev" data-slot="11" data-name="interface-6" data-file="sfx/interface-6.mp3">
+        <span class="nm">interface-6</span><span class="meta">上轮已选 · 0.50s</span>
+      </button>
+    </div>
+    <div class="opts" data-slot="11">
+      <button class="opt" data-slot="11" data-name="s11-turn-confirm4">
+        <span class="nm">s11-turn-confirm4</span>
+        <span class="meta">0.71s · 温和确认音</span>
+      </button>
+      <button class="opt" data-slot="11" data-name="s11-turn-confirm2">
+        <span class="nm">s11-turn-confirm2</span>
+        <span class="meta">0.76s · 同族，更亮</span>
+      </button>
+      <button class="opt" data-slot="11" data-name="s11-turn-bong">
+        <span class="nm">s11-turn-bong</span>
+        <span class="meta">0.34s · 低音钟，最沉</span>
+      </button>
+      <button class="opt" data-slot="11" data-name="s11-turn-pluck2">
+        <span class="nm">s11-turn-pluck2</span>
+        <span class="meta">0.38s · 拨弦，最轻</span>
+      </button>
+      <button class="opt" data-slot="11" data-name="s11-turn-select4">
+        <span class="nm">s11-turn-select4</span>
+        <span class="meta">0.6s · 选择音，带尾音</span>
+      </button>
+      <button class="opt" data-slot="11" data-name="s11-turn-maximize4">
+        <span class="nm">s11-turn-maximize4</span>
+        <span class="meta">0.64s · 打开感，稍张扬</span>
+      </button>
+      <button class="opt" data-slot="11" data-name="s11-turn-interface5">
+        <span class="nm">s11-turn-interface5</span>
+        <span class="meta">0.63s · 界面音，中性</span>
+      </button>
+      <button class="opt" data-slot="11" data-name="s11-turn-confirm1">
+        <span class="nm">s11-turn-confirm1</span>
+        <span class="meta">0.51s · 最朴素的确认音</span>
+      </button>
+    </div>
+  </section>
+
+  <section class="slot">
+    <div class="slotHead"><span class="num">12</span><h2>观战 / 出局</h2></div>
+    <p class="desc">自己被淘汰那一下。</p>
+    <p class="snote">第一轮你选的是 door（现列在下方）。说的直白一点：door 那条我测下来音高是**上行**的（开门），拿它当「出局」语义是反的，所以你会觉得别扭。这批换成了下行/沉重类，另加一条 door 降 4 半音的对照。</p>
+    <div class="prevRow">
+      <span class="prevLab">上轮已选</span>
+      <button class="opt prev" data-slot="12" data-name="door" data-file="sfx/door.mp3">
+        <span class="nm">door</span><span class="meta">上轮已选 · 1.00s（上行，语义相反）</span>
+      </button>
+    </div>
+    <div class="opts" data-slot="12">
+      <button class="opt" data-slot="12" data-name="s12-out-shade13">
+        <span class="nm">s12-out-shade13</span>
+        <span class="meta">1.37s · 幽魂下行，最「没救了」</span>
+      </button>
+      <button class="opt" data-slot="12" data-name="s12-out-shade9">
+        <span class="nm">s12-out-shade9</span>
+        <span class="meta">1.78s · 同族，更长</span>
+      </button>
+      <button class="opt" data-slot="12" data-name="s12-out-giant2">
+        <span class="nm">s12-out-giant2</span>
+        <span class="meta">1.15s · 巨人低吼</span>
+      </button>
+      <button class="opt" data-slot="12" data-name="s12-out-error3">
+        <span class="nm">s12-out-error3</span>
+        <span class="meta">0.75s · 错误音，明确但不重</span>
+      </button>
+      <button class="opt" data-slot="12" data-name="s12-out-close2">
+        <span class="nm">s12-out-close2</span>
+        <span class="meta">0.53s · 关门，短促</span>
+      </button>
+      <button class="opt" data-slot="12" data-name="s12-out-metal1">
+        <span class="nm">s12-out-metal1</span>
+        <span class="meta">0.75s · 金属松开</span>
+      </button>
+      <button class="opt" data-slot="12" data-name="s12-out-door-down">
+        <span class="nm">s12-out-door-down</span>
+        <span class="meta">1.48s · ★ 你上轮选的 door 降 4 半音，变成沉重关门</span>
+      </button>
+      <button class="opt" data-slot="12" data-name="s12-out-shade14">
+        <span class="nm">s12-out-shade14</span>
+        <span class="meta">0.78s · 幽魂短促</span>
+      </button>
+    </div>
+  </section>
+</main>
+
+<div id="box" class="wrap">
+  <h3>已选清单</h3>
+  <p class="hint">只记 7-12。点候选即记入并试播；同一个时机选新的会替换旧的。</p>
+  <textarea id="out" readonly></textarea>
+  <button id="copy">📋 复制全部</button>
+</div>
+
+<div id="toast"></div>
+<audio id="au" preload="none"></audio>
+
+<script>
+"use strict";
+const DATA = [{"n": "s07-fail-steel14", "slot": 7, "d": 1.6, "note": "低音区、下行，最「丧」的一条", "file": "sfx2/s07-fail-steel14.mp3"}, {"n": "s07-fail-steel01", "slot": 7, "d": 1.6, "note": "同族，稍亮一点", "file": "sfx2/s07-fail-steel01.mp3"}, {"n": "s07-fail-pizza07", "slot": 7, "d": 1.54, "note": "有点滑稽的丧，适合派对", "file": "sfx2/s07-fail-pizza07.mp3"}, {"n": "s07-fail-pizza01", "slot": 7, "d": 1.22, "note": "短促下行，干脆", "file": "sfx2/s07-fail-pizza01.mp3"}, {"n": "s07-fail-sax07", "slot": 7, "d": 1.96, "note": "萨克斯，长音收尾", "file": "sfx2/s07-fail-sax07.mp3"}, {"n": "s07-fail-giant2", "slot": 7, "d": 1.15, "note": "巨人低吼，非音乐类，很压场", "file": "sfx2/s07-fail-giant2.mp3"}, {"n": "s07-fail-shade11", "slot": 7, "d": 1.35, "note": "幽魂叫声，最阴", "file": "sfx2/s07-fail-shade11.mp3"}, {"n": "s07-fail-sax03-down", "slot": 7, "d": 1.55, "note": "★ 你上轮选的 sax-03 降 3 半音，直接变沉重", "file": "sfx2/s07-fail-sax03-down.mp3"}, {"n": "jingle-sax-03", "slot": 7, "d": 0, "note": "上轮已选", "file": "sfx/jingle-sax-03.mp3"}, {"n": "s08-win-steel15", "slot": 8, "d": 1.16, "note": "钢片琴上行，清亮", "file": "sfx2/s08-win-steel15.mp3"}, {"n": "s08-win-hit11", "slot": 8, "d": 1.18, "note": "打击感强，上行", "file": "sfx2/s08-win-hit11.mp3"}, {"n": "s08-win-pizza02", "slot": 8, "d": 1.18, "note": "跳跃上行，最欢", "file": "sfx2/s08-win-pizza02.mp3"}, {"n": "s08-win-steel10", "slot": 8, "d": 1.13, "note": "短促上行，干净", "file": "sfx2/s08-win-steel10.mp3"}, {"n": "s08-win-nes05", "slot": 8, "d": 1.13, "note": "红白机味，复古", "file": "sfx2/s08-win-nes05.mp3"}, {"n": "s08-win-sax12", "slot": 8, "d": 1.07, "note": "萨克斯上行", "file": "sfx2/s08-win-sax12.mp3"}, {"n": "s08-win-sax15", "slot": 8, "d": 0.82, "note": "最短，一瞬就过", "file": "sfx2/s08-win-sax15.mp3"}, {"n": "s08-win-steel02-up", "slot": 8, "d": 1.46, "note": "★ 你上轮选的 steel-02 升 2 半音，更亮", "file": "sfx2/s08-win-steel02-up.mp3"}, {"n": "jingle-steel-02", "slot": 8, "d": 0, "note": "上轮已选", "file": "sfx/jingle-steel-02.mp3"}, {"n": "s09-click-002", "slot": 9, "d": 0.23, "note": "同族，更闷", "file": "sfx2/s09-click-002.mp3"}, {"n": "s09-toggle-002", "slot": 9, "d": 0.36, "note": "轻拨，带一点弹", "file": "sfx2/s09-toggle-002.mp3"}, {"n": "s09-toggle-004", "slot": 9, "d": 0.28, "note": "更短更干", "file": "sfx2/s09-toggle-004.mp3"}, {"n": "s09-tick-004", "slot": 9, "d": 0.28, "note": "极干，像秒针", "file": "sfx2/s09-tick-004.mp3"}, {"n": "s09-select-005", "slot": 9, "d": 0.6, "note": "稍长，有点「选定了」的重量", "file": "sfx2/s09-select-005.mp3"}, {"n": "s09-drop-004", "slot": 9, "d": 0.5, "note": "落子感", "file": "sfx2/s09-drop-004.mp3"}, {"n": "s09-metal-small2", "slot": 9, "d": 0.55, "note": "金属轻敲，最清脆", "file": "sfx2/s09-metal-small2.mp3"}, {"n": "click-001", "slot": 9, "d": 0, "note": "上轮已选", "file": "sfx/click-001.mp3"}, {"n": "s10-step-tile-0", "slot": 10, "d": 0.35, "note": "石砖地，最贴庄园方砖街", "file": "sfx2/s10-step-tile-0.mp3"}, {"n": "s10-step-tile-3", "slot": 10, "d": 0.35, "note": "同族另一条", "file": "sfx2/s10-step-tile-3.mp3"}, {"n": "s10-step-tile-6", "slot": 10, "d": 0.35, "note": "同族，稍闷", "file": "sfx2/s10-step-tile-6.mp3"}, {"n": "s10-step-wood-0", "slot": 10, "d": 0.5, "note": "木地板", "file": "sfx2/s10-step-wood-0.mp3"}, {"n": "s10-step-wood-4", "slot": 10, "d": 0.5, "note": "木地板，更重", "file": "sfx2/s10-step-wood-4.mp3"}, {"n": "s10-step-gravel-2", "slot": 10, "d": 0.47, "note": "碎石（CC0）", "file": "sfx2/s10-step-gravel-2.mp3"}, {"n": "s10-step-gravel-5", "slot": 10, "d": 0.45, "note": "碎石，更碎", "file": "sfx2/s10-step-gravel-5.mp3"}, {"n": "s10-step-boots-1", "slot": 10, "d": 0.35, "note": "皮鞋踩硬地", "file": "sfx2/s10-step-boots-1.mp3"}, {"n": "wood-small（无真脚步，备用）", "slot": 10, "d": 0, "note": "上轮已选", "file": "sfx/wood-small.mp3"}, {"n": "s11-turn-confirm4", "slot": 11, "d": 0.71, "note": "温和确认音", "file": "sfx2/s11-turn-confirm4.mp3"}, {"n": "s11-turn-confirm2", "slot": 11, "d": 0.76, "note": "同族，更亮", "file": "sfx2/s11-turn-confirm2.mp3"}, {"n": "s11-turn-bong", "slot": 11, "d": 0.34, "note": "低音钟，最沉", "file": "sfx2/s11-turn-bong.mp3"}, {"n": "s11-turn-pluck2", "slot": 11, "d": 0.38, "note": "拨弦，最轻", "file": "sfx2/s11-turn-pluck2.mp3"}, {"n": "s11-turn-select4", "slot": 11, "d": 0.6, "note": "选择音，带尾音", "file": "sfx2/s11-turn-select4.mp3"}, {"n": "s11-turn-maximize4", "slot": 11, "d": 0.64, "note": "打开感，稍张扬", "file": "sfx2/s11-turn-maximize4.mp3"}, {"n": "s11-turn-interface5", "slot": 11, "d": 0.63, "note": "界面音，中性", "file": "sfx2/s11-turn-interface5.mp3"}, {"n": "s11-turn-confirm1", "slot": 11, "d": 0.51, "note": "最朴素的确认音", "file": "sfx2/s11-turn-confirm1.mp3"}, {"n": "interface-6", "slot": 11, "d": 0, "note": "上轮已选", "file": "sfx/interface-6.mp3"}, {"n": "s12-out-shade13", "slot": 12, "d": 1.37, "note": "幽魂下行，最「没救了」", "file": "sfx2/s12-out-shade13.mp3"}, {"n": "s12-out-shade9", "slot": 12, "d": 1.78, "note": "同族，更长", "file": "sfx2/s12-out-shade9.mp3"}, {"n": "s12-out-giant2", "slot": 12, "d": 1.15, "note": "巨人低吼", "file": "sfx2/s12-out-giant2.mp3"}, {"n": "s12-out-error3", "slot": 12, "d": 0.75, "note": "错误音，明确但不重", "file": "sfx2/s12-out-error3.mp3"}, {"n": "s12-out-close2", "slot": 12, "d": 0.53, "note": "关门，短促", "file": "sfx2/s12-out-close2.mp3"}, {"n": "s12-out-metal1", "slot": 12, "d": 0.75, "note": "金属松开", "file": "sfx2/s12-out-metal1.mp3"}, {"n": "s12-out-door-down", "slot": 12, "d": 1.48, "note": "★ 你上轮选的 door 降 4 半音，变成沉重关门", "file": "sfx2/s12-out-door-down.mp3"}, {"n": "s12-out-shade14", "slot": 12, "d": 0.78, "note": "幽魂短促", "file": "sfx2/s12-out-shade14.mp3"}, {"n": "door", "slot": 12, "d": 0, "note": "上轮已选", "file": "sfx/door.mp3"}];
+const FILE = Object.fromEntries(DATA.map(d => [d.n + "|" + d.slot, d.file]));
+const picks = {};            // slot -> name
+let cur = null;              // 当前按钮
+
+const au = document.getElementById("au");
+const muteBtn = document.getElementById("muteBtn");
+const warn = document.getElementById("audioWarn");
+let muted = false;
+
+document.getElementById("muteBtn").addEventListener("click", () => {
+  muted = !muted;
+  if (muted) { au.pause(); muteBtn.textContent = "🔇 关"; muteBtn.classList.add("off"); }
+  else { muteBtn.textContent = "🔊 开"; muteBtn.classList.remove("off"); }
+});
+
+au.addEventListener("error", () => warn.classList.add("on"));
+au.addEventListener("ended", () => { if (cur) { cur.classList.remove("playing"); cur = null; } });
+
+document.addEventListener("click", (e) => {
+  const btn = e.target.closest(".opt");
+  if (!btn) return;
+  const slot = Number(btn.dataset.slot);
+  const name = btn.dataset.name;
+  if (!btn.classList.contains("prev")) {
+    picks[slot] = name;
+    document.querySelectorAll(`.opts[data-slot="${slot}"] .opt`).forEach(b => b.classList.toggle("sel", b === btn));
+    render();
+  }
+  if (cur && cur !== btn) cur.classList.remove("playing");
+  const file = btn.dataset.file || FILE[name + "|" + slot];
+  if (!muted) {
+    au.pause();
+    au.src = file;
+    au.currentTime = 0;
+    const p = au.play();
+    if (p && p.catch) p.catch(() => warn.classList.add("on"));
+    btn.classList.add("playing");
+    cur = btn;
+  }
+});
+
+function render() {
+  const LABEL = {7:"失败 sting",8:"胜利 sting",9:"UI 轻点",10:"走格脚步",11:"轮到自己",12:"观战 / 出局"};
+  const lines = [7, 8, 9, 10, 11, 12].map(s => `${s} ${LABEL[s]} = ${picks[s] || "（未选）"}`);
+  document.getElementById("out").value = lines.join("\n");
+}
+
+document.getElementById("copy").addEventListener("click", async () => {
+  const t = document.getElementById("out").value;
+  try { await navigator.clipboard.writeText(t); toast("已复制"); }
+  catch (_) {
+    const ta = document.getElementById("out");
+    ta.focus(); ta.select();
+    try { document.execCommand("copy"); toast("已复制"); }
+    catch (__) { toast("复制失败，请手动长按选择"); }
+  }
+});
+
+function toast(t) {
+  const el = document.getElementById("toast");
+  el.textContent = t; el.classList.add("on");
+  clearTimeout(toast._t);
+  toast._t = setTimeout(() => el.classList.remove("on"), 1600);
+}
+render();
+</script>
+</body>
+</html>
