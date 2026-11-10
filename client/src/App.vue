@@ -19,10 +19,14 @@ import RouteBar from "./ui/RouteBar.vue";
 import SecretDraft from "./ui/SecretDraft.vue";
 import CardChoice from "./ui/CardChoice.vue";
 import Settlement from "./ui/Settlement.vue";
+import RecBar from "./ui/RecBar.vue";
 import { gameStore } from "./game/store";
+import { recLog } from "./net/recLog";
 
 const view = computed(() => roomStore.view.value);
 const started = computed(() => !!gameStore.source.value);
+/** 测试记录器开闸（?rec=1；与 ?dev=1 互不依赖、可共存） */
+const recOn = recLog.on;
 
 /** 房间页的对局画面开闸（M2-T6）：phase=playing 且源活着且有对局面。drafting 期留在大厅
  *  （暗牌浮层内嵌那里）；state over（结算）先到=仍在 gamePage 上展出 Settlement（intermission
@@ -84,6 +88,8 @@ const toast = computed(() => gameStore.toast.value);
   </div>
   <!-- 房间 toast 全局渲染：离房/解散/被顶都伴随视图切换，渲染在页组件里会被卸载吃掉 -->
   <div v-if="roomToast" class="toast">{{ roomToast }}</div>
+  <!-- 测试记录器悬浮条（M3 #51）：仅 ?rec=1 渲染——不带参数时这里连组件都不存在，零行为差异 -->
+  <RecBar v-if="recOn" />
 </template>
 
 <style scoped>

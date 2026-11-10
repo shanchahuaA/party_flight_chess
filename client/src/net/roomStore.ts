@@ -33,6 +33,7 @@ import type { Downstream, LobbyConfig, RoomSnapshot, Upstream } from "../../../s
 import { ServerClock } from "./clock";
 import { bindDevSnapshot, gameStore } from "../game/store";
 import { RemoteRoomSource, type DownstreamGame } from "../game/remoteSource";
+import { recLog } from "./recLog";
 
 const TOKEN_KEY_PREFIX = "pfc.token.";
 const NICK_KEY = "pfc.nickname";
@@ -511,6 +512,13 @@ class RoomStore {
   private handleDownstream(msg: Downstream): void {
     this.lastRecvPerf = performance.now(); // 静默计时刻（M2-T8：探针 silentMs=「重连中进入时机」断言口）
     this.armWatchdog(); // 每条下行都重新武装判死窗
+    // 测试记录器（#51，?rec=1 门控）：下行到站即刻落一条，零定时器、绝不改状态
+    recLog.setRoom(this.code.value);
+    recLog.capture(msg, {
+      serverNow: this.clock.serverNow(),
+      mySeat: this.mySeat.value,
+      ws: this.wsState.value,
+    });
     switch (msg.type) {
       case "room": {
         const prevPhase = this.snapshot.value?.phase ?? null;
