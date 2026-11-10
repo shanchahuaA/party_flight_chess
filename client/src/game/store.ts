@@ -8,7 +8,7 @@
  */
 import { reactive, ref, shallowRef, watch } from "vue";
 import { BOARD } from "../../../kernel/src";
-import type { Fact, GameConfig, GameState, Intent, PlayerDef } from "../../../kernel/src";
+import type { Fact, GameConfig, GameState, Intent, MessageEntry, PlayerDef } from "../../../kernel/src";
 import { LocalKernelSource, type GameSource } from "./source";
 import { deriveHighlights, derivePulses, deriveSounds, type CueView, type SfxName } from "./cues";
 
@@ -61,6 +61,12 @@ class GameStore {
   freshMsgIds = ref<number[]>([]);
   /** 本批判定出的音效（A-01；T2 播放器消费） */
   freshSfx = ref<SfxName[]>([]);
+  /**
+   * 联机累积战报流（M3-T9 → #61 / 清单 T-02）：服务端「首次全量 + 后续增量」，
+   * 这里按 id 去重累积成完整本局战报。单机源不走它（state.messages 本来就是全量）。
+   * WorldMessage 抽屉在联机下读它，能翻到本局第一条。
+   */
+  msgLog = ref<MessageEntry[]>([]);
 
   /** 「轮到你了」提示的响应式解绑把手（换局/收摊要摘） */
   private stopTurnWatch: (() => void) | null = null;
@@ -141,6 +147,7 @@ class GameStore {
     this.seenMaxMsgId = 0;
     this.freshMsgIds.value = [];
     this.freshSfx.value = [];
+    this.msgLog.value = [];
     this.cuePrimed = false;
     this.lastTurnActor = null;
   }
@@ -231,10 +238,13 @@ class GameStore {
    * 联机源（M2-T6）的 onFacts 也走这里（roomStore 的 SourceHandlers）——远端事实与单机内核
    * 事实同形状，pulse 亮牌/掷面/出局贴皮零成本复用（「演出不另起」）。
    *
-   * 增量判据：`full`=本批是首帧全量（联机 hello/重连全量）——此时不高亮任何条目，
-   * 且以本批看到的 messages 全量为已见面建立基线（否则重连后整屏闪）。
+   * M3-T9（#61）：联机源额外带 `batch`=本条下行消息的顶层 messages 与 msgs 模式，
+   * 累积进 msgLog（首次全量 + 后续增量的完整流）。单机源不传（state.messages 本就是全量）。
    */
-  handle(facts: Fact[], opts: { full?: boolean } = {}): void {
+  handle(
+    facts: Fact[],
+    opts: { full?: boolean; batch?: { messages: MessageEntry[]; msgs?: "full" | "delta" } } = {},
+  ): void {
     const s = this.state.value;
     for (const f of facts) {
       switch (f.type) {
@@ -259,15 +269,36 @@ class GameStore {
           break;
       }
     }
+    this.absorbBatch(opts.batch);
     this.applyCues(facts, opts.full ?? false);
+  }
+
+  /**
+   * 联机战报累积（#61）：full=整段替换（重连/刷新/对齐的真相源），delta=按 id 追加去重。
+   * 单机不走这里——抽屉读 state.messages 即可。
+   */
+  private absorbBatch(batch?: { messages: MessageEntry[]; msgs?: "full" | "delta" }): void {
+    if (!batch) return;
+    const incoming = batch.messages ?? [];
+    if (batch.msgs === "full") {
+      this.msgLog.value = incoming;
+      return;
+    }
+    if (incoming.length === 0) return;
+    const seen = new Set(this.msgLog.value.map((m) => m.id));
+    const add = incoming.filter((m) => !seen.has(m.id));
+    if (add.length === 0) return;
+    this.msgLog.value = [...this.msgLog.value, ...add];
   }
 
   /** 判定模块唯一接线点：三张派生表算完，落进壳层可读的瞬时态 */
   private applyCues(facts: Fact[], full: boolean): void {
     const s = this.state.value;
     if (!s) return;
-    // 战报增量：本批之前未见过的条目（重连全量时 id 全部已见=天然空）
-    const all = s.messages ?? [];
+    // 战报增量：
+    // - 联机（有累积流）：本批之前未见过的条目 = msgLog 里 id > 基线 的（服务端 delta 已切好，这里再兜一道）
+    // - 单机：state.messages 是全量，取 id > 基线 的
+    const all = this.msgLog.value.length > 0 ? this.msgLog.value : (s.messages ?? []);
     const seenMax = this.seenMaxMsgId;
     const fresh = full && !this.cuePrimed ? all : all.filter((m) => m.id > seenMax);
     const view: CueView = {

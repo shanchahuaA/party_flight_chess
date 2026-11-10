@@ -4,7 +4,10 @@
  * 最新 2 条常驻、新消息推入旧行下移；点带子展开全量战报抽屉（详情入口不能缺）。
  * 条目结构＝类型图标 · 谁 · 结果短语：主语按 who 渲染成名字 chip，文本只出现一次名
  * （实玩增补细则：「小黄 小黄」重复已定案为渲染层剥前缀）；抽屉起步渲染最近 50 条、上滑增量，
- * 回合号换行＝分节线（summary 类条目 T8 落地即自带文案），点条目展开 flavor（卡面叙事皮不进一行）。
+ * 回合号换行＝分节线（summary 类条目 T8 落地即自带文案），点条目就地展开大卡面（#59）。
+ *
+ * 战报数据源（M3-T9 → #61 / T-02）：**联机读累积流**（gameStore.msgLog，服务端首次全量+后续增量
+ * 累积而成，能翻到本局第一条）；单机读 state.messages（本就是全量）。两条源在此收口成一份。
  */
 import { computed, nextTick, ref, watch } from "vue";
 import type { MessageEntry, MessageKind } from "../../../kernel/src";
@@ -23,7 +26,12 @@ const KIND_ICONS: Record<MessageKind, string> = {
   score: "📣",
 };
 
-const msgs = computed(() => gameStore.state.value?.messages ?? []);
+/** 战报数据源（#61）：联机=累积流 msgLog（全量+增量累积，可翻到本局第一条）；单机=state.messages */
+const msgs = computed(() => {
+  const log = gameStore.msgLog.value;
+  if (log.length > 0) return log;
+  return gameStore.state.value?.messages ?? [];
+});
 
 /** 常驻两条：新消息推入顶部、旧行下移让位（倒序取尾部两条） */
 const band = computed(() => {

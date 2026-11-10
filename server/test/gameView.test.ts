@@ -165,7 +165,7 @@ describe("buildGameView：内部段与战报", () => {
     expect(state.customsSeq).toBe(0);
   });
 
-  it("战报尾片 = 最后 200 条 + who/targets 重定基；输入不被污染（收者=老2）", () => {
+  it("战报默认增量 + state.messages 尾片 + who/targets 重定基；输入不被污染（收者=老2）", () => {
     const msgs: MessageEntry[] = Array.from({ length: 250 }, (_, i) => ({
       id: i + 1,
       turn: 3,
@@ -175,15 +175,48 @@ describe("buildGameView：内部段与战报", () => {
       ...(i % 7 === 0 ? { who: 2, targets: [0, 1] } : {}),
     })) as unknown as MessageEntry[];
     const s = rawState({ players: [player(0), player(1), player(2)], messages: msgs });
-    const { state, messages } = buildGameView(s, [], 2);
-    expect(messages.length).toBe(MESSAGE_TAIL);
-    expect(state.messages).toEqual(messages); // 同一段尾片
-    expect(messages[0].text).toBe("m50"); // 250 条取尾 200，首位=第 51 条
+    // 增量模式（lastId=200）：只回 id>200 的条目
+    const { state, messages, msgs: mode } = buildGameView(s, [], 2, MESSAGE_TAIL, { lastId: 200 });
+    expect(mode).toBe("delta");
+    expect(messages.length).toBe(50);
+    expect(messages[0]!.text).toBe("m200");
+    expect(state.messages.length).toBe(MESSAGE_TAIL); // 尾片兜底仍在
+    expect(state.messages[0]!.text).toBe("m50"); // 250 条取尾 200，首位=第 51 条
     const withWho = messages.find((m) => (m as { who?: number }).who != null)! as { who: number; targets: number[] };
     expect(withWho.who).toBe(0); // 老2=收者→0
     expect(withWho.targets).toEqual([1, 2]); // 老0→1、老1→2
     expect(s.messages.length).toBe(250);
     expect((s.messages[0] as { who?: number }).who).toBe(2); // 原件未动
+  });
+
+  it("全量模式（msgs=full）：顶层 messages = 完整战报（能翻到第一条）", () => {
+    const msgs: MessageEntry[] = Array.from({ length: 250 }, (_, i) => ({
+      id: i + 1,
+      turn: 3,
+      kind: "event",
+      text: `m${i}`,
+      emphasis: "normal",
+    })) as unknown as MessageEntry[];
+    const s = rawState({ players: [player(0), player(1)], messages: msgs });
+    const { messages, msgs: mode, state } = buildGameView(s, [], 1, MESSAGE_TAIL, { msgs: "full" });
+    expect(mode).toBe("full");
+    expect(messages.length).toBe(250); // 全量：不受尾片限制
+    expect(messages[0]!.text).toBe("m0");
+    expect(state.messages.length).toBe(MESSAGE_TAIL); // 快照尾片照旧
+  });
+
+  it("增量切片按 id 严格大于 lastId（同 id 边界不重复下发）", () => {
+    const msgs: MessageEntry[] = Array.from({ length: 5 }, (_, i) => ({
+      id: i + 1,
+      turn: 1,
+      kind: "system",
+      text: `m${i}`,
+      emphasis: "normal",
+    })) as unknown as MessageEntry[];
+    const s = rawState({ players: [player(0)], messages: msgs });
+    expect(buildGameView(s, [], 0, MESSAGE_TAIL, { lastId: 5 }).messages).toEqual([]);
+    expect(buildGameView(s, [], 0, MESSAGE_TAIL, { lastId: 0 }).messages.length).toBe(5);
+    expect(buildGameView(s, [], 0, MESSAGE_TAIL, { lastId: 3 }).messages.map((m) => m.id)).toEqual([4, 5]);
   });
 });
 

@@ -25,7 +25,7 @@ import {
   type RoomSnapshot,
   type Upstream,
 } from "../../shared/protocol";
-import { buildGameView } from "./gameView";
+import { buildGameView, MESSAGE_TAIL } from "./gameView";
 
 // 房间生命周期核（M2-T3，#40）+ 大厅核（M2-T4，#41）+ 对局核（M2-T5，#42）+ 断线治理（M2-T8，#45）。
 // 每个房间一个 DO（ADR-0001）：房间账（座位/昵称/token/房主标记/角色/配置/假人/phase）与
@@ -46,9 +46,13 @@ import { buildGameView } from "./gameView";
 //   kernel 时钟轴 now() 同缝（测试 advanceTime 快进），关线起钟/上线撤钟/到点复核 live 条件 +
 //   一次性钟（不重派），alarm 扫描「先房后核」同拍优先销毁/转移（与 kernel 时限同轴互扰的裁决）。
 
-/** WS attachment：连接与座位的绑定面（序列化落 Hibernation，唤醒后 deserializeAttachment 可得） */
+/** WS attachment：连接与座位的绑定面（序列化落 Hibernation，唤醒后 deserializeAttachment 可得）。
+ *  M3-T9（#61）加「战报已发到哪条」——按连接记全量/增量，Hibernation 唤醒后 attachment 仍在，
+ *  但内存态（见 fullSent/lastMsgId）已清空 → 唤醒后首条按「全量重发」处理（票面要求）。 */
 interface WsAttach {
   token: string;
+  /** 该连接已收到的最新战报条目 id（0=还没收过全量） */
+  lastMsgId?: number;
 }
 
 interface SeatRow {
@@ -248,6 +252,13 @@ export class Room {
       "INSERT INTO seats (seat, token, name, joined_at, seq) VALUES (?, ?, ?, ?, ?)",
       seat, token, name, Date.now(), this.nextSeq(),
     );
+    // M3-T9（#61，收 M2 遗留）：HTTP join 只是领了座位、还没升级 WS——若不加这一步，
+    // 「本来没人在线」的房间会带着 open 的销毁钟悬置（人来了却没撤钟），5 分钟后被误销毁。
+    // join 后重估房级两钟：新座位此刻**不算在线**（没有连接），但真人格局变了 → 起/撤钟都要重算。
+    // 注意不能用 refreshOfflineTimers() 无参版：它把「不在 getWebSockets() 里」的正确判据算对了，
+    // 但这里语义是「座位表变了」而不是「连接变了」，所以直接用同一条路径即可（在线集从 socket 现读）。
+    this.refreshOfflineTimers();
+    this.scheduleAlarm();
     return Response.json({ token, seat } satisfies JoinRoomResp);
   }
 
@@ -286,6 +297,8 @@ export class Room {
 
     const pair = new WebSocketPair();
     this.state.acceptWebSocket(pair[1]);
+    // 新连接=战报从头发（lastMsgId 缺席 → 首条 game 走全量）。同 token 的旧 socket 已在上面被顶掉，
+    // 它记的水位不继承给新线（重连/刷新要的是「完整战报」，不是「接着上次的进度」）。
     pair[1].serializeAttachment({ token } satisfies WsAttach);
     this.send(pair[1], this.buildRoomMsg(seat));
     // 对局中连接（含掉线断线重连=凭 token 归队，M2-T5）：room hello 照旧，追加一条 game 消息
@@ -1120,6 +1133,7 @@ export class Room {
   /**
    * 对局广播（M2-T5）：逐连接逐人构建——收者视角重定基+裁剪后整份 game 消息（每次一个新克隆，
    * 绝不全场共用一条 JSON）。kernel.save() 的快照是广播源（引用只读，buildGameView 内深克隆隔离）。
+   * M3-T9（#61）：逐连接按 attachment 的 lastMsgId 判全量/增量——首次（含 Hibernation 唤醒后）发全量。
    */
   private broadcastGame(facts: Fact[]): void {
     const kernel = this.kernel ?? this.ensureKernel();
@@ -1139,14 +1153,34 @@ export class Room {
     this.sendGameToRaw(ws, seat, facts, kernel.save());
   }
 
-  /** 带现成快照源的构建+发送（broadcastGame 循环里复用一份 save，逐收者深克隆隔离不串染） */
+  /**
+   * 带现成快照源的构建+发送（broadcastGame 循环里复用一份 save，逐收者深克隆隔离不串染）。
+   * M3-T9（#61）战报口径：该连接还没收过全量（attachment.lastMsgId 缺席）→ 本次发全量；
+   * 否则只发 id 大于 lastMsgId 的增量。发完把新水位写回 attachment（Hibernation 会保住它）。
+   */
   private sendGameToRaw(ws: WebSocket, seat: number, facts: Fact[], saved: GameState): void {
     const pid = this.pidOfSeat(seat);
     if (pid == null) return; // 座位不在 kernel 名册（intermission 旧账等）：老游戏不留接缝
-    const view = buildGameView(saved, facts, pid);
+    const att = ws.deserializeAttachment() as WsAttach | null;
+    // lastMsgId 有值=该连接已收过全量 → 走增量；否则首条给全量（重连/刷新/Hibernation 恢复同一条路）
+    const lastId = att?.lastMsgId;
+    const msgs: "full" | "delta" = lastId == null ? "full" : "delta";
+    const view = buildGameView(saved, facts, pid, MESSAGE_TAIL, { msgs, lastId: lastId ?? 0 });
     // now=DO 内核时钟轴（this.now()=Date.now()+clockOffset）——与 windowDeadline/adoptGameBaseline
     // 同轴（T7 计时域一致性：快进缝下 game.now 必须落在内核轴上，Date.now() 会站错侧）
-    this.send(ws, { type: "game", now: this.now(), facts: view.facts, messages: view.messages, state: view.state });
+    this.send(ws, {
+      type: "game",
+      now: this.now(),
+      facts: view.facts,
+      messages: view.messages,
+      msgs: view.msgs,
+      state: view.state,
+    });
+    // 水位推进（全量/增量都一样：收到的最新条目即最高 id）
+    const top = saved.messages.length > 0 ? saved.messages[saved.messages.length - 1]!.id : 0;
+    if (att && top > (lastId ?? 0)) {
+      ws.serializeAttachment({ ...att, lastMsgId: top } satisfies WsAttach);
+    }
   }
 
   /**

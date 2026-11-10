@@ -1,5 +1,5 @@
 /**
- * 对局下行的按座位裁剪+视角重定基（M2-T5，#42；Spec #37 实现决策 3/4）。
+ * 对局下行的按座位裁剪+视角重定基（M2-T5，#42；M3-T9 #61 加战报全量/增量）。
  *
  * 契约（胖消息）：每条 game 消息按收者逐人构建——
  * - 重定基（rebase）：收者恒为 pid 0（壳层 M1 约定「自己=players[0]」，协议替壳转译，服务端终局裁决）。
@@ -11,24 +11,37 @@
  *   rngStates / seq / dogSeq / customsSeq 全部置 0（保形不下发——RNG 流=未来抽卡顺序，绝不外泄）。
  * - 结算例外：kernel phase=over 时他人暗牌 secretOptions 照实亮（Spec #37 story 9「暗牌保密到结算即揭」
  *   ——亮牌只随结果进结算包，与单机 T8b2 呈现同源）；hand 不随结算松动。
- * - 战报 messages=state.messages 的尾片（最后 200 条；state.messages 同步给同一尾片——客户端整体覆盖口径）。
+ * - 战报（M3-T9 #61 / 清单 T-02）：顶层 `messages` 改「首次全量 + 后续增量」，配 `msgs` 模式标记；
+ *   客户端累积成完整流（抽屉能翻到本局第一条）。`state.messages` 仍留一段尾片——壳层整体覆盖口径
+ *   要有东西接，但它不再承担「完整战报」职责。
  *
  * 纯函数无 IO：输入=内核导出的完整态快照（调用方保证是 kernel.save() 的克隆，本函数不归还原件）
  * 与本批事实；输出=该收者视角的整份 game 消息载荷。每次内核变化后逐连接跑一次。
  */
 import type { Fact, GameState, MessageEntry } from "../../kernel/src/types";
 
-/** 战报尾片长度（M2-T5 胖消息口径：客户端整页呈现够用，整流过重） */
+/** `state.messages` 尾片长度（壳层整体覆盖口径的兜底；完整战报走顶层 messages 累积流） */
 export const MESSAGE_TAIL = 200;
+
+/** 战报下发模式（#61）：full=本次带全量（连接首条/重连/对齐），delta=只带本批新增 */
+export type MsgMode = "full" | "delta";
 
 /**
  * 视角重定基+裁剪后的整份 game 消息载荷。
- * state.messages 与顶层 messages 是同一段尾片（两路消费形状都兼容）。
+ * - messages：按 msgs 模式给全量或本批增量
+ * - state.messages：恒为最近 MESSAGE_TAIL 条尾片（壳层兜底，不承担完整战报）
  */
 export interface GameViewMsg {
   facts: Fact[];
   messages: MessageEntry[];
+  /** #61：messages 是「全量」还是「本批增量」 */
+  msgs: MsgMode;
   state: GameState;
+}
+
+/** 战报里有哪些条目的 id 大于 lastId（增量切片用；与内核 append-only 口径一致） */
+export function deltaMessages(all: MessageEntry[], lastId: number): MessageEntry[] {
+  return all.filter((m) => m.id > lastId);
 }
 
 /**
@@ -63,8 +76,19 @@ export function rebaseFacts(facts: Fact[], map: (n: number) => number): Fact[] {
   });
 }
 
-/** 整份 game 消息：克隆态重定基+裁剪+战报尾片+本批事实重定基。raw/batch 视为只读。 */
-export function buildGameView(raw: GameState, batch: Fact[], viewerPid: number, tail = MESSAGE_TAIL): GameViewMsg {
+/**
+ * 整份 game 消息：克隆态重定基+裁剪+战报（全量/增量）+本批事实重定基。raw/batch 视为只读。
+ *
+ * @param msgOpts.lastId 该连接已见的最后战报 id（服务端按连接记）；msgs="delta" 时只回 id > lastId 的条目。
+ *   msgs="full" 时忽略 lastId，给全量。
+ */
+export function buildGameView(
+  raw: GameState,
+  batch: Fact[],
+  viewerPid: number,
+  tail = MESSAGE_TAIL,
+  msgOpts: { msgs?: MsgMode; lastId?: number } = {},
+): GameViewMsg {
   if (viewerPid < 0 || viewerPid >= raw.players.length) {
     throw new Error(`gameView: viewerPid ${viewerPid} 越界（名册 ${raw.players.length} 人）`);
   }
@@ -72,11 +96,17 @@ export function buildGameView(raw: GameState, batch: Fact[], viewerPid: number, 
   // 深克隆隔离：raw 是 DO 侧共享的快照对象，逐收者构建必须互不污染（viewer 0 的裁剪不得写回）
   const state = JSON.parse(JSON.stringify(raw)) as GameState;
   rebaseState(state, map, viewerPid);
-  const messages = rebaseMessages((raw.messages ?? []).slice(-tail), map);
-  state.messages = messages;
+  const mode: MsgMode = msgOpts.msgs ?? "delta";
+  // 顶层 messages：全量 or 本批增量（#61）。state.messages 恒留尾片兜底。
+  const messages =
+    mode === "full"
+      ? rebaseMessages(raw.messages ?? [], map)
+      : rebaseMessages(deltaMessages(raw.messages ?? [], msgOpts.lastId ?? 0), map);
+  state.messages = rebaseMessages((raw.messages ?? []).slice(-tail), map);
   return {
     facts: rebaseFacts(batch ?? [], map),
     messages,
+    msgs: mode,
     state,
   };
 }
