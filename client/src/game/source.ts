@@ -11,8 +11,9 @@ import type { Fact, GameConfig, GameState, Intent, PlayerDef } from "../../../ke
 
 /** 源 → 壳层的推送通道（构造时接好） */
 export interface SourceHandlers {
-  /** 事实入站（单机=内核事实流；联机=服务端事实流）——壳层演出消费的唯一入口 */
-  onFacts(facts: Fact[]): void;
+  /** 事实入站（单机=内核事实流；联机=服务端事实流）——壳层演出消费的唯一入口。
+   *  full=true：本批是首帧全量（联机 hello/重连全量）——判定模块据此不高亮历史条目（M3-T1）。 */
+  onFacts(facts: Fact[], opts?: { full?: boolean }): void;
   /** 每个驱动拍（单机=33ms tick 链）——壳层心跳 beat 挂这里（倒计时重渲驱动） */
   onStep(): void;
   /** 驱动链致命故障（tick 抛非业务异常）——壳层提示后源停摆 */

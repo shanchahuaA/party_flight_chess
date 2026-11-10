@@ -592,9 +592,9 @@ class RoomStore {
       {
         // 状态引用先于事实入壳（#39 不变式，与单机 boot 同形）：源侧 feed 先替 src.state
         // 再调这里，此处先镜像壳层 state、后走 handle 的演出语义
-        onFacts: (facts) => {
+        onFacts: (facts, opts) => {
           if (gameStore.state.value !== src.state) gameStore.state.value = src.state;
-          gameStore.handle(facts);
+          gameStore.handle(facts, opts);
         },
         onStep: () => {
           gameStore.beat.value++;

@@ -131,6 +131,12 @@ function tokenClass(id: number): string {
   if (!s) return "";
   return s.has(id) ? "tg legal" : "tg dim";
 }
+/** 脉冲档位（M3-T1 G-10/11/12）：normal 金描边、target 红脉冲、big 年兽级大事件——
+ *  三档全由 gameStore 的判定模块（game/cues）派生，本组件只读档位、不再自己判 */
+function pulseClass(id: number): string {
+  const lv = gameStore.isLit(id);
+  return lv ? `lit-${lv}` : "";
+}
 /** 选中目标提交到内核：非法目标也照发（内核拒并播理由 toast，选择态保留可供换点） */
 function onTokenClick(id: number): void {
   if (legalSet.value) gameStore.pickTarget(id);
@@ -326,26 +332,30 @@ const dogViews = computed(() =>
       <text :x="t.tail.flag.x" :y="t.tail.flag.y + 5" text-anchor="middle" font-size="14">🏁</text>
     </g>
 
-    <!-- 棋子（targeting 期：合法亮/非法灰，点头像收口；淘汰者变暗+☠锁标观战） -->
+    <!-- 棋子（targeting 期：合法亮/非法灰，点头像收口；淘汰者变暗+☠锁标观战；
+         三档脉冲=lit-normal 金描边 / lit-target 红脉冲 / lit-big 年兽级重脉冲，G-10~12） -->
     <g
       v-for="tv in tokenViews"
       :key="`tk${tv.p.id}`"
       class="tk"
-      :class="[tokenClass(tv.p.id), { glow: gameStore.isLit(tv.p.id) !== null }]"
+      :class="[tokenClass(tv.p.id), pulseClass(tv.p.id)]"
       :style="{ transform: `translate(${tv.x}px, ${tv.y}px)` }"
       @click="onTokenClick(tv.p.id)"
     >
       <title v-if="tv.p.dead">☠ {{ tv.p.id === 0 ? "你已" : `${tv.p.name}已` }}出局——观战中（不再被指认）</title>
+      <title v-else-if="tv.p.skipped">😵 {{ tv.p.id === 0 ? "你" : tv.p.name }}本回合罚停轮空</title>
       <circle v-if="tv.p.id === 0" r="11" fill="none" stroke="#90cbd8" stroke-width="1.5" stroke-dasharray="3 2.5" />
       <circle class="tkMain" r="8.5" :fill="TOKEN_COLORS[tv.p.id]" stroke="#fff" stroke-width="2" />
       <text class="tokenLbl" y="3.2" text-anchor="middle" font-size="9">
         {{ tv.p.id === 0 ? "你" : tv.p.name.replace("小", "") }}
       </text>
-      <!-- 血条（T5a 常驻）：底槽＋按血量占比的填充；自己头顶再加深 ❤ 读数；淘汰者头顶换成 ☠ 锁标 -->
+      <!-- 血条（T5a 常驻）：底槽＋按血量占比的填充；自己头顶再加深 ❤ 读数；
+           淘汰者头顶换成 ☠ 锁标、罚停者换成 🔒 锁标（G-12：与死亡灰化＋骷髅标区分） -->
       <g class="hpG">
         <rect x="-8" y="13" width="16" height="3" rx="1.5" fill="rgba(0,0,0,.5)" />
         <rect x="-8" y="13" :width="hpBarW(tv.p)" height="3" rx="1.5" :fill="hpFill(tv.p)" />
         <text v-if="tv.p.dead" x="0" y="-12.5" text-anchor="middle" class="hpNum hpDead" font-size="8">☠</text>
+        <text v-else-if="tv.p.skipped" x="0" y="-12.5" text-anchor="middle" class="hpNum hpLock" font-size="8">🔒</text>
         <text v-else-if="tv.p.id === 0" x="0" y="-12.5" text-anchor="middle" class="hpNum" font-size="8">❤{{ tv.p.hp }}</text>
       </g>
     </g>
@@ -386,17 +396,50 @@ const dogViews = computed(() =>
 .tk {
   transition: transform 0.13s linear;
 }
-.tk.glow .tkMain {
-  animation: tkGlow 0.55s ease-in-out 2;
+/* 三档脉冲（M3-T1，G-10/11/12；动效红线=T5-05：仅 CSS animation、时长 ≤300ms 单周期）：
+   normal=金描边（自己踩事件/陷阱、打道具落地）／target=红脉冲（被指认型效果命中，视觉重一级）／
+   big=年兽级大事件（更粗更红，沿用既有 big 事实） */
+.tk.lit-normal .tkMain {
+  animation: tkGlowNormal 0.28s ease-in-out 3;
   stroke: #ffd54f;
 }
-@keyframes tkGlow {
+@keyframes tkGlowNormal {
   0%,
   100% {
     stroke-width: 2;
   }
   50% {
-    stroke-width: 6;
+    stroke-width: 5;
+  }
+}
+.tk.lit-target .tkMain {
+  animation: tkGlowTarget 0.26s ease-in-out 4;
+  stroke: #ef5350;
+}
+@keyframes tkGlowTarget {
+  0%,
+  100% {
+    stroke-width: 2;
+    stroke: #ef5350;
+  }
+  50% {
+    stroke-width: 7;
+    stroke: #ff1744;
+  }
+}
+.tk.lit-big .tkMain {
+  animation: tkGlowBig 0.28s ease-in-out 5;
+  stroke: #ff5722;
+}
+@keyframes tkGlowBig {
+  0%,
+  100% {
+    stroke-width: 2.5;
+    stroke: #ff5722;
+  }
+  50% {
+    stroke-width: 9;
+    stroke: #d50000;
   }
 }
 .tokenLbl {
@@ -426,6 +469,10 @@ const dogViews = computed(() =>
 }
 .hpNum.hpDead {
   fill: #e57373;
+}
+/* 罚停锁标（G-12）：与死亡灰化＋☠ 区分——金色小锁，棋子本身不变暗 */
+.hpNum.hpLock {
+  fill: #ffd54f;
 }
 /* 世界恶意（#24 T6a）：木头预警阴影呼吸描边；滚石=虚线路径流动两拍回放（dashoffset 前爬一周期×2，之后静止）；
    塌陷凹皮静态。三类都只承载演出，不抢棋盘点击。 */
