@@ -9,6 +9,7 @@
 import { computed, nextTick, ref, watch } from "vue";
 import type { MessageEntry, MessageKind } from "../../../kernel/src";
 import { gameStore } from "../game/store";
+import { cardFaceOf } from "../game/cardFace";
 import BaseSheet from "./BaseSheet.vue";
 
 const KIND_ICONS: Record<MessageKind, string> = {
@@ -86,6 +87,25 @@ function toggleFlavor(m: MessageEntry): void {
   flavorOpen.value = s;
 }
 
+// ---------- 条目就地展开大卡面（M3-T7 → #59 / G-08）----------
+// 数据源=game/cardFace 的 flavor 索引（三池共 55 张 flavor 唯一）；点一下展开、再点收起，
+// 不跳页不关抽屉。查不到卡面的条目（系统/摘要/群伤播报）仍走原来的单行 flavor。
+const facesOpen = ref<Set<number>>(new Set());
+function faceOf(m: MessageEntry) {
+  return cardFaceOf(m.flavor);
+}
+function toggleFace(m: MessageEntry): void {
+  const face = faceOf(m);
+  if (!face) {
+    toggleFlavor(m); // 无卡面：退回单行 flavor
+    return;
+  }
+  const s = new Set(facesOpen.value);
+  if (s.has(m.id)) s.delete(m.id);
+  else s.add(m.id);
+  facesOpen.value = s;
+}
+
 const listEl = ref<HTMLElement | null>(null);
 
 // ---------- 溯源跳转（T8b2）：结算页找战犯/回看战报——开抽屉定位到指定条目 ----------
@@ -143,6 +163,7 @@ watch(
     raised.value = false;
     pendingJump.value = undefined;
     flavorOpen.value = new Set();
+    facesOpen.value = new Set();
     limit.value = 50;
   },
 );
@@ -173,13 +194,33 @@ function closeDrawer(): void {
             <div v-if="m.kind === 'summary'" class="turnLine">{{ body(m) }}</div>
             <template v-else>
               <div v-if="isTurnHead(m, i)" class="turnLine">📜 ── 回合 {{ m.turn }} ──</div>
-              <div class="drow" :class="[`e-${m.emphasis}`, { flash: m.id === flashId }]" :data-mid="m.id" @click="toggleFlavor(m)">
+              <div class="drow" :class="[`e-${m.emphasis}`, { flash: m.id === flashId }]" :data-mid="m.id" @click="toggleFace(m)">
                 <div class="rowMain">
                   <span class="ic">{{ KIND_ICONS[m.kind] }}</span>
                   <span v-if="chip(m)" class="who">{{ chip(m) }}</span>
                   <span class="txt">{{ body(m) }}</span>
+                  <span v-if="faceOf(m)" class="faceHint">{{ facesOpen.has(m.id) ? "▾" : "▸" }}</span>
                 </div>
-                <div v-if="m.flavor && flavorOpen.has(m.id)" class="flavor">{{ m.flavor }}</div>
+                <!-- 就地展开大卡面（#59 / G-08）：叙事皮＋效果＋选项；再点收起，不跳页不关抽屉 -->
+                <div v-if="faceOf(m) && facesOpen.has(m.id)" class="faceCard">
+                  <div class="fcHead">
+                    <span class="fcPool">{{ faceOf(m)!.pool === "event" ? "🃏 事件" : faceOf(m)!.pool === "item" ? "🎁 道具" : "⚠️ 陷阱" }}</span>
+                    <b class="fcTitle">{{ faceOf(m)!.title }}</b>
+                    <span v-if="faceOf(m)!.routeLabel" class="fcRoute">{{ faceOf(m)!.routeLabel }}</span>
+                  </div>
+                  <p class="fcFlavor">{{ faceOf(m)!.flavor }}</p>
+                  <ul v-if="faceOf(m)!.effects.length" class="fcFx">
+                    <li v-for="(fx, i) in faceOf(m)!.effects" :key="i">{{ fx }}</li>
+                  </ul>
+                  <div v-if="faceOf(m)!.options.length" class="fcOpts">
+                    <div v-for="(o, i) in faceOf(m)!.options" :key="i" class="fcOpt">
+                      <b>{{ o.label }}</b>
+                      <span>{{ o.effects.join("、") || "无事" }}</span>
+                    </div>
+                  </div>
+                </div>
+                <!-- 无卡面条目的单行 flavor（系统/摘要类） -->
+                <div v-else-if="m.flavor && flavorOpen.has(m.id)" class="flavor">{{ m.flavor }}</div>
               </div>
             </template>
           </template>
@@ -335,6 +376,92 @@ function closeDrawer(): void {
   font-size: 11px;
   font-style: italic;
   color: #90a4ae;
+}
+/* 条目可展开提示（#59）：右侧小三角，告诉玩家这条点得开 */
+.faceHint {
+  flex: 0 0 auto;
+  margin-left: auto;
+  padding-left: 6px;
+  font-size: 10px;
+  color: #78909c;
+}
+/* 就地展开的大卡面（#59 / G-08）：抽屉内的次级卡面，不切页不关抽屉 */
+.faceCard {
+  margin: 5px 0 6px 21px;
+  padding: 9px 11px;
+  background: linear-gradient(165deg, #2c3e4d, #263238);
+  border: 1.5px solid #ffab40;
+  border-radius: 12px;
+  animation: faceIn 0.18s ease-out;
+}
+@keyframes faceIn {
+  from {
+    opacity: 0;
+    transform: translateY(-3px);
+  }
+}
+.fcHead {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.fcPool {
+  font-size: 9.5px;
+  font-weight: 800;
+  color: #ffcc80;
+  letter-spacing: 0.4px;
+}
+.fcTitle {
+  font-size: 13.5px;
+  color: #ffe0b2;
+}
+.fcRoute {
+  font-size: 9.5px;
+  color: #90a4ae;
+  border: 1px solid #455a64;
+  border-radius: 999px;
+  padding: 1px 7px;
+}
+.fcFlavor {
+  margin: 5px 0 0;
+  font-size: 11px;
+  font-style: italic;
+  line-height: 1.55;
+  color: #b0bec5;
+}
+.fcFx {
+  margin: 6px 0 0;
+  padding-left: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.fcFx li {
+  font-size: 11px;
+  color: #ffcc80;
+}
+.fcOpts {
+  margin-top: 7px;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+.fcOpt {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  border: 1px solid #546e7a;
+  border-radius: 8px;
+  padding: 5px 8px;
+}
+.fcOpt b {
+  font-size: 11.5px;
+  color: #eceff1;
+}
+.fcOpt span {
+  font-size: 10.5px;
+  color: #ffcc80;
 }
 .empty,
 .moreHint {

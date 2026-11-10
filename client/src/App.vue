@@ -64,7 +64,7 @@ const toast = computed(() => gameStore.toast.value);
   <RoomLobby v-else-if="view === 'room' && !gamePageOn" />
   <div v-else class="gamePage">
     <HudBar />
-    <!-- 观战横幅（M3-T5 → #57 / G-06）：血尽出局后棋盘顶部明确告知「你在观战」，不是卡住 */
+    <!-- 观战横幅（M3-T5 → #57 / G-06）：血尽出局后棋盘顶部明确告知「你在观战」，不是卡住 -->
     <div v-if="spectating" class="spectateBanner">
       ☠ 观战中——你已血尽出局，可看棋盘与战报，🎯/📖/⚙ 仍可用
     </div>
