@@ -290,6 +290,8 @@ const detail = computed(() => roleOf(detailRole.value));
       <button v-if="amHost" class="danger" type="button" @click="roomStore.dissolve()">💥 解散房间</button>
       <!-- 对局中（playing）服务端封禁离席（名册 boot 定死）；断线治理=自动重连归队（M2-T8）——别出假按钮 -->
       <button v-if="!inPlay" class="ghost" type="button" @click="roomStore.leave()">🚪 离房</button>
+      <!-- 规则速查/引导重看入口（M3-T4 → #56 / G-05） -->
+      <button v-if="!inPlay" class="ghost" type="button" @click="gameStore.openGuide()">📖 规则速查</button>
     </div>
     <p v-if="inPlay" class="hint">对局中不可离席；掉线后自动重连归队，棋子由系统暂管（超时替掷）。房主可请出座位。</p>
       <p v-if="amHost && !inPlay && seats.length < 2" class="hint">至少 2 人才能开局——人不够可先加假人。</p>

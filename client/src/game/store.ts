@@ -43,6 +43,8 @@ class GameStore {
   targeting = ref<string | null>(null);
   /** 战报抽屉开启请求（T8b2）： Settlement 页跳转/回看用——计数器，WorldMessage watch 它开抽屉 */
   reportReq = ref(0);
+  /** 规则速查重看请求（M3-T4）：计数器，GuideSheet watch 它重开引导（大厅页脚/帮助浮层入口） */
+  guideReq = ref(0);
   /** 跳转定位的目标条目 id（null=只开抽屉不定位）；抽屉关闭时清回 null */
   reportJump = ref<number | null>(null);
   /** 上一次开局的配置与名册快照（T8b2 再来一局：全套配置保留、只换种子） */
@@ -147,6 +149,11 @@ class GameStore {
   openReport(at?: number): void {
     this.reportJump.value = at ?? null;
     this.reportReq.value++;
+  }
+
+  /** 规则速查/引导重看（M3-T4）：大厅页脚与帮助浮层的同一入口——不受「已看过」闸限制 */
+  openGuide(): void {
+    this.guideReq.value++;
   }
 
   /** 源时钟透传（单机=本地冻结钟；联机=服务端钟插值）。未开局=0 */

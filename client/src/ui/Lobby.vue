@@ -106,6 +106,8 @@ function start(): void {
 
     <footer class="foot">
       <button class="start" type="button" @click="start">🎴 抽暗牌 · 开始</button>
+      <!-- 规则速查/引导重看入口（M3-T4 → #56 / G-05：「重看入口在大厅页脚📖 规则速查」） -->
+      <button class="guideLink" type="button" @click="gameStore.openGuide()">📖 规则速查</button>
     </footer>
 
     <!-- 角色详情弹层（浮层原则：查看类不切页） -->
@@ -270,6 +272,18 @@ function start(): void {
   font-weight: 800;
   padding: 14px;
   box-shadow: 0 3px 10px rgba(183, 28, 28, 0.45);
+}
+/* 规则速查重看入口（M3-T4）：页脚次级链接，不抢开始钮 */
+.guideLink {
+  width: 100%;
+  margin-top: 7px;
+  border: 1px solid #455a64;
+  background: transparent;
+  color: #90a4ae;
+  border-radius: 12px;
+  padding: 9px;
+  font-size: 12px;
+  font-weight: 700;
 }
 .sheetBody .sub {
   font-size: 11.5px;

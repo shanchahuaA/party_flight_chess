@@ -19,6 +19,7 @@ import RouteBar from "./ui/RouteBar.vue";
 import SecretDraft from "./ui/SecretDraft.vue";
 import CardChoice from "./ui/CardChoice.vue";
 import Settlement from "./ui/Settlement.vue";
+import GuideSheet from "./ui/GuideSheet.vue";
 import RecBar from "./ui/RecBar.vue";
 import { gameStore } from "./game/store";
 import { recLog } from "./net/recLog";
@@ -68,6 +69,8 @@ const toast = computed(() => gameStore.toast.value);
     <Dock />
     <SecretDraft />
     <CardChoice />
+    <!-- 首次引导（M3-T4 → #56 / G-05）：自包含浮层，自动判据在组件内（第一局第一窗掷骰前） -->
+    <GuideSheet />
     <Settlement />
     <!-- 联机对局面角落（M2-T8）：对局中 leave 服务端仍封禁（名册 boot 定死）；掉线治理=自动重连
          归队（棋子由系统暂时接管），纸面常识一句——房主解散保有，低调完备 -->
