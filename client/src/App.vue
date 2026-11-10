@@ -19,10 +19,15 @@ import RouteBar from "./ui/RouteBar.vue";
 import SecretDraft from "./ui/SecretDraft.vue";
 import CardChoice from "./ui/CardChoice.vue";
 import Settlement from "./ui/Settlement.vue";
+import GuideSheet from "./ui/GuideSheet.vue";
+import RecBar from "./ui/RecBar.vue";
 import { gameStore } from "./game/store";
+import { recLog } from "./net/recLog";
 
 const view = computed(() => roomStore.view.value);
 const started = computed(() => !!gameStore.source.value);
+/** 测试记录器开闸（?rec=1；与 ?dev=1 互不依赖、可共存） */
+const recOn = recLog.on;
 
 /** 房间页的对局画面开闸（M2-T6）：phase=playing 且源活着且有对局面。drafting 期留在大厅
  *  （暗牌浮层内嵌那里）；state over（结算）先到=仍在 gamePage 上展出 Settlement（intermission
@@ -34,6 +39,9 @@ const roomInGame = computed(() => {
   return !!snap && snap.phase === "playing" && !!s && s.phase !== "drafting";
 });
 const gamePageOn = computed(() => (view.value === "home" && started.value) || roomInGame.value);
+/** 观战形态（M3-T5 → #57 / G-06）：自己血尽出局——顶部横幅 + dock 整块消失（不是灰化留位）。
+ *  暗牌/帮助/设置三钮仍留在 HUD（淘汰不免除已达成的事实与查看需求）。 */
+const spectating = computed(() => !!gameStore.state.value?.players[0]?.dead);
 /** gamePage 角落（联机面）：房主解散钮可见判据 */
 const amHost = computed(() => roomStore.snapshot.value?.hostSeat === roomStore.mySeat.value);
 const roomToast = computed(() => roomStore.toast.value);
@@ -56,15 +64,19 @@ const toast = computed(() => gameStore.toast.value);
   <RoomLobby v-else-if="view === 'room' && !gamePageOn" />
   <div v-else class="gamePage">
     <HudBar />
+    <!-- 观战横幅（M3-T5 → #57 / G-06）：血尽出局后棋盘顶部明确告知「你在观战」，不是卡住 -->
+    <div v-if="spectating" class="spectateBanner">
+      ☠ 观战中——你已血尽出局，可看棋盘与战报，🎯/📖/⚙ 仍可用
+    </div>
     <WorldMessage />
     <main class="boardWrap">
       <BoardSvg />
     </main>
     <RouteBar />
-    <Dock />
+    <!-- dock 整块消失（不是灰化留位）+ 手牌消失：观战者不占地盘，棋盘更宽 -->
+    <Dock v-if="!spectating" />
     <SecretDraft />
     <CardChoice />
-    <Settlement />
     <!-- 联机对局面角落（M2-T8）：对局中 leave 服务端仍封禁（名册 boot 定死）；掉线治理=自动重连
          归队（棋子由系统暂时接管），纸面常识一句——房主解散保有，低调完备 -->
     <div v-if="view === 'room'" class="roomBar">
@@ -73,6 +85,16 @@ const toast = computed(() => gameStore.toast.value);
     </div>
     <div v-if="toast" class="toast">{{ toast }}</div>
   </div>
+  <!-- 结算页（M3-T10 → #62 / S-01）：**挂在 gamePage 之外**——联机下服务端一翻 intermission
+       整块 gamePage 就被卸载，结算页若住里面就跟着消失（这正是原来「闪一两帧」的一半原因）。
+       它自己判可见性：单机看 state.phase=over，联机看 lastSettlement 缓存。 -->
+  <Settlement />
+  <!-- 战报抽屉（M3-T9 → #61）与首次引导（M3-T4 → #56）同样必须活在 gamePage 之外：
+       - 结算页的「战报 #N」溯源要开抽屉，而结算页只在 gamePage 卸掉之后才成为主舞台；
+       - 大厅页脚的「📖 规则速查」在大厅页点击，那时 gamePage 根本没渲染。
+       两者都是自包含浮层（自己判可见性），放这一层不占布局。 -->
+  <WorldMessage />
+  <GuideSheet />
   <!-- 房间横幅（M2-T8 全局化）：重连中/重连失败面跟着房间视图走（大厅页与对局面同一个位置断——
        渲在 App 层两页共用，RoomLobby 内不再重画）。有 token=自动重连还在跑，横幅只是状态播报 -->
   <div v-if="view === 'room' && roomStore.banner.value" class="roomBanner">
@@ -84,6 +106,8 @@ const toast = computed(() => gameStore.toast.value);
   </div>
   <!-- 房间 toast 全局渲染：离房/解散/被顶都伴随视图切换，渲染在页组件里会被卸载吃掉 -->
   <div v-if="roomToast" class="toast">{{ roomToast }}</div>
+  <!-- 测试记录器悬浮条（M3 #51）：仅 ?rec=1 渲染——不带参数时这里连组件都不存在，零行为差异 -->
+  <RecBar v-if="recOn" />
 </template>
 
 <style scoped>
@@ -101,6 +125,20 @@ const toast = computed(() => gameStore.toast.value);
   justify-content: center;
   padding: 2px 6px;
   overflow: hidden;
+}
+/* 观战横幅（M3-T5 → #57 / G-06）：棋盘顶部、HUD 与战报带之间——低饱和暗金，不抢棋盘 */
+.spectateBanner {
+  flex: 0 0 auto;
+  margin: 3px 10px 0;
+  padding: 6px 10px;
+  background: rgba(74, 58, 18, 0.9);
+  border: 1px solid #ffb300;
+  border-radius: 10px;
+  color: #ffd54f;
+  font-size: 11.5px;
+  font-weight: 800;
+  text-align: center;
+  letter-spacing: 0.5px;
 }
 /* 联机对局角落（M2-T6）：安全阀占位小字+房主解散（低调，不抢戏） */
 .roomBar {

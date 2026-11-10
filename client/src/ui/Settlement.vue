@@ -12,19 +12,76 @@ export const MEDALS = ["🥇", "🥈", "🥉"];
 
 <script setup lang="ts">
 /**
- * 结算页简版（#28 T8b2，完全体在 M3）：局终（phase over 且 T8b1 结算已落账）整页浮层盖账。
- * 数据全自 T8b1 判定核（state.endgame.settlement = 战报 score 条目同源，禁另算）：
- * 五项分项透明+总分排名／我达成的称号亮牌（暗牌一并亮出）／群体失败盖章／
- * 找战犯聚合呈现+证据条目点击溯源跳进战报抽屉（WorldMessage 定位闪光）；再来一局=同配置换新种子重开。
+ * 结算页（#28 T8b2 起，M3-T10 #62 升格为**局间主舞台**）。
+ *
+ * 数据源两路共用同一呈现层（Spec #52 实现决策 6）：
+ * - 单机：`gameStore.state`（源一直在，phase=over 即可见）
+ * - 联机：`roomStore.lastSettlement` 缓存（enterIntermission 时摘账）——服务端一翻 intermission
+ *   就收对局壳，所以必须**先读缓存再收摊**，否则就是原来的「闪一两帧」。
+ *
+ * 形态要点（清单 S-01/05/06/08）：
+ * - 结算页**留在屏上**直到自己点「回大厅」或房主开下一局（不再一闪而过）
+ * - 动作区 sticky 吸底（8 人局 + 长找战犯也不用滚到底）
+ * - 房主可在结算页直接「⚙ 改配置」→ 复用大厅同一个 ConfigPanel →「🎴 开下一局」
+ * - 非房主见「等房主开下一局」＋当前配置摘要，无编辑钮
  */
-import { computed } from "vue";
+import { computed, reactive, ref, watch } from "vue";
 import { secretGoal } from "../../../kernel/src";
-import type { SettlementRow } from "../../../kernel/src";
+import type { SettlementResult, SettlementRow } from "../../../kernel/src";
+import type { LobbyConfig } from "../../../shared/protocol";
 import { gameStore } from "../game/store";
+import { roomStore } from "../net/roomStore";
+import {
+  configSummary,
+  DEFAULT_CONFIG_MODEL,
+  fromLobbyConfig,
+  toLobbyConfig,
+} from "../game/lobbyConfig";
+import BaseSheet from "./BaseSheet.vue";
+import ConfigPanel, { type ConfigModel } from "./ConfigPanel.vue";
 
-const state = computed(() => gameStore.state.value);
-const settlement = computed(() => state.value?.endgame?.settlement ?? null);
-const show = computed(() => state.value?.phase === "over" && !!settlement.value);
+/** 联机局面（view=room）：结算数据走 lastSettlement 缓存，动作走房间面 */
+const online = computed(() => roomStore.view.value === "room" && roomStore.code.value != null);
+const amHost = computed(() => roomStore.snapshot.value?.hostSeat === roomStore.mySeat.value);
+const roomPhase = computed(() => roomStore.snapshot.value?.phase ?? null);
+
+/** 单机数据源 */
+const soloState = computed(() => gameStore.state.value);
+const soloSettlement = computed(() => soloState.value?.endgame?.settlement ?? null);
+/** 联机数据源（缓存） */
+const cached = computed(() => roomStore.lastSettlement.value);
+
+/** 当前生效的结算账（两路收口到一份） */
+const settlement = computed<SettlementResult | null>(() => {
+  if (online.value) return cached.value?.settlement ?? null;
+  return soloSettlement.value;
+});
+/** 名单来源（名字/暗牌解析）：联机用缓存里的终局态，单机用当前态 */
+const roster = computed(() => (online.value ? (cached.value?.state ?? null) : soloState.value));
+
+/**
+ * 可见判据（#62 核心）：
+ * - 单机：phase=over 且有结算
+ * - 联机：**有缓存就显示**——即使房间已经翻 intermission、对局壳已收摊。
+ *   但用户点过「回大厅」后要让位（returnedLobby）。
+ */
+const returnedLobby = ref(false);
+const dismissed = ref(false);
+const show = computed(() => {
+  if (dismissed.value) return false;
+  if (!settlement.value) return false;
+  if (online.value) return !returnedLobby.value;
+  return soloState.value?.phase === "over";
+});
+
+// 换局/新局：回到未收起状态（新一局结束时要能再弹）
+watch(
+  () => [gameStore.source.value, roomStore.lastSettlement.value] as const,
+  () => {
+    returnedLobby.value = false;
+    dismissed.value = false;
+  },
+);
 
 /** 排名序：总分降序、同分按 pid（与内核战报登顶行同口径） */
 const ranked = computed<SettlementRow[]>(() => {
@@ -33,7 +90,7 @@ const ranked = computed<SettlementRow[]>(() => {
 });
 
 function name(pid: number): string {
-  return state.value?.players[pid]?.name ?? `玩家${pid}`;
+  return roster.value?.players[pid]?.name ?? `玩家${pid}`;
 }
 function isMe(pid: number): boolean {
   return pid === 0;
@@ -41,7 +98,7 @@ function isMe(pid: number): boolean {
 
 /** 暗牌亮牌：各人开局面选定的那条目标（对局中的保密口径到结算即揭） */
 function pickedGoal(row: SettlementRow) {
-  const p = state.value?.players[row.pid];
+  const p = roster.value?.players[row.pid];
   const pick = p?.secretPick;
   if (!p || pick == null) return null;
   return secretGoal(p.secretOptions[pick]!);
@@ -62,9 +119,52 @@ function reviewReport(): void {
 function restart(): void {
   gameStore.restart();
 }
+
+/** 回大厅（S-08）：
+ *  - 联机：只收起结算浮层——下面的 RoomLobby 局间形态才是「大厅」（它显示上一局摘要与
+ *    「回看战况」）。**绝不能调 backHome()**：那会断连并清掉 lastSettlement，大厅就成了空的。
+ *  - 单机：弃局收摊回单机大厅。 */
 function toLobby(): void {
+  if (online.value) {
+    returnedLobby.value = true;
+    return;
+  }
+  dismissed.value = true;
   gameStore.toLobby();
 }
+
+// ── 房主局间改配置（S-06）：复用大厅同一个 ConfigPanel ──
+const cfgOpen = ref(false);
+const cfg = reactive<ConfigModel>({ ...DEFAULT_CONFIG_MODEL });
+const roomCfg = computed<LobbyConfig | null>(() => roomStore.snapshot.value?.config ?? null);
+
+watch(
+  roomCfg,
+  (c) => {
+    if (!c) return;
+    // 房主弹窗开着=编辑中，别被广播回拉
+    if (amHost.value && cfgOpen.value) return;
+    Object.assign(cfg, fromLobbyConfig(c));
+  },
+  { immediate: true },
+);
+
+function openCfg(): void {
+  const c = roomCfg.value;
+  if (c) Object.assign(cfg, fromLobbyConfig(c));
+  cfgOpen.value = true;
+}
+/** 面板落定沿 → 上行 setConfig（服务端 lobbyGate 在 intermission 放行） */
+function sendCfg(): void {
+  if (!amHost.value) return;
+  roomStore.setConfig(toLobbyConfig(cfg));
+}
+/** 开下一局（S-06）：房主专属；服务端 start 在 intermission 同闸放行 */
+function startNext(): void {
+  roomStore.startGame();
+  returnedLobby.value = true; // 对局面接管，结算页退场
+}
+const summary = computed(() => configSummary(roomCfg.value));
 </script>
 
 <template>
@@ -87,6 +187,7 @@ function toLobby(): void {
           :key="r.pid"
           class="row"
           :class="{ me: isMe(r.pid) }"
+          :style="{ animationDelay: `${Math.min(i, 8) * 40}ms` }"
         >
           <div class="rankLine">
             <span class="medal">{{ MEDALS[i] ?? `#${i + 1}` }}</span>
@@ -141,14 +242,41 @@ function toLobby(): void {
         </div>
       </section>
 
+      <!-- 动作区吸底（S-05）：8 人局 + 长找战犯也不用滚到底 -->
       <footer class="acts">
-        <button class="again" type="button" @click="restart">🔄 再来一局</button>
-        <div class="actsRow">
-          <button class="ghost" type="button" @click="reviewReport">📜 回看战报</button>
-          <button class="ghost" type="button" @click="toLobby">⚙️ 回大厅调配置</button>
-        </div>
+        <template v-if="online">
+          <!-- 联机（S-06/S-08）：房主可改配置开下一局；非房主只见等待与摘要 -->
+          <div class="onlineRow">
+            <button v-if="amHost" class="cfgBtn" type="button" @click="openCfg">⚙ 改配置</button>
+            <button v-if="amHost" class="again" type="button" @click="startNext">🎴 开下一局</button>
+            <p v-else class="waitHost">等房主开下一局</p>
+          </div>
+          <p class="cfgLine">当前配置：{{ summary }}</p>
+          <div class="actsRow">
+            <button class="ghost" type="button" @click="reviewReport">📜 回看战报</button>
+            <button class="ghost" type="button" @click="toLobby">🏠 回大厅</button>
+          </div>
+        </template>
+        <template v-else>
+          <!-- 单机（S-07 回归）：再来一局按上局配置换新种子直开 -->
+          <button class="again" type="button" @click="restart">🔄 再来一局</button>
+          <div class="actsRow">
+            <button class="ghost" type="button" @click="reviewReport">📜 回看战报</button>
+            <button class="ghost" type="button" @click="toLobby">🏠 回大厅</button>
+          </div>
+        </template>
       </footer>
     </div>
+
+    <!-- 房主局间改配置（S-06）：与大厅同一个 ConfigPanel，不复制版式 -->
+    <BaseSheet v-if="cfgOpen" @close="cfgOpen = false">
+      <div class="cfgSheet">
+        <h3 class="sheetTitle">⚙️ 局间改配置（房主）</h3>
+        <p class="hint">改完点「🎴 开下一局」让全员进新局；数值在开局后冻结。</p>
+        <ConfigPanel :model="cfg" :readonly="false" @change="sendCfg()" />
+        <button class="close" type="button" @click="cfgOpen = false">收 起</button>
+      </div>
+    </BaseSheet>
   </div>
 </template>
 
@@ -159,7 +287,7 @@ function toLobby(): void {
   z-index: 120; /* 压过 dock/战报带（90 档抽屉可再抬到 130 之上溯源） */
   background: rgba(16, 24, 32, 0.96);
   overflow-y: auto;
-  padding: calc(16px + env(safe-area-inset-top)) 12px calc(20px + env(safe-area-inset-bottom));
+  padding: calc(16px + env(safe-area-inset-top)) 12px 0;
 }
 .panel {
   max-width: 560px;
@@ -167,6 +295,8 @@ function toLobby(): void {
   display: flex;
   flex-direction: column;
   gap: 12px;
+  /* 动作区吸底留出的空间（避免最后一行被吸底条盖住） */
+  padding-bottom: calc(112px + env(safe-area-inset-bottom));
 }
 .head {
   position: relative;
@@ -224,11 +354,19 @@ function toLobby(): void {
   flex-direction: column;
   gap: 8px;
 }
+/* 结算名次逐行淡入（动效红线第 ③ 处：仅 CSS，≤300ms） */
 .row {
   background: rgba(255, 255, 255, 0.06);
   border: 1px solid rgba(176, 190, 197, 0.25);
   border-radius: 14px;
   padding: 9px 11px;
+  animation: rowIn 0.26s ease-out both;
+}
+@keyframes rowIn {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
 }
 .row.me {
   border-color: #ef5350;
@@ -406,14 +544,55 @@ function toLobby(): void {
   padding: 2px 9px;
   text-decoration: underline dotted;
 }
+/* 动作区吸底（S-05）：常驻屏底，内容滚动不影响可点 */
 .acts {
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 2;
+  background: linear-gradient(to top, rgba(16, 24, 32, 0.99) 62%, rgba(16, 24, 32, 0));
+  padding: 10px 12px calc(10px + env(safe-area-inset-bottom));
   display: flex;
   flex-direction: column;
+  gap: 7px;
+  max-width: 560px;
+  margin: 0 auto;
+  box-sizing: border-box;
+}
+.onlineRow {
+  display: flex;
   gap: 8px;
-  padding-bottom: 4px;
+  align-items: center;
+}
+.cfgBtn {
+  flex: 0 0 auto;
+  border: 1px solid #455a64;
+  background: #263238;
+  color: #cfd8dc;
+  border-radius: 12px;
+  padding: 12px 14px;
+  font-size: 12.5px;
+  font-weight: 700;
+}
+.waitHost {
+  flex: 1;
+  margin: 0;
+  text-align: center;
+  font-size: 12.5px;
+  color: #90a4ae;
+  padding: 12px;
+  border: 1px dashed #455a64;
+  border-radius: 12px;
+}
+.cfgLine {
+  margin: 0;
+  text-align: center;
+  font-size: 10.5px;
+  color: #78909c;
 }
 .again {
-  width: 100%;
+  flex: 1;
   border: 0;
   border-radius: 14px;
   background: #b71c1c;
@@ -435,6 +614,30 @@ function toLobby(): void {
   border-radius: 12px;
   padding: 10px;
   font-size: 12.5px;
+  font-weight: 700;
+}
+/* 局间配置 sheet（与大厅同一套 ConfigPanel） */
+.cfgSheet {
+  color: #eceff1;
+}
+.sheetTitle {
+  margin: 0 0 4px;
+  font-size: 15px;
+}
+.cfgSheet .hint {
+  font-size: 11px;
+  color: #90a4ae;
+  margin: 0 0 8px;
+}
+.close {
+  margin-top: 12px;
+  width: 100%;
+  border: 1px solid #455a64;
+  background: #263238;
+  color: #cfd8dc;
+  border-radius: 12px;
+  padding: 10px;
+  font-size: 13px;
   font-weight: 700;
 }
 </style>

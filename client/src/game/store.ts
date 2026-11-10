@@ -8,8 +8,10 @@
  */
 import { reactive, ref, shallowRef, watch } from "vue";
 import { BOARD } from "../../../kernel/src";
-import type { Fact, GameConfig, GameState, Intent, PlayerDef } from "../../../kernel/src";
+import type { Fact, GameConfig, GameState, Intent, MessageEntry, PlayerDef } from "../../../kernel/src";
+import type { MsgBatch } from "../../../shared/protocol";
 import { LocalKernelSource, type GameSource } from "./source";
+import { deriveHighlights, derivePulses, deriveSounds, PULSE_RANK, type CueView, type SfxName } from "./cues";
 
 /** 新随机种子（单机局默认换新种子——内核默认种子留给测试）：三处同形表达式的单一来源 */
 export function newSeed(): number {
@@ -39,11 +41,30 @@ class GameStore {
   targeting = ref<string | null>(null);
   /** 战报抽屉开启请求（T8b2）： Settlement 页跳转/回看用——计数器，WorldMessage watch 它开抽屉 */
   reportReq = ref(0);
+  /** 规则速查重看请求（M3-T4）：计数器，GuideSheet watch 它重开引导（大厅页脚/帮助浮层入口） */
+  guideReq = ref(0);
   /** 跳转定位的目标条目 id（null=只开抽屉不定位）；抽屉关闭时清回 null */
   reportJump = ref<number | null>(null);
   /** 上一次开局的配置与名册快照（T8b2 再来一局：全套配置保留、只换种子） */
   private lastBoot: { config: Partial<GameConfig>; defs: PlayerDef[] } | null = null;
   private toastSeq = 0;
+  /** 判定模块已见基线（M3-T1）：首帧全量建立一次，之后只认增量 */
+  private cuePrimed = false;
+  /** 上一拍的行动者（轮到自己=沿变化） */
+  private lastTurnActor: number | null = null;
+
+  /** 已消费的最大战报条目 id（M3-T1 判定模块：增量判据——高亮/脉冲都只认 id 更大的条目） */
+  private seenMaxMsgId = 0;
+  /** 本批新增的条目 id（G-09 高亮数据源；T8 消费，组件不许自己再判） */
+  freshMsgIds = ref<number[]>([]);
+  /** 本批判定出的音效（A-01；T2 播放器消费） */
+  freshSfx = ref<SfxName[]>([]);
+  /**
+   * 联机累积战报流（M3-T9 → #61 / 清单 T-02）：服务端「首次全量 + 后续增量」，
+   * 这里按 id 去重累积成完整本局战报。单机源不走它（state.messages 本来就是全量）。
+   * WorldMessage 抽屉在联机下读它，能翻到本局第一条。
+   */
+  msgLog = ref<MessageEntry[]>([]);
 
   /** 「轮到你了」提示的响应式解绑把手（换局/收摊要摘） */
   private stopTurnWatch: (() => void) | null = null;
@@ -121,12 +142,23 @@ class GameStore {
     this.toast.value = null;
     this.reportReq.value = 0;
     this.reportJump.value = null;
+    this.seenMaxMsgId = 0;
+    this.freshMsgIds.value = [];
+    this.freshSfx.value = [];
+    this.msgLog.value = [];
+    this.cuePrimed = false;
+    this.lastTurnActor = null;
   }
 
   /** 战报抽屉开启请求（T8b2）：at=定位到指定条目（找战犯溯源），缺省只开抽屉滚到最新 */
   openReport(at?: number): void {
     this.reportJump.value = at ?? null;
     this.reportReq.value++;
+  }
+
+  /** 规则速查/引导重看（M3-T4）：大厅页脚与帮助浮层的同一入口——不受「已看过」闸限制 */
+  openGuide(): void {
+    this.guideReq.value++;
   }
 
   /** 源时钟透传（单机=本地冻结钟；联机=服务端钟插值）。未开局=0 */
@@ -199,11 +231,19 @@ class GameStore {
   }
 
   /**
-   * 事实入壳语义层（演出收口）：棋子脉冲/掷面/淘汰观战/targeting 清账都在这单一通道里。
+   * 事实入壳语义层（演出收口，M3-T1 起判定口径统一收进 game/cues）：
+   * 脉冲档位/音效/新条目高亮三件事全经判定模块派生一次，组件只消费结果——组件不许自己再判。
    * 联机源（M2-T6）的 onFacts 也走这里（roomStore 的 SourceHandlers）——远端事实与单机内核
    * 事实同形状，pulse 亮牌/掷面/出局贴皮零成本复用（「演出不另起」）。
+   *
+   * M3-T9（#61）：联机源额外带 `batch`=本条下行消息的顶层 messages 与 msgMode 模式，
+   * 累积进 msgLog（首次全量 + 后续增量的完整流）。单机源不传（state.messages 本就是全量）。
    */
-  handle(facts: Fact[]): void {
+  handle(
+    facts: Fact[],
+    opts: { full?: boolean; batch?: MsgBatch } = {},
+  ): void {
+    const s = this.state.value;
     for (const f of facts) {
       switch (f.type) {
         case "roll":
@@ -223,22 +263,79 @@ class GameStore {
           if (f.pid === 0 && this.targeting.value) this.cancelTargeting();
           this.showToast(`☠ ${this.state.value?.players[f.pid]?.name ?? "有人"} 血尽出局——进入观战`);
           break;
-        case "pulse":
-          this.pulses[f.pid] = {
-            level: f.level,
-            until: performance.now() + (f.level === "big" ? 1_600 : 1_000),
-          };
-          break;
         default:
           break;
       }
     }
+    this.absorbBatch(opts.batch);
+    this.applyCues(facts, opts.full ?? false);
+  }
+
+  /**
+   * 联机战报累积（#61）：full=整段替换（重连/刷新/对齐的真相源），delta=按 id 追加去重。
+   * 单机不走这里——抽屉读 state.messages 即可。
+   */
+  private absorbBatch(batch?: MsgBatch): void {
+    if (!batch) return;
+    const incoming = batch.messages ?? [];
+    if (batch.msgMode === "full") {
+      this.msgLog.value = incoming;
+      return;
+    }
+    if (incoming.length === 0) return;
+    const seen = new Set(this.msgLog.value.map((m) => m.id));
+    const add = incoming.filter((m) => !seen.has(m.id));
+    if (add.length === 0) return;
+    this.msgLog.value = [...this.msgLog.value, ...add];
+  }
+
+  /** 判定模块唯一接线点：三张派生表算完，落进壳层可读的瞬时态 */
+  private applyCues(facts: Fact[], full: boolean): void {
+    const s = this.state.value;
+    if (!s) return;
+    // 战报增量：
+    // - 联机（有累积流）：本批之前未见过的条目 = msgLog 里 id > 基线 的（服务端 delta 已切好，这里再兜一道）
+    // - 单机：state.messages 是全量，取 id > 基线 的
+    const all = this.msgLog.value.length > 0 ? this.msgLog.value : (s.messages ?? []);
+    const seenMax = this.seenMaxMsgId;
+    const fresh = full && !this.cuePrimed ? all : all.filter((m) => m.id > seenMax);
+    const view: CueView = {
+      mePid: 0, // 服务端 rebase 后我恒 pid 0；单机同理（壳层既有约定）
+      phase: s.phase,
+      timerMode: (this.config?.timerMode ?? "world") as CueView["timerMode"],
+      turnActorBefore: this.lastTurnActor,
+      turnActorAfter: s.turnActor ?? null,
+      meDead: !!s.players[0]?.dead,
+    };
+    // 首帧全量虽然不高亮，但派生表（脉冲/音效）照常吃全量——初帧的年兽/结算音不该丢
+    const pulses = derivePulses({ facts, newMessages: fresh }, view.mePid);
+    const now = performance.now();
+    for (const [pidStr, level] of Object.entries(pulses)) {
+      const pid = Number(pidStr);
+      // 同 pid 已有更重的在亮：不降级覆盖（连续两批取值取最高）
+      const cur = this.pulses[pid];
+      if (cur && cur.until > now && PULSE_RANK[cur.level] > PULSE_RANK[level]) continue;
+      this.pulses[pid] = { level, until: now + (level === "big" ? 1_600 : 1_000) };
+    }
+    this.freshSfx.value = deriveSounds({ facts, newMessages: fresh }, view);
+    this.freshMsgIds.value = deriveHighlights(fresh, seenMax, full && !this.cuePrimed);
+    // 已见基线推到本批最大 id（全量与增量同一条规则）
+    for (const m of all) if (m.id > this.seenMaxMsgId) this.seenMaxMsgId = m.id;
+    this.cuePrimed = true;
+    this.lastTurnActor = s.turnActor ?? null;
   }
 
   /** 演出清理：过期的脉冲熄灭（读时算，无状态） */
   isLit(pid: number): "normal" | "target" | "big" | null {
     const lit = this.pulses[pid];
     return lit && lit.until > performance.now() ? lit.level : null;
+  }
+
+  /** 脉冲的熄灭时刻（亮着的起始批次标识）：同档连续触发时拿它当渲染 key，
+   *  强制 CSS 动画重播一次——否则 class 不变，第二次脉冲在视觉上不存在（code-review 修复轮） */
+  litKey(pid: number): number {
+    const lit = this.pulses[pid];
+    return lit && lit.until > performance.now() ? lit.until : 0;
   }
 
   dispose(): void {

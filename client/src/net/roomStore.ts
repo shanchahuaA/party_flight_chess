@@ -26,6 +26,7 @@
 import { ref } from "vue";
 import type {
   GameState,
+  MessageEntry,
   RoleId,
   SettlementResult,
 } from "../../../kernel/src";
@@ -33,6 +34,7 @@ import type { Downstream, LobbyConfig, RoomSnapshot, Upstream } from "../../../s
 import { ServerClock } from "./clock";
 import { bindDevSnapshot, gameStore } from "../game/store";
 import { RemoteRoomSource, type DownstreamGame } from "../game/remoteSource";
+import { recLog } from "./recLog";
 
 const TOKEN_KEY_PREFIX = "pfc.token.";
 const NICK_KEY = "pfc.nickname";
@@ -60,11 +62,15 @@ export type RoomView = "home" | "join" | "room";
 export type JoinMode = "create" | "join";
 
 /** 上一局终局缓存（局间回看，M2-T6）：intermission 首现时从灭源前的态里摘账——
- *  持当前收者视角（服务端 rebase=我恒 pid 0）的结算账+终局态快照（战报尾片+名册）。 */
+ *  持当前收者视角（服务端 rebase=我恒 pid 0）的结算账+终局态快照（战报尾片+名册）。
+ *  M3-T9（#61）追加 `msgLog`：完整战报流（首次全量+后续增量累积而成）——尾片只有 200 条，
+ *  局间「回看战况」要能翻到本局第一条。 */
 export interface LastSettlement {
   settlement: SettlementResult;
   /** 终局态（回看 sheet 的名字解析与文字流数据源；下一步开局提要会清空） */
   state: GameState;
+  /** 完整战报流（#61；空数组=旧缓存/单机无累积流，回看退回 state.messages 尾片） */
+  msgLog: MessageEntry[];
 }
 
 
@@ -511,6 +517,13 @@ class RoomStore {
   private handleDownstream(msg: Downstream): void {
     this.lastRecvPerf = performance.now(); // 静默计时刻（M2-T8：探针 silentMs=「重连中进入时机」断言口）
     this.armWatchdog(); // 每条下行都重新武装判死窗
+    // 测试记录器（#51，?rec=1 门控）：下行到站即刻落一条，零定时器、绝不改状态
+    recLog.setRoom(this.code.value);
+    recLog.capture(msg, {
+      serverNow: this.clock.serverNow(),
+      mySeat: this.mySeat.value,
+      ws: this.wsState.value,
+    });
     switch (msg.type) {
       case "room": {
         const prevPhase = this.snapshot.value?.phase ?? null;
@@ -592,9 +605,9 @@ class RoomStore {
       {
         // 状态引用先于事实入壳（#39 不变式，与单机 boot 同形）：源侧 feed 先替 src.state
         // 再调这里，此处先镜像壳层 state、后走 handle 的演出语义
-        onFacts: (facts) => {
+        onFacts: (facts, opts) => {
           if (gameStore.state.value !== src.state) gameStore.state.value = src.state;
-          gameStore.handle(facts);
+          gameStore.handle(facts, opts);
         },
         onStep: () => {
           gameStore.beat.value++;
@@ -625,8 +638,13 @@ class RoomStore {
   private enterIntermission(): void {
     const s = gameStore.state.value;
     if (s?.endgame?.settlement) {
-      // 服务端每条 game 消息已 rebase（我恒 pid 0）——缓存原样可回看
-      this.lastSettlement.value = { settlement: s.endgame.settlement, state: s };
+      // 服务端每条 game 消息已 rebase（我恒 pid 0）——缓存原样可回看。
+      // msgLog 一并摘账（#61）：累积流在 gameStore.dispose 后不可得，而局间回看要完整战报。
+      this.lastSettlement.value = {
+        settlement: s.endgame.settlement,
+        state: s,
+        msgLog: [...gameStore.msgLog.value],
+      };
     }
     gameStore.dispose(); // 源 stop→disposeHook 摘名；App 对局分支翻回 RoomLobby 局间真形
   }

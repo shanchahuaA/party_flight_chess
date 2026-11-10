@@ -32,6 +32,9 @@ const canRoll = computed(() => {
 const canStrike = computed(() => fight.value && !!me.value && strikeGate(state.value!, 0).ok);
 const rolled = computed(() => !!me.value?.rolled);
 const confirmed = computed(() => !!me.value?.confirmed);
+/** 罚停（G-12）：内核在开窗时把 rolled/confirmed 都置 true + skipped 标记——dock 文案要出
+ *  「本回合轮空」而不是「已确认 · 等待区」，两者语义完全不同（前者是惩罚、后者是自己点过） */
+const skipped = computed(() => !!me.value?.skipped && !dead.value);
 const done = computed(() => me.value?.zone === "done");
 
 const face = computed(() => gameStore.lastFace.value);
@@ -75,11 +78,12 @@ function confirm(): void {
       <button
         v-else
         id="confirmBtn"
-        :class="{ armed: (!!rolled || done) && !confirmed && !dead && myTurn, waited: confirmed, spectating: dead }"
+        :class="{ armed: (!!rolled || done) && !confirmed && !dead && myTurn, waited: confirmed && !skipped, spectating: dead, stun: skipped }"
         :disabled="!acting || confirmed || dead || (!rolled && !done) || !myTurn"
         @click="confirm"
       >
         <template v-if="dead">☠ 已出局 · 观战中</template>
+        <template v-else-if="skipped">😵 本回合轮空 · 罚停中</template>
         <template v-else-if="confirmed">⏳ 已确认 · 等待区</template>
         <template v-else-if="done">🏁 通关席 · 观局</template>
         <template v-else-if="!myTurn">☕ 轮到 {{ actorName }} · 稍候</template>
@@ -147,6 +151,12 @@ function confirm(): void {
 #confirmBtn.waited {
   background: #2b3640;
   color: #90a4ae;
+}
+/* 罚停轮空（G-12）：紫调警示块——与「已确认·等待区」灰、死亡黑都不同 */
+#confirmBtn.stun {
+  background: #4a3a12;
+  color: #ffd54f;
+  border: 1px solid #ffb300;
 }
 /* 观战态（T5c）：出局后按钮定格成一排灰—不干扰看戏（观战横幅在 M3） */
 #confirmBtn.spectating {

@@ -4,11 +4,15 @@
  * 最新 2 条常驻、新消息推入旧行下移；点带子展开全量战报抽屉（详情入口不能缺）。
  * 条目结构＝类型图标 · 谁 · 结果短语：主语按 who 渲染成名字 chip，文本只出现一次名
  * （实玩增补细则：「小黄 小黄」重复已定案为渲染层剥前缀）；抽屉起步渲染最近 50 条、上滑增量，
- * 回合号换行＝分节线（summary 类条目 T8 落地即自带文案），点条目展开 flavor（卡面叙事皮不进一行）。
+ * 回合号换行＝分节线（summary 类条目 T8 落地即自带文案），点条目就地展开大卡面（#59）。
+ *
+ * 战报数据源（M3-T9 → #61 / T-02）：**联机读累积流**（gameStore.msgLog，服务端首次全量+后续增量
+ * 累积而成，能翻到本局第一条）；单机读 state.messages（本就是全量）。两条源在此收口成一份。
  */
 import { computed, nextTick, ref, watch } from "vue";
 import type { MessageEntry, MessageKind } from "../../../kernel/src";
 import { gameStore } from "../game/store";
+import { cardFaceOf } from "../game/cardFace";
 import BaseSheet from "./BaseSheet.vue";
 
 const KIND_ICONS: Record<MessageKind, string> = {
@@ -22,7 +26,15 @@ const KIND_ICONS: Record<MessageKind, string> = {
   score: "📣",
 };
 
-const msgs = computed(() => gameStore.state.value?.messages ?? []);
+/** 战报数据源（#61）：联机=累积流 msgLog（全量+增量累积，可翻到本局第一条）；单机=state.messages */
+const msgs = computed(() => {
+  const log = gameStore.msgLog.value;
+  if (log.length > 0) return log;
+  return gameStore.state.value?.messages ?? [];
+});
+
+/** 让位带只在游戏页出现（有对局面）；抽屉与溯源跳转由 reportReq 驱动，任何页面都要能开 */
+const bandOn = computed(() => !!gameStore.state.value);
 
 /** 常驻两条：新消息推入顶部、旧行下移让位（倒序取尾部两条） */
 const band = computed(() => {
@@ -86,6 +98,25 @@ function toggleFlavor(m: MessageEntry): void {
   flavorOpen.value = s;
 }
 
+// ---------- 条目就地展开大卡面（M3-T7 → #59 / G-08）----------
+// 数据源=game/cardFace 的 flavor 索引（三池共 55 张 flavor 唯一）；点一下展开、再点收起，
+// 不跳页不关抽屉。查不到卡面的条目（系统/摘要/群伤播报）仍走原来的单行 flavor。
+const facesOpen = ref<Set<number>>(new Set());
+function faceOf(m: MessageEntry) {
+  return cardFaceOf(m.flavor);
+}
+function toggleFace(m: MessageEntry): void {
+  const face = faceOf(m);
+  if (!face) {
+    toggleFlavor(m); // 无卡面：退回单行 flavor
+    return;
+  }
+  const s = new Set(facesOpen.value);
+  if (s.has(m.id)) s.delete(m.id);
+  else s.add(m.id);
+  facesOpen.value = s;
+}
+
 const listEl = ref<HTMLElement | null>(null);
 
 // ---------- 溯源跳转（T8b2）：结算页找战犯/回看战报——开抽屉定位到指定条目 ----------
@@ -143,6 +174,7 @@ watch(
     raised.value = false;
     pendingJump.value = undefined;
     flavorOpen.value = new Set();
+    facesOpen.value = new Set();
     limit.value = 50;
   },
 );
@@ -155,7 +187,9 @@ function closeDrawer(): void {
 </script>
 
 <template>
-  <section class="worldMsg" title="点开全量战报" @click="drawer = true">
+  <!-- 两层结构：让位带只在游戏页出现（有对局面才占布局）；抽屉与溯源跳转任何时候都要能开——
+       结算页的「战报 #N」在 gamePage 卸掉之后才成为主舞台（M3-T9 #61 修复轮）。 -->
+  <section v-if="bandOn" class="worldMsg" title="点开全量战报" @click="drawer = true">
     <TransitionGroup name="ws" tag="div" class="rows">
       <div v-for="m in band" :key="m.id" class="row" :class="`e-${m.emphasis}`">
         <span class="ic">{{ KIND_ICONS[m.kind] }}</span>
@@ -163,9 +197,10 @@ function closeDrawer(): void {
         <span class="txt">{{ body(m) }}</span>
       </div>
     </TransitionGroup>
+  </section>
 
-    <!-- 全量战报抽屉（页内浮层，不路由切页）；raise=结算页溯源跳转时抬到结算页之上 -->
-    <BaseSheet v-if="drawer" :raise="raised" @close="closeDrawer">
+  <!-- 全量战报抽屉（页内浮层，不路由切页）；raise=结算页溯源跳转时抬到结算页之上 -->
+  <BaseSheet v-if="drawer" :raise="raised" @close="closeDrawer">
       <div class="drawerBox">
         <h3>📜 战报 <small>{{ msgs.length }} 条 · 点条目看卡面文案</small></h3>
         <div ref="listEl" class="list" @scroll="loadEarlier">
@@ -173,13 +208,33 @@ function closeDrawer(): void {
             <div v-if="m.kind === 'summary'" class="turnLine">{{ body(m) }}</div>
             <template v-else>
               <div v-if="isTurnHead(m, i)" class="turnLine">📜 ── 回合 {{ m.turn }} ──</div>
-              <div class="drow" :class="[`e-${m.emphasis}`, { flash: m.id === flashId }]" :data-mid="m.id" @click="toggleFlavor(m)">
+              <div class="drow" :class="[`e-${m.emphasis}`, { flash: m.id === flashId }]" :data-mid="m.id" @click="toggleFace(m)">
                 <div class="rowMain">
                   <span class="ic">{{ KIND_ICONS[m.kind] }}</span>
                   <span v-if="chip(m)" class="who">{{ chip(m) }}</span>
                   <span class="txt">{{ body(m) }}</span>
+                  <span v-if="faceOf(m)" class="faceHint">{{ facesOpen.has(m.id) ? "▾" : "▸" }}</span>
                 </div>
-                <div v-if="m.flavor && flavorOpen.has(m.id)" class="flavor">{{ m.flavor }}</div>
+                <!-- 就地展开大卡面（#59 / G-08）：叙事皮＋效果＋选项；再点收起，不跳页不关抽屉 -->
+                <div v-if="faceOf(m) && facesOpen.has(m.id)" class="faceCard">
+                  <div class="fcHead">
+                    <span class="fcPool">{{ faceOf(m)!.pool === "event" ? "🃏 事件" : faceOf(m)!.pool === "item" ? "🎁 道具" : "⚠️ 陷阱" }}</span>
+                    <b class="fcTitle">{{ faceOf(m)!.title }}</b>
+                    <span v-if="faceOf(m)!.routeLabel" class="fcRoute">{{ faceOf(m)!.routeLabel }}</span>
+                  </div>
+                  <p class="fcFlavor">{{ faceOf(m)!.flavor }}</p>
+                  <ul v-if="faceOf(m)!.effects.length" class="fcFx">
+                    <li v-for="(fx, i) in faceOf(m)!.effects" :key="i">{{ fx }}</li>
+                  </ul>
+                  <div v-if="faceOf(m)!.options.length" class="fcOpts">
+                    <div v-for="(o, i) in faceOf(m)!.options" :key="i" class="fcOpt">
+                      <b>{{ o.label }}</b>
+                      <span>{{ o.effects.join("、") || "无事" }}</span>
+                    </div>
+                  </div>
+                </div>
+                <!-- 无卡面条目的单行 flavor（系统/摘要类） -->
+                <div v-else-if="m.flavor && flavorOpen.has(m.id)" class="flavor">{{ m.flavor }}</div>
               </div>
             </template>
           </template>
@@ -189,7 +244,6 @@ function closeDrawer(): void {
         <button class="close" type="button" @click="closeDrawer">收 起</button>
       </div>
     </BaseSheet>
-  </section>
 </template>
 
 <style scoped>
@@ -335,6 +389,85 @@ function closeDrawer(): void {
   font-size: 11px;
   font-style: italic;
   color: #90a4ae;
+}
+/* 条目可展开提示（#59）：右侧小三角，告诉玩家这条点得开 */
+.faceHint {
+  flex: 0 0 auto;
+  margin-left: auto;
+  padding-left: 6px;
+  font-size: 10px;
+  color: #78909c;
+}
+/* 就地展开的大卡面（#59 / G-08）：抽屉内的次级卡面，不切页不关抽屉 */
+.faceCard {
+  margin: 5px 0 6px 21px;
+  padding: 9px 11px;
+  background: linear-gradient(165deg, #2c3e4d, #263238);
+  border: 1.5px solid #ffab40;
+  border-radius: 12px;
+}
+.fcHead {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.fcPool {
+  font-size: 9.5px;
+  font-weight: 800;
+  color: #ffcc80;
+  letter-spacing: 0.4px;
+}
+.fcTitle {
+  font-size: 13.5px;
+  color: #ffe0b2;
+}
+.fcRoute {
+  font-size: 9.5px;
+  color: #90a4ae;
+  border: 1px solid #455a64;
+  border-radius: 999px;
+  padding: 1px 7px;
+}
+.fcFlavor {
+  margin: 5px 0 0;
+  font-size: 11px;
+  font-style: italic;
+  line-height: 1.55;
+  color: #b0bec5;
+}
+.fcFx {
+  margin: 6px 0 0;
+  padding-left: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.fcFx li {
+  font-size: 11px;
+  color: #ffcc80;
+}
+.fcOpts {
+  margin-top: 7px;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+.fcOpt {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  border: 1px solid #546e7a;
+  border-radius: 8px;
+  padding: 5px 8px;
+}
+.fcOpt b {
+  font-size: 11.5px;
+  color: #eceff1;
+}
+.fcOpt span {
+  font-size: 10.5px;
+  color: #ffcc80;
 }
 .empty,
 .moreHint {

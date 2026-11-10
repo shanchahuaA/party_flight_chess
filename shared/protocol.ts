@@ -84,14 +84,35 @@ export interface RoomSnapshot {
   seats: RoomSeatView[];
 }
 
+/** 战报下发模式（M3-T9 #61）——两端唯一真源，禁止各自手写 "full"|"delta" 字面量。
+ *  full=本次带全量（连接首条/重连/Hibernation 恢复/对齐）；delta=只带本批新增。 */
+export type MsgMode = "full" | "delta";
+
+/** 下行 game 消息里战报批的形状（客户端累积器与骨架共用） */
+export interface MsgBatch {
+  messages: MessageEntry[];
+  msgMode: MsgMode;
+}
+
 /** 服务端 → 客户端 */
 export type Downstream =
   | { type: "room"; room: RoomSnapshot; you: number | null; now: number } // you=自己的座位号（null=观战/未落座，本票恒有座位）
   // 对局胖事实消息（M2-T5，#42；Spec #37 实现决策 3/4）：每条按收者逐人构建——
-  // facts=本批内核事实；messages=战报尾片（最后 200 条）；state=按收者视角重定基+裁剪后的
-  // 全量快照（整体覆盖零合并）。重定基=收者恒 pid 0（pid 引用全量改写）；裁剪硬约束=
-  // 他人手牌/暗牌/真货行/RNG 流（rngStates/seq/dogSeq/customsSeq）绝不下发。
-  | { type: "game"; now: number; facts: Fact[]; messages: MessageEntry[]; state: GameState }
+  // facts=本批内核事实；state=按收者视角重定基+裁剪后的全量快照（整体覆盖零合并）。重定基=收者恒
+  // pid 0（pid 引用全量改写）；裁剪硬约束=他人手牌/暗牌/真货行/RNG 流（rngStates/seq/dogSeq/customsSeq）
+  // 绝不下发。
+  // 战报（M3-T9 #61 / 清单 T-02）：`messages` 不再是「最后 200 条尾片」，而是
+  //   ① msgMode="full"：本连接首次下发（含重连/Hibernation 恢复/对齐）——带**全量**战报；
+  //   ② msgMode="delta"：后续每条只带**本批新增**条目（id 大于该连接已见最大值）。
+  // 客户端累积成完整流，抽屉能翻到本局第一条；state.messages 仍留一段尾片（壳层整体覆盖口径的兜底）。
+  | {
+      type: "game";
+      now: number;
+      facts: Fact[];
+      messages: MessageEntry[];
+      msgMode: MsgMode;
+      state: GameState;
+    }
   | { type: "replaced" } // 同 token 新连接顶掉旧连（双开防漂移）：旧连接收到即失效，以最新连接为准
   | { type: "kicked" } // 被房主请出（M2-T8，#45）：**单发**给被踢座位的那条连接、绝不广播——收者清本机 token 回首页；
   // 紧随其后连接被服务端以 4003 关闭；此后该 token 一律 403 拒升级（拉黑至房间销毁）
