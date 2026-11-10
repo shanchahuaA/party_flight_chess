@@ -79,7 +79,6 @@ const toast = computed(() => gameStore.toast.value);
     <CardChoice />
     <!-- 首次引导（M3-T4 → #56 / G-05）：自包含浮层，自动判据在组件内（第一局第一窗掷骰前） -->
     <GuideSheet />
-    <Settlement />
     <!-- 联机对局面角落（M2-T8）：对局中 leave 服务端仍封禁（名册 boot 定死）；掉线治理=自动重连
          归队（棋子由系统暂时接管），纸面常识一句——房主解散保有，低调完备 -->
     <div v-if="view === 'room'" class="roomBar">
@@ -88,6 +87,10 @@ const toast = computed(() => gameStore.toast.value);
     </div>
     <div v-if="toast" class="toast">{{ toast }}</div>
   </div>
+  <!-- 结算页（M3-T10 → #62 / S-01）：**挂在 gamePage 之外**——联机下服务端一翻 intermission
+       整块 gamePage 就被卸载，结算页若住里面就跟着消失（这正是原来「闪一两帧」的一半原因）。
+       它自己判可见性：单机看 state.phase=over，联机看 lastSettlement 缓存。 -->
+  <Settlement />
   <!-- 房间横幅（M2-T8 全局化）：重连中/重连失败面跟着房间视图走（大厅页与对局面同一个位置断——
        渲在 App 层两页共用，RoomLobby 内不再重画）。有 token=自动重连还在跑，横幅只是状态播报 -->
   <div v-if="view === 'room' && roomStore.banner.value" class="roomBanner">

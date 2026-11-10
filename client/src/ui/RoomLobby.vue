@@ -16,6 +16,12 @@ import type { MessageEntry, RoleDef, RoleId, SettlementRow } from "../../../kern
 import { MAX_BOTS, MAX_SEATS, type LobbyConfig } from "../../../shared/protocol";
 import { roomStore } from "../net/roomStore";
 import { gameStore } from "../game/store";
+import {
+  configSummary as configSummaryOf,
+  DEFAULT_CONFIG_MODEL,
+  fromLobbyConfig,
+  toLobbyConfig,
+} from "../game/lobbyConfig";
 import BaseSheet from "./BaseSheet.vue";
 import ConfigPanel, { type ConfigModel } from "./ConfigPanel.vue";
 import SecretDraft from "./SecretDraft.vue";
@@ -79,41 +85,9 @@ function goalAchieved(row: SettlementRow): boolean {
 /** 回看战报文字流数据源：终局态快照里的战报尾片（服务端尾片 200 条，终局收束章必含） */
 const reportMsgs = computed<MessageEntry[]>(() => lastSettle.value?.state.messages ?? []);
 
-// ── 配置弹窗：面板 model 与快照 config 双向对齐（秒↔毫秒换算住这里）──
+// ── 配置弹窗：面板 model 与快照 config 双向对齐（秒↔毫秒换算住 game/lobbyConfig，结算页同源复用）──
 const sheetOpen = ref(false);
-const cfg = reactive<ConfigModel>({
-  turnCap: 15,
-  maxHp: 10,
-  windowSeconds: 30,
-  restSeconds: 10,
-  timerMode: "world",
-  maliceLevel: "mild",
-  maliceEvery: 3,
-});
-
-function fromLobbyConfig(c: LobbyConfig): ConfigModel {
-  return {
-    turnCap: c.turnCap,
-    maxHp: c.maxHp,
-    windowSeconds: Math.round(c.windowMs / 1000),
-    restSeconds: Math.round(c.restMs / 1000),
-    timerMode: c.timerMode,
-    maliceLevel: c.maliceLevel,
-    maliceEvery: c.maliceEvery,
-  };
-}
-
-function toLobbyConfig(m: ConfigModel): LobbyConfig {
-  return {
-    turnCap: m.turnCap,
-    maxHp: m.maxHp,
-    windowMs: m.windowSeconds * 1000,
-    restMs: m.restSeconds * 1000,
-    timerMode: m.timerMode,
-    maliceLevel: m.maliceLevel,
-    maliceEvery: m.maliceEvery,
-  };
-}
+const cfg = reactive<ConfigModel>({ ...DEFAULT_CONFIG_MODEL });
 
 watch(
   () => snap.value?.config,
@@ -141,14 +115,7 @@ function sendConfig(): void {
   roomStore.setConfig(toLobbyConfig(cfg));
 }
 
-const configSummary = computed(() => {
-  const c = snap.value?.config;
-  if (!c) return "";
-  const mode = c.timerMode === "turn" ? "轮班·限时" : "世界·即时";
-  const malice =
-    c.maliceLevel === "off" ? "无恶意" : `恶意${c.maliceLevel === "mild" ? "温和" : "猛"}/每${c.maliceEvery}回合`;
-  return `${c.turnCap} 回合 · ${c.maxHp}❤ · ${Math.round(c.windowMs / 1000)}s 窗 · ${mode} · ${malice}`;
-});
+const configSummary = computed(() => configSummaryOf(snap.value?.config));
 
 // ── 角色详情浮层（查看类不切页）──
 const detailRole = ref<RoleId | null>(null);
