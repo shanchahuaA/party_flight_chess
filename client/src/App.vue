@@ -39,6 +39,9 @@ const roomInGame = computed(() => {
   return !!snap && snap.phase === "playing" && !!s && s.phase !== "drafting";
 });
 const gamePageOn = computed(() => (view.value === "home" && started.value) || roomInGame.value);
+/** 观战形态（M3-T5 → #57 / G-06）：自己血尽出局——顶部横幅 + dock 整块消失（不是灰化留位）。
+ *  暗牌/帮助/设置三钮仍留在 HUD（淘汰不免除已达成的事实与查看需求）。 */
+const spectating = computed(() => !!gameStore.state.value?.players[0]?.dead);
 /** gamePage 角落（联机面）：房主解散钮可见判据 */
 const amHost = computed(() => roomStore.snapshot.value?.hostSeat === roomStore.mySeat.value);
 const roomToast = computed(() => roomStore.toast.value);
@@ -61,12 +64,17 @@ const toast = computed(() => gameStore.toast.value);
   <RoomLobby v-else-if="view === 'room' && !gamePageOn" />
   <div v-else class="gamePage">
     <HudBar />
+    <!-- 观战横幅（M3-T5 → #57 / G-06）：血尽出局后棋盘顶部明确告知「你在观战」，不是卡住 */
+    <div v-if="spectating" class="spectateBanner">
+      ☠ 观战中——你已血尽出局，可看棋盘与战报，🎯/📖/⚙ 仍可用
+    </div>
     <WorldMessage />
     <main class="boardWrap">
       <BoardSvg />
     </main>
     <RouteBar />
-    <Dock />
+    <!-- dock 整块消失（不是灰化留位）+ 手牌消失：观战者不占地盘，棋盘更宽 -->
+    <Dock v-if="!spectating" />
     <SecretDraft />
     <CardChoice />
     <!-- 首次引导（M3-T4 → #56 / G-05）：自包含浮层，自动判据在组件内（第一局第一窗掷骰前） -->
@@ -110,6 +118,20 @@ const toast = computed(() => gameStore.toast.value);
   justify-content: center;
   padding: 2px 6px;
   overflow: hidden;
+}
+/* 观战横幅（M3-T5 → #57 / G-06）：棋盘顶部、HUD 与战报带之间——低饱和暗金，不抢棋盘 */
+.spectateBanner {
+  flex: 0 0 auto;
+  margin: 3px 10px 0;
+  padding: 6px 10px;
+  background: rgba(74, 58, 18, 0.9);
+  border: 1px solid #ffb300;
+  border-radius: 10px;
+  color: #ffd54f;
+  font-size: 11.5px;
+  font-weight: 800;
+  text-align: center;
+  letter-spacing: 0.5px;
 }
 /* 联机对局角落（M2-T6）：安全阀占位小字+房主解散（低调，不抢戏） */
 .roomBar {
