@@ -185,7 +185,7 @@ export function flavorUniquenessReport(): { total: number; dups: string[] } {
   return { total: seen.size, dups };
 }
 
-/** 按 id 直查（卡面内「同类卡」引用等将来用；现在也给测试留一个稳定入口） */
+/** 按 id 直查（测试用稳定入口：按池路由到正确数据表；战报侧走 cardFaceOf(flavor)） */
 export function cardFaceById(id: string): CardFace | null {
   const ev = EVENT_CARD_BY_ID.get(id);
   if (ev) return fromEvent(ev);

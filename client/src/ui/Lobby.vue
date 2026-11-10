@@ -13,17 +13,11 @@ import { gameStore, newSeed } from "../game/store";
 import { roomStore } from "../net/roomStore";
 import BaseSheet from "./BaseSheet.vue";
 import ConfigPanel, { type ConfigModel } from "./ConfigPanel.vue";
+import { DEFAULT_CONFIG_MODEL } from "../game/lobbyConfig";
 
 const botsN = ref(1);
-const cfg = reactive<ConfigModel>({
-  turnCap: 15,
-  maxHp: 10,
-  windowSeconds: 30,
-  restSeconds: 10,
-  timerMode: "world",
-  maliceLevel: "mild",
-  maliceEvery: 3,
-});
+/** 默认值与大厅/结算页共用同一份（game/lobbyConfig），不再各处手写字面量 */
+const cfg = reactive<ConfigModel>({ ...DEFAULT_CONFIG_MODEL });
 const humanRole = ref<RoleId>("light");
 const detailRole = ref<RoleId | null>(null);
 

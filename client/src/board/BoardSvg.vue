@@ -132,8 +132,11 @@ function tokenClass(id: number): string {
   return s.has(id) ? "tg legal" : "tg dim";
 }
 /** 脉冲档位（M3-T1 G-10/11/12）：normal 金描边、target 红脉冲、big 年兽级大事件——
- *  三档全由 gameStore 的判定模块（game/cues）派生，本组件只读档位、不再自己判 */
+ *  三档全由 gameStore 的判定模块（game/cues）派生，本组件只读档位、不再自己判。
+ *  `beat` 心跳是必要的响应式依赖：脉冲只有「亮到某个时间戳」这一份状态，没有它
+ *  过期后组件不会重渲，金描边/红脉冲会一直挂在棋子上（code-review 修复轮）。 */
 function pulseClass(id: number): string {
+  void gameStore.beat.value;
   const lv = gameStore.isLit(id);
   return lv ? `lit-${lv}` : "";
 }
@@ -345,7 +348,15 @@ const dogViews = computed(() =>
       <title v-if="tv.p.dead">☠ {{ tv.p.id === 0 ? "你已" : `${tv.p.name}已` }}出局——观战中（不再被指认）</title>
       <title v-else-if="tv.p.skipped">😵 {{ tv.p.id === 0 ? "你" : tv.p.name }}本回合罚停轮空</title>
       <circle v-if="tv.p.id === 0" r="11" fill="none" stroke="#90cbd8" stroke-width="1.5" stroke-dasharray="3 2.5" />
-      <circle class="tkMain" r="8.5" :fill="TOKEN_COLORS[tv.p.id]" stroke="#fff" stroke-width="2" />
+      <!-- key=脉冲批次：同档连续触发时重建这个圆，让 CSS animation 重播（外层 g 的走位过渡不受影响） -->
+      <circle
+        :key="`m${tv.p.id}-${gameStore.litKey(tv.p.id)}`"
+        class="tkMain"
+        r="8.5"
+        :fill="TOKEN_COLORS[tv.p.id]"
+        stroke="#fff"
+        stroke-width="2"
+      />
       <text class="tokenLbl" y="3.2" text-anchor="middle" font-size="9">
         {{ tv.p.id === 0 ? "你" : tv.p.name.replace("小", "") }}
       </text>

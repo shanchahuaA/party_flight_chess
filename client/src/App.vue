@@ -77,8 +77,6 @@ const toast = computed(() => gameStore.toast.value);
     <Dock v-if="!spectating" />
     <SecretDraft />
     <CardChoice />
-    <!-- 首次引导（M3-T4 → #56 / G-05）：自包含浮层，自动判据在组件内（第一局第一窗掷骰前） -->
-    <GuideSheet />
     <!-- 联机对局面角落（M2-T8）：对局中 leave 服务端仍封禁（名册 boot 定死）；掉线治理=自动重连
          归队（棋子由系统暂时接管），纸面常识一句——房主解散保有，低调完备 -->
     <div v-if="view === 'room'" class="roomBar">
@@ -91,6 +89,12 @@ const toast = computed(() => gameStore.toast.value);
        整块 gamePage 就被卸载，结算页若住里面就跟着消失（这正是原来「闪一两帧」的一半原因）。
        它自己判可见性：单机看 state.phase=over，联机看 lastSettlement 缓存。 -->
   <Settlement />
+  <!-- 战报抽屉（M3-T9 → #61）与首次引导（M3-T4 → #56）同样必须活在 gamePage 之外：
+       - 结算页的「战报 #N」溯源要开抽屉，而结算页只在 gamePage 卸掉之后才成为主舞台；
+       - 大厅页脚的「📖 规则速查」在大厅页点击，那时 gamePage 根本没渲染。
+       两者都是自包含浮层（自己判可见性），放这一层不占布局。 -->
+  <WorldMessage />
+  <GuideSheet />
   <!-- 房间横幅（M2-T8 全局化）：重连中/重连失败面跟着房间视图走（大厅页与对局面同一个位置断——
        渲在 App 层两页共用，RoomLobby 内不再重画）。有 token=自动重连还在跑，横幅只是状态播报 -->
   <div v-if="view === 'room' && roomStore.banner.value" class="roomBanner">

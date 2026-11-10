@@ -82,8 +82,13 @@ function goalAchieved(row: SettlementRow): boolean {
   return !!g && row.goalNos.includes(g.no);
 }
 
-/** 回看战报文字流数据源：终局态快照里的战报尾片（服务端尾片 200 条，终局收束章必含） */
-const reportMsgs = computed<MessageEntry[]>(() => lastSettle.value?.state.messages ?? []);
+/** 回看战报文字流数据源：优先读累积流（#61，完整本局战报）；旧缓存/无累积流时退回
+ *  state.messages 尾片——两条路径口径一致（都尽量多），不再一处尾片一处全量。 */
+const reportMsgs = computed<MessageEntry[]>(() => {
+  const log = lastSettle.value?.msgLog ?? [];
+  if (log.length > 0) return log;
+  return lastSettle.value?.state.messages ?? [];
+});
 
 // ── 配置弹窗：面板 model 与快照 config 双向对齐（秒↔毫秒换算住 game/lobbyConfig，结算页同源复用）──
 const sheetOpen = ref(false);
@@ -370,7 +375,7 @@ const detail = computed(() => roleOf(detailRole.value));
         </section>
 
         <section class="reportBox">
-          <h4>📜 战报（尾片 {{ reportMsgs.length }} 条）</h4>
+          <h4>📜 战报（{{ reportMsgs.length }} 条）</h4>
           <div class="rList">
             <template v-for="(m, i) in reportMsgs" :key="m.id">
               <div v-if="i === 0 || m.turn !== reportMsgs[i - 1]!.turn" class="rTurn">📜 ── 回合 {{ m.turn }} ──</div>

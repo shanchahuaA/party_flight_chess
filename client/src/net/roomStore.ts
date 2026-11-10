@@ -26,6 +26,7 @@
 import { ref } from "vue";
 import type {
   GameState,
+  MessageEntry,
   RoleId,
   SettlementResult,
 } from "../../../kernel/src";
@@ -61,11 +62,15 @@ export type RoomView = "home" | "join" | "room";
 export type JoinMode = "create" | "join";
 
 /** 上一局终局缓存（局间回看，M2-T6）：intermission 首现时从灭源前的态里摘账——
- *  持当前收者视角（服务端 rebase=我恒 pid 0）的结算账+终局态快照（战报尾片+名册）。 */
+ *  持当前收者视角（服务端 rebase=我恒 pid 0）的结算账+终局态快照（战报尾片+名册）。
+ *  M3-T9（#61）追加 `msgLog`：完整战报流（首次全量+后续增量累积而成）——尾片只有 200 条，
+ *  局间「回看战况」要能翻到本局第一条。 */
 export interface LastSettlement {
   settlement: SettlementResult;
   /** 终局态（回看 sheet 的名字解析与文字流数据源；下一步开局提要会清空） */
   state: GameState;
+  /** 完整战报流（#61；空数组=旧缓存/单机无累积流，回看退回 state.messages 尾片） */
+  msgLog: MessageEntry[];
 }
 
 
@@ -633,8 +638,13 @@ class RoomStore {
   private enterIntermission(): void {
     const s = gameStore.state.value;
     if (s?.endgame?.settlement) {
-      // 服务端每条 game 消息已 rebase（我恒 pid 0）——缓存原样可回看
-      this.lastSettlement.value = { settlement: s.endgame.settlement, state: s };
+      // 服务端每条 game 消息已 rebase（我恒 pid 0）——缓存原样可回看。
+      // msgLog 一并摘账（#61）：累积流在 gameStore.dispose 后不可得，而局间回看要完整战报。
+      this.lastSettlement.value = {
+        settlement: s.endgame.settlement,
+        state: s,
+        msgLog: [...gameStore.msgLog.value],
+      };
     }
     gameStore.dispose(); // 源 stop→disposeHook 摘名；App 对局分支翻回 RoomLobby 局间真形
   }

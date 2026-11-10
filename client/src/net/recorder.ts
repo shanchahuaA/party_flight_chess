@@ -8,7 +8,7 @@
  * - **只读**：绝不改 gameStore / roomStore 状态、不发任何上行意图。
  * - **不联网**：不开服务端端点、不碰 WS 协议；导出走本地下载/剪贴板。
  *
- * 本文件是无 UI 纯逻辑（环形缓冲/序列化/localStorage 落盘），Node 环境直测；DOM 挂钩在 recorder.ts。
+ * 本文件是无 UI 纯逻辑（环形缓冲/序列化/localStorage 落盘），Node 环境直测；DOM 挂钩在 recLog.ts。
  */
 
 /** 单条记录（字段名短——手机端 localStorage 配额紧） */

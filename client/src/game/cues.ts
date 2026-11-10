@@ -35,7 +35,8 @@ export type SfxName =
 /** 震动三处（Spec 决策 11：音效的对偶，不是独立功能）——自己扣血 / 骰子落定 / 轮到自己 */
 export const VIBRATE_SFX: readonly SfxName[] = ["hurt", "roll", "turn"];
 
-const PULSE_RANK: Record<PulseLevel, number> = { normal: 1, target: 2, big: 3 };
+/** 脉冲档位强弱（同 pid 连续两批时不让轻的盖掉重的）——壳层也读这一份，不另建表 */
+export const PULSE_RANK: Record<PulseLevel, number> = { normal: 1, target: 2, big: 3 };
 
 /** 会在战报里指认/命中目标的条目类型（脉冲派生只在「真被下手」的类目上做） */
 const PULSE_KINDS = new Set<MessageEntry["kind"]>(["event", "trap", "item", "malice", "beast"]);
@@ -77,6 +78,10 @@ export interface CueResult {
  * - `normal` 派生：本批战报里 `who === 我` 的事件/陷阱/道具条目（踩事件/陷阱、打道具落地）。
  * - `target` 派生：本批战报里带 `targets` 且 emphasis=target/big 的条目（弹弓/脚镣/惊雷一类
  *   指认型命中）——目标是谁就亮谁，别人的被命中在我的屏上也看得见。
+ * - **场地卡特例**：内核「踩上别人铺的卡」那一条是 `who=踩上者`、`targets=[铺卡人]`
+ *   （kernel/src/game.ts triggerGround）——这不是「铺卡人挨了一下」，而是「踩上者被卡整了」。
+ *   若照搬 targets，红脉冲会亮在**铺卡人**身上。此类条目（kind=item 且 targets 只含铺卡人、
+ *   who 不在 targets 里）把 target 档给 `who`。
  * - 同批多事件取最高档（big > target > normal）。
  */
 export function derivePulses(batch: CueBatch, mePid: number): Record<number, PulseLevel> {
@@ -92,7 +97,10 @@ export function derivePulses(batch: CueBatch, mePid: number): Record<number, Pul
     if (!PULSE_KINDS.has(m.kind)) continue;
     if (m.who != null && m.who === mePid) set(m.who, "normal");
     if ((m.emphasis === "target" || m.emphasis === "big") && m.targets?.length) {
-      for (const t of m.targets) set(t, "target");
+      // 场地卡被踩：who=踩上者、targets=[铺卡人]——受害方是 who，不是 targets
+      const isGroundTrap = m.kind === "item" && m.who != null && !m.targets.includes(m.who);
+      if (isGroundTrap) set(m.who!, "target");
+      else for (const t of m.targets) set(t, "target");
     }
   }
   return out;

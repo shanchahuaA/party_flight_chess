@@ -32,8 +32,6 @@ export class RemoteRoomSource implements GameSource {
   private stateProxy: GameState | null = null;
   private alive = false;
   private timer = 0;
-  /** 首条 game 消息=全量 hello（含 Hibernation 重连）——判定模块据此不高亮历史条目（M3-T1） */
-  private first = true;
 
   constructor(
     private h: SourceHandlers,
@@ -68,13 +66,12 @@ export class RemoteRoomSource implements GameSource {
       // 壳层镜像（roomStore 的 onFacts 首 mirror）与 pulse/掷面语义都读得到最新态
       this.stateProxy = reactive(game.state) as GameState;
       this.clock.adoptGameBaseline(game.now); // 对时样本缺席时的弱基线（有 sync 样本即让位）
-      // 首条=全量 hello（首帧/重连/Hibernation 恢复）：判定模块据此不高亮历史条目；
-      // batch=本条下行自带的战报（msgs="full" 全量 / "delta" 增量），壳层累积成完整流（#61）
+      // 全量/增量的唯一判据=服务端给的 msgMode（单真源）：本地 this.first 只记首条，不做判断——
+      // 重连/Hibernation 醒来时服务端会主动给 full，本地「是不是首条」与它是两件事，混用会打架。
       this.h.onFacts(game.facts, {
-        full: this.first,
-        batch: { messages: game.messages ?? [], ...(game.msgs ? { msgs: game.msgs } : {}) },
+        full: game.msgMode === "full",
+        batch: { messages: game.messages ?? [], msgMode: game.msgMode },
       });
-      this.first = false;
     } catch (err) {
       this.h.onCrash(err); // 畸形载荷等致命故障：壳层提示，源即停摆（下条 game 消息 roomStore 重建）
       this.stop();

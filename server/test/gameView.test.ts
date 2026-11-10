@@ -176,7 +176,7 @@ describe("buildGameView：内部段与战报", () => {
     })) as unknown as MessageEntry[];
     const s = rawState({ players: [player(0), player(1), player(2)], messages: msgs });
     // 增量模式（lastId=200）：只回 id>200 的条目
-    const { state, messages, msgs: mode } = buildGameView(s, [], 2, MESSAGE_TAIL, { lastId: 200 });
+    const { state, messages, msgMode: mode } = buildGameView(s, [], 2, MESSAGE_TAIL, { msgMode: "delta", lastId: 200 });
     expect(mode).toBe("delta");
     expect(messages.length).toBe(50);
     expect(messages[0]!.text).toBe("m200");
@@ -198,7 +198,7 @@ describe("buildGameView：内部段与战报", () => {
       emphasis: "normal",
     })) as unknown as MessageEntry[];
     const s = rawState({ players: [player(0), player(1)], messages: msgs });
-    const { messages, msgs: mode, state } = buildGameView(s, [], 1, MESSAGE_TAIL, { msgs: "full" });
+    const { messages, msgMode: mode, state } = buildGameView(s, [], 1, MESSAGE_TAIL, { msgMode: "full" });
     expect(mode).toBe("full");
     expect(messages.length).toBe(250); // 全量：不受尾片限制
     expect(messages[0]!.text).toBe("m0");
@@ -214,9 +214,9 @@ describe("buildGameView：内部段与战报", () => {
       emphasis: "normal",
     })) as unknown as MessageEntry[];
     const s = rawState({ players: [player(0)], messages: msgs });
-    expect(buildGameView(s, [], 0, MESSAGE_TAIL, { lastId: 5 }).messages).toEqual([]);
-    expect(buildGameView(s, [], 0, MESSAGE_TAIL, { lastId: 0 }).messages.length).toBe(5);
-    expect(buildGameView(s, [], 0, MESSAGE_TAIL, { lastId: 3 }).messages.map((m) => m.id)).toEqual([4, 5]);
+    expect(buildGameView(s, [], 0, MESSAGE_TAIL, { msgMode: "delta", lastId: 5 }).messages).toEqual([]);
+    expect(buildGameView(s, [], 0, MESSAGE_TAIL, { msgMode: "delta", lastId: 0 }).messages.length).toBe(5);
+    expect(buildGameView(s, [], 0, MESSAGE_TAIL, { msgMode: "delta", lastId: 3 }).messages.map((m) => m.id)).toEqual([4, 5]);
   });
 });
 

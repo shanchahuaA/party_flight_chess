@@ -9,8 +9,9 @@
 import { reactive, ref, shallowRef, watch } from "vue";
 import { BOARD } from "../../../kernel/src";
 import type { Fact, GameConfig, GameState, Intent, MessageEntry, PlayerDef } from "../../../kernel/src";
+import type { MsgBatch } from "../../../shared/protocol";
 import { LocalKernelSource, type GameSource } from "./source";
-import { deriveHighlights, derivePulses, deriveSounds, type CueView, type SfxName } from "./cues";
+import { deriveHighlights, derivePulses, deriveSounds, PULSE_RANK, type CueView, type SfxName } from "./cues";
 
 /** 新随机种子（单机局默认换新种子——内核默认种子留给测试）：三处同形表达式的单一来源 */
 export function newSeed(): number {
@@ -21,9 +22,6 @@ export interface PulseLit {
   level: "normal" | "target" | "big";
   until: number;
 }
-
-/** 脉冲档位强弱（同 pid 连续两批时不让轻的盖掉重的） */
-const PULSE_ORDER: Record<PulseLit["level"], number> = { normal: 1, target: 2, big: 3 };
 
 /**
  * 快照策略：内核持有普通对象（权威）；对它包一层 reactive 代理给 UI 读。
@@ -238,12 +236,12 @@ class GameStore {
    * 联机源（M2-T6）的 onFacts 也走这里（roomStore 的 SourceHandlers）——远端事实与单机内核
    * 事实同形状，pulse 亮牌/掷面/出局贴皮零成本复用（「演出不另起」）。
    *
-   * M3-T9（#61）：联机源额外带 `batch`=本条下行消息的顶层 messages 与 msgs 模式，
+   * M3-T9（#61）：联机源额外带 `batch`=本条下行消息的顶层 messages 与 msgMode 模式，
    * 累积进 msgLog（首次全量 + 后续增量的完整流）。单机源不传（state.messages 本就是全量）。
    */
   handle(
     facts: Fact[],
-    opts: { full?: boolean; batch?: { messages: MessageEntry[]; msgs?: "full" | "delta" } } = {},
+    opts: { full?: boolean; batch?: MsgBatch } = {},
   ): void {
     const s = this.state.value;
     for (const f of facts) {
@@ -277,10 +275,10 @@ class GameStore {
    * 联机战报累积（#61）：full=整段替换（重连/刷新/对齐的真相源），delta=按 id 追加去重。
    * 单机不走这里——抽屉读 state.messages 即可。
    */
-  private absorbBatch(batch?: { messages: MessageEntry[]; msgs?: "full" | "delta" }): void {
+  private absorbBatch(batch?: MsgBatch): void {
     if (!batch) return;
     const incoming = batch.messages ?? [];
-    if (batch.msgs === "full") {
+    if (batch.msgMode === "full") {
       this.msgLog.value = incoming;
       return;
     }
@@ -316,7 +314,7 @@ class GameStore {
       const pid = Number(pidStr);
       // 同 pid 已有更重的在亮：不降级覆盖（连续两批取值取最高）
       const cur = this.pulses[pid];
-      if (cur && cur.until > now && PULSE_ORDER[cur.level] > PULSE_ORDER[level]) continue;
+      if (cur && cur.until > now && PULSE_RANK[cur.level] > PULSE_RANK[level]) continue;
       this.pulses[pid] = { level, until: now + (level === "big" ? 1_600 : 1_000) };
     }
     this.freshSfx.value = deriveSounds({ facts, newMessages: fresh }, view);
@@ -331,6 +329,13 @@ class GameStore {
   isLit(pid: number): "normal" | "target" | "big" | null {
     const lit = this.pulses[pid];
     return lit && lit.until > performance.now() ? lit.level : null;
+  }
+
+  /** 脉冲的熄灭时刻（亮着的起始批次标识）：同档连续触发时拿它当渲染 key，
+   *  强制 CSS 动画重播一次——否则 class 不变，第二次脉冲在视觉上不存在（code-review 修复轮） */
+  litKey(pid: number): number {
+    const lit = this.pulses[pid];
+    return lit && lit.until > performance.now() ? lit.until : 0;
   }
 
   dispose(): void {

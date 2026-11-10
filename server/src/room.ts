@@ -21,6 +21,7 @@ import {
   type Downstream,
   type JoinRoomResp,
   type LobbyConfig,
+  type MsgMode,
   type RoomSeatView,
   type RoomSnapshot,
   type Upstream,
@@ -46,14 +47,23 @@ import { buildGameView, MESSAGE_TAIL } from "./gameView";
 //   kernel 时钟轴 now() 同缝（测试 advanceTime 快进），关线起钟/上线撤钟/到点复核 live 条件 +
 //   一次性钟（不重派），alarm 扫描「先房后核」同拍优先销毁/转移（与 kernel 时限同轴互扰的裁决）。
 
-/** WS attachment：连接与座位的绑定面（序列化落 Hibernation，唤醒后 deserializeAttachment 可得）。
- *  M3-T9（#61）加「战报已发到哪条」——按连接记全量/增量，Hibernation 唤醒后 attachment 仍在，
- *  但内存态（见 fullSent/lastMsgId）已清空 → 唤醒后首条按「全量重发」处理（票面要求）。 */
+/** WS attachment：连接与座位的绑定面（序列化落 Hibernation，唤醒后 deserializeAttachment 可得）。 */
 interface WsAttach {
   token: string;
-  /** 该连接已收到的最新战报条目 id（0=还没收过全量） */
-  lastMsgId?: number;
 }
+
+/**
+ * 战报水位（M3-T9，#61）：**只住内存、绝不进 attachment**。
+ *
+ * 为什么不能进 attachment：attachment 随 Hibernation 保活，唤醒后读到的是「睡着之前」的水位——
+ * 而 Hibernation 期间客户端可能已断线重连、或消息丢了，继续给 delta 就是「重连后战报缺一段」。
+ * 票面要求「Hibernation 恢复后重新发一次全量」，因此水位必须是**进程内存**态：DO 被驱逐/唤醒后
+ * 内存清空 → 首条自动走 full。真重连（新 socket）本来也不继承旧线水位（新 WsAttach 从零起）。
+ *
+ * 键=WebSocket 对象本身（每个 socket 一条连接，天然隔离；DO 单线程事件模型无并发写）。
+ * 连接关闭时由 webSocketClose 清账，防长期驻留的 DO 累积无用条目。
+ */
+type MsgWatermark = Map<WebSocket, number>;
 
 interface SeatRow {
   seat: number;
@@ -555,6 +565,7 @@ export class Room {
   }
 
   webSocketClose(ws: WebSocket): void {
+    this.msgWatermark.delete(ws); // 战报水位随连接收场（#61；不清理会让长命 DO 累积死条目）
     if (!this.roomRow()) return; // 房间已销毁（解散刚清完账）：无广播对象
     this.pushRoomTo(ws, ws); // close 事件触发时该 socket 仍在列表里，发送与统计都要排除它
     // 断线计时刻刷新（M2-T8）：重估全员离线销毁/房主离线转移两钟（起/撤），再重排 alarm。
@@ -833,6 +844,9 @@ export class Room {
 
   /** 内核实例句柄（懒加载、非权威——权威=SQLite 的 game 行；任何事件兜底 ensureKernel） */
   private kernel: GameKernel | null = null;
+
+  /** 逐连接战报水位（M3-T9 #61；只住内存——见 MsgWatermark 注释） */
+  private msgWatermark: MsgWatermark = new Map();
 
   /** pid→座位（boot 定死、随 seat_map 落账；内存反查表由 ensureKernel 从账恢复） */
   private pidSeat: number[] | null = null;
@@ -1155,17 +1169,16 @@ export class Room {
 
   /**
    * 带现成快照源的构建+发送（broadcastGame 循环里复用一份 save，逐收者深克隆隔离不串染）。
-   * M3-T9（#61）战报口径：该连接还没收过全量（attachment.lastMsgId 缺席）→ 本次发全量；
-   * 否则只发 id 大于 lastMsgId 的增量。发完把新水位写回 attachment（Hibernation 会保住它）。
+   * M3-T9（#61）战报口径：该连接还没有水位（新 socket / Hibernation 唤醒后内存清空）→ 本次发全量；
+   * 否则只发 id 大于水位的增量。水位只写内存（见 MsgWatermark 注释：绝不进 attachment）。
    */
   private sendGameToRaw(ws: WebSocket, seat: number, facts: Fact[], saved: GameState): void {
     const pid = this.pidOfSeat(seat);
     if (pid == null) return; // 座位不在 kernel 名册（intermission 旧账等）：老游戏不留接缝
-    const att = ws.deserializeAttachment() as WsAttach | null;
-    // lastMsgId 有值=该连接已收过全量 → 走增量；否则首条给全量（重连/刷新/Hibernation 恢复同一条路）
-    const lastId = att?.lastMsgId;
-    const msgs: "full" | "delta" = lastId == null ? "full" : "delta";
-    const view = buildGameView(saved, facts, pid, MESSAGE_TAIL, { msgs, lastId: lastId ?? 0 });
+    // 水位缺席=该连接还没收过全量 → 首条给全量（新连/重连/刷新/Hibernation 唤醒同一条路）
+    const lastId = this.msgWatermark.get(ws);
+    const msgMode: MsgMode = lastId == null ? "full" : "delta";
+    const view = buildGameView(saved, facts, pid, MESSAGE_TAIL, { msgMode, lastId: lastId ?? 0 });
     // now=DO 内核时钟轴（this.now()=Date.now()+clockOffset）——与 windowDeadline/adoptGameBaseline
     // 同轴（T7 计时域一致性：快进缝下 game.now 必须落在内核轴上，Date.now() 会站错侧）
     this.send(ws, {
@@ -1173,14 +1186,13 @@ export class Room {
       now: this.now(),
       facts: view.facts,
       messages: view.messages,
-      msgs: view.msgs,
+      msgMode: view.msgMode,
       state: view.state,
     });
     // 水位推进（全量/增量都一样：收到的最新条目即最高 id）
     const top = saved.messages.length > 0 ? saved.messages[saved.messages.length - 1]!.id : 0;
-    if (att && top > (lastId ?? 0)) {
-      ws.serializeAttachment({ ...att, lastMsgId: top } satisfies WsAttach);
-    }
+    const prev = lastId ?? 0;
+    if (top > prev || lastId == null) this.msgWatermark.set(ws, Math.max(top, prev));
   }
 
   /**

@@ -119,12 +119,6 @@ function advance(): void {
   align-items: center;
   justify-content: center;
   padding: 18px;
-  animation: gFade 0.18s ease-out;
-}
-@keyframes gFade {
-  from {
-    opacity: 0;
-  }
 }
 .guideCard {
   width: min(88vw, 340px);
@@ -133,13 +127,6 @@ function advance(): void {
   border-radius: 16px;
   padding: 14px 15px calc(15px + env(safe-area-inset-bottom));
   box-shadow: 0 12px 36px rgba(0, 0, 0, 0.55);
-  animation: gPop 0.2s ease-out;
-}
-@keyframes gPop {
-  from {
-    transform: scale(0.94);
-    opacity: 0;
-  }
 }
 .gHead {
   display: flex;
@@ -155,7 +142,6 @@ function advance(): void {
   height: 7px;
   border-radius: 50%;
   background: #455a64;
-  transition: background 0.2s ease;
 }
 .dots i.on {
   background: #4dd0e1;

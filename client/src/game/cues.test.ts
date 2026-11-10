@@ -89,6 +89,21 @@ describe("脉冲判定（G-10 / G-11）", () => {
     const p = derivePulses({ facts: [], newMessages: [msg({ id: 1, who: 2, emphasis: "target" })] }, 0);
     expect(p).toEqual({});
   });
+
+  it("踩上别人铺的场地卡：亮踩上者（who），不是铺卡人（targets）", () => {
+    // 内核 triggerGround：who=踩上者、targets=[铺卡人]（不是「铺卡人挨了一下」）
+    const p = derivePulses(
+      { facts: [], newMessages: [msg({ id: 1, kind: "item", who: 3, targets: [1], emphasis: "target" })] },
+      0,
+    );
+    expect(p[3]).toBe("target"); // 踩上者
+    expect(p[1]).toBeUndefined(); // 铺卡人不亮
+  });
+
+  it("自铺自踩（无 targets）只走 normal", () => {
+    const p = derivePulses({ facts: [], newMessages: [msg({ id: 1, kind: "item", who: 0, emphasis: "target" })] }, 0);
+    expect(p[0]).toBe("normal");
+  });
 });
 
 describe("音效判定（A-01 / A-07）", () => {

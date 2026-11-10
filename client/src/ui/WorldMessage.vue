@@ -33,6 +33,9 @@ const msgs = computed(() => {
   return gameStore.state.value?.messages ?? [];
 });
 
+/** 让位带只在游戏页出现（有对局面）；抽屉与溯源跳转由 reportReq 驱动，任何页面都要能开 */
+const bandOn = computed(() => !!gameStore.state.value);
+
 /** 常驻两条：新消息推入顶部、旧行下移让位（倒序取尾部两条） */
 const band = computed(() => {
   const all = msgs.value;
@@ -184,7 +187,9 @@ function closeDrawer(): void {
 </script>
 
 <template>
-  <section class="worldMsg" title="点开全量战报" @click="drawer = true">
+  <!-- 两层结构：让位带只在游戏页出现（有对局面才占布局）；抽屉与溯源跳转任何时候都要能开——
+       结算页的「战报 #N」在 gamePage 卸掉之后才成为主舞台（M3-T9 #61 修复轮）。 -->
+  <section v-if="bandOn" class="worldMsg" title="点开全量战报" @click="drawer = true">
     <TransitionGroup name="ws" tag="div" class="rows">
       <div v-for="m in band" :key="m.id" class="row" :class="`e-${m.emphasis}`">
         <span class="ic">{{ KIND_ICONS[m.kind] }}</span>
@@ -192,9 +197,10 @@ function closeDrawer(): void {
         <span class="txt">{{ body(m) }}</span>
       </div>
     </TransitionGroup>
+  </section>
 
-    <!-- 全量战报抽屉（页内浮层，不路由切页）；raise=结算页溯源跳转时抬到结算页之上 -->
-    <BaseSheet v-if="drawer" :raise="raised" @close="closeDrawer">
+  <!-- 全量战报抽屉（页内浮层，不路由切页）；raise=结算页溯源跳转时抬到结算页之上 -->
+  <BaseSheet v-if="drawer" :raise="raised" @close="closeDrawer">
       <div class="drawerBox">
         <h3>📜 战报 <small>{{ msgs.length }} 条 · 点条目看卡面文案</small></h3>
         <div ref="listEl" class="list" @scroll="loadEarlier">
@@ -238,7 +244,6 @@ function closeDrawer(): void {
         <button class="close" type="button" @click="closeDrawer">收 起</button>
       </div>
     </BaseSheet>
-  </section>
 </template>
 
 <style scoped>
@@ -400,13 +405,6 @@ function closeDrawer(): void {
   background: linear-gradient(165deg, #2c3e4d, #263238);
   border: 1.5px solid #ffab40;
   border-radius: 12px;
-  animation: faceIn 0.18s ease-out;
-}
-@keyframes faceIn {
-  from {
-    opacity: 0;
-    transform: translateY(-3px);
-  }
 }
 .fcHead {
   display: flex;
