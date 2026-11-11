@@ -70,11 +70,19 @@
    坑：半死的 workerd（监听着但 health:000 超时）会让 connect 挂死、重连循环停在 connecting——
    判活用 `curl -m 3 http://127.0.0.1:8787/health`，不要信 netstat 有监听。
 4. **踢人+原身份拒进（快）**：双身份两页都在房（A 房主、B 朋友甲，见标题段双端技巧）→ A 页座位列
-   点 B 的「🥾」（页内派发 `document.querySelector(".seats button.kick").click()`）→ 断言：
+   点 B 的「🥾」（页内派发 `document.querySelector(".seats button.kick").click()`）→ **自 #58 起会先弹
+   二次确认浮层**（`div[data-confirm="sheet"]`，正文「请出 B名？他将失去本局，且无法再进本房间」）：
+   先点 `button[data-confirm="cancel"]` 断言 B 座位仍在、A 的 `__pzroom()` 座位数不变（**取消不踢**）；
+   再点 🥾 → 点 `button[data-confirm="ok"]` → 断言：
    A `__pzroom()` B 座位消失；B 页 `__pzroom()=null`（已回首页）+ B 的 `pfc.token.<码>` 被清。
    再从 A 页用 `__pzroom().token` 拿到的 B 原 token 裸开 WS（页内 evaluate `new WebSocket(.../ws/码?token=B原token)`，
    1.2s 后收结果）→ 断 `opened=false` 且 `error+close:1006`（升级被 403 拒的浏览器侧形态，读不到状态码
    是浏览器 WS API 限制，见坑清单）。[实现期定案：可踢任何 phase；假人不给踢（走 addBot/removeBot 面）]
+   **中局入口（#58 / G-07）**：A 页进对局后点 HUD 的 `button[data-hud="settings"]` → 成员管理节
+   `section[data-set="members"]` 内逐行列出真人，行尾钮 `button[data-kick-seat="<seat>"]`（**假人行没有**，
+   自己行也没有）→ 点它同样先弹确认；非房主视角该节整节不存在（`section[data-set="members"]` 无）。
+   **解散（#58 超票面补充）**：`button[data-set="dissolve"]` / 大厅页脚 `.footBtns .danger` /
+   对局面 `.roomBar button` 都会先弹同一个确认层——先点取消断言房间仍在。
 5. **房主转移（等 5 分钟，真等）**：三身份房间（localhost 房主 + 127.0.0.1×2 或 HTTP join 凑数）→
    **关房主页**（socket 落地=host 离线钟起摆）→ 保持≥1 个其他真人在线 → 真等 5 分钟+10s →
    留守页 `__pzroom()` 断 `hostSeat` 变为最早加入的**在线**真人（实现期定案：在线过滤）且旧房主座位
