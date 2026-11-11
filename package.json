@@ -5,7 +5,7 @@
   "scripts": {
     "verify": "npm run verify:kernel && npm run verify:client && npm run verify:server",
     "verify:kernel": "npm --prefix kernel run typecheck && npm --prefix kernel test",
-    "verify:client": "npm --prefix client run build",
+    "verify:client": "npm --prefix client run build && npm --prefix client test",
     "verify:server": "npm --prefix server run typecheck && npm --prefix server test",
     "test": "npm --prefix kernel test && npm --prefix client test && npm --prefix server test"
   }

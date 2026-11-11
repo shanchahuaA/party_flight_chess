@@ -7,6 +7,12 @@
  * 共 55 张之间**实测唯一**（见同目录 cardFace.test.ts 的守门用例）。
  *
  * 所以：flavor 当键、数据表当源——表里改了 flavor 会立刻在测试里炸，而不是静默配错卡。
+ *
+ * **2026-11-11 拍板：维持 flavor 反查，不给 `MessageEntry` 加 `cardRef{pool,option}`。**
+ * 理由：加字段要动内核类型 + 事件/道具两条发报路径 + 服务端 rebase，收益只是「不靠文案当键」，
+ * 而那点风险已被 `flavorUniquenessReport()` 守门用例拦住。**变更信号**：若将来出现
+ * ①两张卡共用 flavor ②战报文案要按生态/角色变体 ③需要区分同一张卡的不同选项落点——
+ * 那就到该加 `cardRef` 的时机了，回这张票重裁。
  */
 import {
   ECO_NAMES,
