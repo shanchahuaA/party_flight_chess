@@ -191,6 +191,17 @@ export function deriveHighlights(newMessages: MessageEntry[], seenMaxId: number,
   return out;
 }
 
+/**
+ * 本批是不是「全量基线批」（G-09 的高亮闸门，壳层唯一判据）。
+ * 两条路同一口径：
+ * - 联机：服务端 `msgMode=full`（首条 hello / 重连 / Hibernation 唤醒）——带过来的都是历史；
+ * - 单机：首帧（`primed=false`）没有 full 这个联机概念，但「第一次入壳」同样是全量历史。
+ * 首帧之后即使再来 full（重连），也仍是基线批——重连全量里已见过的 id 凭什么也不该亮。
+ */
+export function isBaselineBatch(full: boolean, primed: boolean): boolean {
+  return full || !primed;
+}
+
 /** 三张表的一站式入口（壳层每次事实入壳调一次；组件不再各自判） */
 export function cuesOf(
   batch: CueBatch,
