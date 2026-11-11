@@ -10,7 +10,7 @@
  * 累积而成，能翻到本局第一条）；单机读 state.messages（本就是全量）。两条源在此收口成一份。
  *
  * 新条目 2s 高亮（M3-T8 → #60 / G-09）：让位带与抽屉共用同一份判定——「哪些 id 是新的」由
- * game/cues.deriveHighlights 算出（壳层 freshMsgIds），壳层再落成带到期时刻的表；本组件只问
+ * game/cues.deriveHighlights 算出，壳层再落成带到期时刻的表；本组件只问
  * `gameStore.isMsgFresh(id)`，不自己判新、不自己起计时器。旧条目不做透明度灰化（清单明确排除）。
  */
 import { computed, nextTick, ref, watch } from "vue";

@@ -86,4 +86,18 @@ describe("帮助速查六块（G-03：①目标 ②一回合三步 ③四类格�
     expect(all).toContain(`${FINISH_SCORES[2]}`);
     expect(all).toContain(`${GAME_DEFAULTS.routeAskMs / 1000} 秒`);
   });
+
+  /**
+   * 显式豁免（P3-2 / code-review）：帮助自述里「全部从 kernel 引常量」**不覆盖这两处**——
+   * 内核没有对应导出（① 暗牌张数住在 `game.ts` 的局部 `draftPair()`；② 年兽反噬住在私有
+   * `beastRoarDmg()`），文案只能硬编码。这里把两处字面量钉出来：一是告诉后来者「这两个数不在
+   * 对账范围内」，二是它们若被误删/改写，这条会立刻炸。
+   *
+   * 维护责任：内核改这两个数值时**必须手改 help.ts**（豁免 ≠ 免维护）。
+   */
+  it("两处内核未导出常量的硬编码（显式豁免对账）", () => {
+    const all = HELP_BLOCKS.map(text).join("\n");
+    expect(all).toMatch(/抽\s*2\s*张/); // 开局暗牌 2 选 1（kernel 局部 draftPair）
+    expect(all).toContain("−1（猛档 −2）"); // 年兽每波反噬（kernel 私有 beastRoarDmg）：温和 1 / 猛 2
+  });
 });

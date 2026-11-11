@@ -19,7 +19,6 @@ const BASE: SettingsView = {
   canVibrate: true,
   needsUnlock: false,
   sfxEnabled: true,
-  vibrateOn: true,
 };
 
 describe("⚙ 面板节显隐（G-04）", () => {

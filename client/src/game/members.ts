@@ -39,18 +39,28 @@ export interface MemberView {
   seats: readonly SeatLike[];
   /** 我的座位号（`roomStore.mySeat`）；null=未落座/快照未到 */
   mySeat: number | null;
-  /** 房主座位号（`snapshot.hostSeat`） */
+  /** 房主座位号（`snapshot.hostSeat`）；null=快照未到（调用方 `snapshot?.hostSeat ?? null`） */
   hostSeat: number | null;
 }
 
 /**
- * 座位列 → 成员行（按座位号升序：与大厅座位列同序，快照乱序也不抖）。
+ * 我是不是房主（**唯一判据**：⚙ 面板、大厅、成员管理都吃这一份）。
  *
- * 房主判据是 `mySeat != null && hostSeat != null && 相等`——防「快照未到（hostSeat=null）
- * 而 mySeat 也是 null」时 null===null 误判成房主（与 SettingsSheet 的判据同口径）。
+ * 两个入参都可为 null，但来源不同：
+ * - `hostSeat`：协议里 `RoomSnapshot.hostSeat` 是**非空 `number`**（`shared/protocol.ts`），
+ *   为 null 的唯一原因是**快照整体还没到**（`roomStore.snapshot` 是 `RoomSnapshot | null`）；
+ * - `mySeat`：`roomStore.mySeat` 本身是 `number | null`（未落座/未连接）。
+ *
+ * 所以这里判「双方都已定且相等」——防的是「快照没到、我也还没落座」时 `null === null`
+ * 蒙成房主（不是防 `hostSeat` 自己为 null 的协议态）。
  */
+export function iAmHost(mySeat: number | null, hostSeat: number | null): boolean {
+  return mySeat != null && hostSeat != null && mySeat === hostSeat;
+}
+
+/** 座位列 → 成员行（按座位号升序：与大厅座位列同序，快照乱序也不抖）。 */
 export function memberRows(v: MemberView): MemberRow[] {
-  const iAmHost = v.mySeat != null && v.hostSeat != null && v.mySeat === v.hostSeat;
+  const host = iAmHost(v.mySeat, v.hostSeat);
   return [...v.seats]
     .sort((a, b) => a.seat - b.seat)
     .map((s) => {
@@ -62,16 +72,9 @@ export function memberRows(v: MemberView): MemberRow[] {
         bot: s.bot,
         me,
         host: s.seat === v.hostSeat,
-        canKick: iAmHost && !s.bot && !me,
+        canKick: host && !s.bot && !me,
       };
     });
-}
-
-/** 便捷读取：成员行里那一批可请出的座位号（大厅 🥾 与 ⚙ 成员管理同吃） */
-export function kickableSeats(v: MemberView): number[] {
-  return memberRows(v)
-    .filter((r) => r.canKick)
-    .map((r) => r.seat);
 }
 
 /** 把 RoomSnapshot.seats（RoomSeatView[]）收窄成派生输入面（类型桥，零逻辑） */

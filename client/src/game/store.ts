@@ -11,6 +11,7 @@ import { BOARD } from "../../../kernel/src";
 import type { Fact, GameConfig, GameState, Intent, MessageEntry, PlayerDef } from "../../../kernel/src";
 import type { MsgBatch } from "../../../shared/protocol";
 import { LocalKernelSource, type GameSource } from "./source";
+import { hasDevQuery } from "./devQuery";
 import { deriveHighlights, derivePulses, deriveSounds, isBaselineBatch, PULSE_RANK, type CueView, type SfxName } from "./cues";
 import { isHighlighted, mergeHighlights, pruneHighlights, type HighlightTable } from "./highlight";
 
@@ -56,10 +57,8 @@ class GameStore {
 
   /** 已消费的最大战报条目 id（M3-T1 判定模块：增量判据——高亮/脉冲都只认 id 更大的条目） */
   private seenMaxMsgId = 0;
-  /** 本批新增的条目 id（G-09 高亮数据源；T8 消费，组件不许自己再判） */
-  freshMsgIds = ref<number[]>([]);
   /**
-   * 高亮中的条目 id → 到期时刻（M3-T8 / #60）：`freshMsgIds` 每批整体替换，直接绑它会令上一批
+   * 高亮中的条目 id → 到期时刻（M3-T8 / #60）：本批新增 id 每批都换，直接绑那一批会令上一批
    * 高亮随下一批到达瞬灭（不是 2s 渐出）。判定仍只来自 cues.deriveHighlights，这里只做计时：
    * 每批把新 id 并进来、渲染前把到期项摘掉。组件读 `isMsgFresh(id)`，不自行判新。
    */
@@ -157,7 +156,6 @@ class GameStore {
     this.reportReq.value = 0;
     this.reportJump.value = null;
     this.seenMaxMsgId = 0;
-    this.freshMsgIds.value = [];
     this.freshUntil = {};
     this.freshVer.value++;
     window.clearTimeout(this.freshTimer);
@@ -340,8 +338,8 @@ class GameStore {
     // 重连全量里已见过的 id 不高亮），这里把结果并进「id → 到期」表——过期不瞬灭，约 2s 内渐出。
     // 基线口径：联机首条带 msgMode=full；**单机首帧没有这个标记**，但「第一次入壳」同样是全量基线，
     // 两条路取同一口径（否则单机一进局就把开局的几条系统播报全点亮，与 AC「首次全量不全部高亮」相悖）。
-    this.freshMsgIds.value = deriveHighlights(fresh, seenMax, isBaselineBatch(full, this.cuePrimed));
-    const merged = mergeHighlights(pruneHighlights(this.freshUntil, now), this.freshMsgIds.value, now);
+    const freshIds = deriveHighlights(fresh, seenMax, isBaselineBatch(full, this.cuePrimed));
+    const merged = mergeHighlights(pruneHighlights(this.freshUntil, now), freshIds, now);
     if (merged !== this.freshUntil) {
       this.freshUntil = merged;
       this.freshVer.value++;
@@ -428,7 +426,7 @@ export function maybeBootFastPath(): void {
   if (gameStore.source.value) return;
   const params = new URLSearchParams(location.search);
   if (!params.has("fast")) return;
-  const dev = params.has("dev");
+  const dev = hasDevQuery(); // 口径与 audio/shell、net/roomStore 同一份（game/devQuery）
   // ?slow=1：60s 慢窗（壳层冒烟用——10s 快窗手速赛会与逐格走/替掷竞速）；?win=秒 再放长（多步冒烟）
   const winParam = Number(params.get("win"));
   const windowMs = Number.isFinite(winParam) && winParam > 0 ? winParam * 1000 : params.has("slow") ? 60_000 : 10_000;

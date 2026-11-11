@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { kickableSeats, memberRows, seatsOf, type SeatLike } from "./members";
+import { iAmHost, memberRows, seatsOf, type SeatLike } from "./members";
 
 /**
  * 成员管理派生（#58 / G-07）的**可测部分**：
@@ -20,9 +20,16 @@ const SEATS: SeatLike[] = [
   { seat: 3, name: "小美", online: false, bot: false, host: false },
 ];
 
+/** 可请出的座位号（测试侧的读取方式，不走被删的便捷函数） */
+function kickable(view: Parameters<typeof memberRows>[0]): number[] {
+  return memberRows(view)
+    .filter((r) => r.canKick)
+    .map((r) => r.seat);
+}
+
 describe("成员行派生（G-07）：谁能被请出", () => {
   it("房主视角：真人且非自己的座位可请出——自己与假人都不行", () => {
-    expect(kickableSeats({ seats: SEATS, mySeat: 0, hostSeat: 0 })).toEqual([1, 3]);
+    expect(kickable({ seats: SEATS, mySeat: 0, hostSeat: 0 })).toEqual([1, 3]);
   });
 
   it("假人永远不可请出（假人没有身份可拉黑，服务端也直接拒）", () => {
@@ -34,7 +41,7 @@ describe("成员行派生（G-07）：谁能被请出", () => {
   });
 
   it("非房主：整表无人可请出（成员管理节本来也不显示）", () => {
-    expect(kickableSeats({ seats: SEATS, mySeat: 1, hostSeat: 0 })).toEqual([]);
+    expect(kickable({ seats: SEATS, mySeat: 1, hostSeat: 0 })).toEqual([]);
   });
 
   it("自己永远不能请出自己（即便 hostSeat 因快照错位指向我）", () => {
@@ -45,12 +52,12 @@ describe("成员行派生（G-07）：谁能被请出", () => {
   });
 
   it("座位未定（mySeat=null）或快照未到：一律不可请出，不崩", () => {
-    expect(kickableSeats({ seats: SEATS, mySeat: null, hostSeat: 0 })).toEqual([]);
-    expect(kickableSeats({ seats: [], mySeat: 0, hostSeat: 0 })).toEqual([]);
+    expect(kickable({ seats: SEATS, mySeat: null, hostSeat: 0 })).toEqual([]);
+    expect(kickable({ seats: [], mySeat: 0, hostSeat: 0 })).toEqual([]);
   });
 
   it("离线真人仍可请出（房主对掉线赖座者的处置面）", () => {
-    expect(kickableSeats({ seats: SEATS, mySeat: 0, hostSeat: 0 })).toContain(3);
+    expect(kickable({ seats: SEATS, mySeat: 0, hostSeat: 0 })).toContain(3);
   });
 
   it("按座位号升序给行（与大厅座位列同序，快照乱序也不抖）", () => {
@@ -72,6 +79,20 @@ describe("成员行派生（G-07）：谁能被请出", () => {
       canKick: false,
     });
     expect(rows[3]).toMatchObject({ name: "小美", online: false, me: false, canKick: true });
+  });
+});
+
+describe("房主判据（唯一真源：大厅/⚙/对局面角落同吃）", () => {
+  it("座位号可比且相等才算房主", () => {
+    expect(iAmHost(0, 0)).toBe(true);
+    expect(iAmHost(3, 3)).toBe(true);
+    expect(iAmHost(1, 0)).toBe(false);
+  });
+
+  it("任一方未定（未落座 / 快照未到）都不算房主——不靠 null===null 蒙对", () => {
+    expect(iAmHost(null, 0)).toBe(false);
+    expect(iAmHost(0, null)).toBe(false);
+    expect(iAmHost(null, null)).toBe(false);
   });
 });
 

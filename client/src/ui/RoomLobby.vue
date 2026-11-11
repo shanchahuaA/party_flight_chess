@@ -27,7 +27,7 @@ import {
 } from "../game/lobbyConfig";
 import { kickPrompt, dissolvePrompt, type KickTarget } from "../game/confirm";
 import { memberRows, seatsOf } from "../game/members";
-import { useConfirm } from "../game/useConfirm";
+import { useConfirm, useDissolveConfirm } from "../game/useConfirm";
 import BaseSheet from "./BaseSheet.vue";
 import ConfirmSheet from "./ConfirmSheet.vue";
 import ConfigPanel, { type ConfigModel } from "./ConfigPanel.vue";
@@ -82,17 +82,14 @@ const {
   cancel: cancelKick,
 } = useConfirm<KickTarget>((t) => roomStore.kick(t.seat));
 
-/** 解散（复核 #55）：页脚那颗紧贴页底的钮，点错=全房解散——同样先二次确认 */
+/** 解散（复核 #55）：页脚那颗紧贴页底的钮，点错=全房解散——同样先二次确认
+ *  （薄封装 `useDissolveConfirm`，与 App 角落/⚙ 面板同一份） */
 const {
   pending: dissolvePending,
-  ask: askDissolveBox,
+  ask: askDissolve,
   confirm: confirmDissolve,
   cancel: cancelDissolve,
-} = useConfirm<{ kind: "dissolve" }>(() => roomStore.dissolve());
-/** 模板入口：无参（目标恒为「解散本房间」） */
-function askDissolve(): void {
-  askDissolveBox({ kind: "dissolve" });
-}
+} = useDissolveConfirm(() => roomStore.dissolve());
 
 function roleOf(id: RoleId | null): RoleDef | null {
   return id ? ROLES.find((r) => r.id === id) ?? null : null;

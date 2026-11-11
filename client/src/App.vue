@@ -9,7 +9,7 @@ import { computed, onBeforeUnmount, onMounted } from "vue";
 import { maybeBootFastPath } from "./game/store";
 import { bindRoomProbe, bootFromUrl, roomStore } from "./net/roomStore";
 import { dissolvePrompt } from "./game/confirm";
-import { useConfirm } from "./game/useConfirm";
+import { useDissolveConfirm } from "./game/useConfirm";
 import Lobby from "./ui/Lobby.vue";
 import JoinPage from "./ui/JoinPage.vue";
 import RoomLobby from "./ui/RoomLobby.vue";
@@ -65,17 +65,13 @@ onBeforeUnmount(() => {
 const toast = computed(() => gameStore.toast.value);
 
 /** 解散房间（复核 #55 的误触面，M3-T6 #58）：`.roomBar` 那颗钮紧贴页底容易误按，代价是解散全房——
- *  先开与请出同一形态的二次确认浮层（状态机住 game/confirm）。 */
+ *  先开与请出同一形态的二次确认浮层（薄封装 `useDissolveConfirm`，三处解散入口同吃）。 */
 const {
   pending: dissolvePending,
-  ask: askDissolveBox,
+  ask: askDissolve,
   confirm: confirmDissolve,
   cancel: cancelDissolve,
-} = useConfirm<{ kind: "dissolve" }>(() => roomStore.dissolve());
-/** 模板入口：无参（目标恒为「解散本房间」） */
-function askDissolve(): void {
-  askDissolveBox({ kind: "dissolve" });
-}
+} = useDissolveConfirm(() => roomStore.dissolve());
 </script>
 
 <template>

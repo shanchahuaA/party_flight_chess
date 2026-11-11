@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { useConfirm } from "./useConfirm";
+import { useConfirm, useDissolveConfirm } from "./useConfirm";
 
 /**
  * `useConfirm` 薄适配的行为（#58 / G-07 + L-05）。
@@ -47,5 +47,40 @@ describe("useConfirm：ask 只开浮层、cancel 不执行、confirm 执行一�
     box.confirm();
     box.cancel();
     expect(run).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * 解散确认（复核 #55 / #58）：三处入口（App 对局面角落 / 大厅页脚 / ⚙ 面板）同一形态——
+ * 点一下只开浮层，确认才执行，取消不执行。载荷恒为「解散本房间」，不带参数。
+ */
+describe("useDissolveConfirm：三处解散入口共用，取消不执行", () => {
+  it("ask 只开浮层（pending 变真），不执行解散", () => {
+    const run = vi.fn();
+    const box = useDissolveConfirm(run);
+    expect(box.pending.value).toBe(false);
+    box.ask();
+    expect(box.pending.value).toBe(true);
+    expect(run).not.toHaveBeenCalled();
+  });
+
+  it("取消：浮层收起，什么也不做", () => {
+    const run = vi.fn();
+    const box = useDissolveConfirm(run);
+    box.ask();
+    box.cancel();
+    expect(box.pending.value).toBe(false);
+    expect(run).not.toHaveBeenCalled();
+  });
+
+  it("确认：执行一次并收起；再点确认不重复执行", () => {
+    const run = vi.fn();
+    const box = useDissolveConfirm(run);
+    box.ask();
+    box.confirm();
+    expect(run).toHaveBeenCalledTimes(1);
+    expect(box.pending.value).toBe(false);
+    box.confirm();
+    expect(run).toHaveBeenCalledTimes(1);
   });
 });

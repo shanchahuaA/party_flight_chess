@@ -80,9 +80,10 @@ function player(over: Partial<SfxDeps> = {}): {
 }
 
 describe("播放器状态机（A-03：未解锁不出声、不静默失败）", () => {
-  it("未解锁时 play 不出声，且「待解锁」可读（供 T3 面板显示可点的「开启音效」）", () => {
+  it("冷启动（从未尝试解锁）不算「待解锁」——没试过就先报错是假告警（G-17 限定「浏览器若拒绝」）", () => {
     const { p, backend } = player();
-    expect(p.needsUnlock).toBe(true);
+    expect(p.needsUnlock).toBe(false);
+    expect(p.ready).toBe(false);
     p.playAll(["roll"]);
     expect(backend.played).toEqual([]);
   });
@@ -119,6 +120,7 @@ describe("播放器状态机（A-03：未解锁不出声、不静默失败）", 
     p.playAll(["turn"]);
     expect(backend.played).toEqual(["roll"]);
     expect(p.ready).toBe(false); // 状态回落为待解锁，T3 面板可再点「开启音效」
+    expect(p.needsUnlock).toBe(true); // 已试过且不再 running（系统挂起）→ 面板该给可点入口
   });
 });
 

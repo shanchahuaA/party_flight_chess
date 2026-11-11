@@ -24,7 +24,7 @@ export type SfxName =
   | "play" // 3 打出道具卡
   | "hurt" // 4 自己扣血
   | "score" // 5 得分 / 结算加分
-  | "beast" // 6 年兽出场
+  | "beast" // 6 年兽吼 / 重击（最后一波出场与砍击）
   | "fail" // 7 群体失败
   | "win" // 8 胜利 sting
   | "ui" // 9 UI 轻点（播放器层挂，不在此判）
@@ -142,6 +142,11 @@ export function deriveSounds(batch: CueBatch, view: CueView): SfxName[] {
         break;
       case "beastWave":
         push("beast"); // 年兽出场/每波开张（全桌都该听见）
+        break;
+      case "beastHit":
+        // 砍击（A-01 第 6 格的另一半）：年兽战全员合砍，`pid` 是**挥砍的人**——
+        // 只响自己那一刀（A-07 只播自己身上的事），别人的刀不进我的音轨。
+        if (mine(f.pid)) push("beast");
         break;
       case "beastRoar":
         if (!view.meDead) push("hurt"); // 反噬全场：我挨了这一下
