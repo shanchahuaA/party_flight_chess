@@ -18,7 +18,7 @@ import { describe, expect, it } from "vitest";
  */
 
 /** M3 新增的浮层：一律不许有 animation/@keyframes/transition（朴素呈现） */
-const PLAIN_SHEETS = ["ui/GuideSheet.vue", "ui/RecBar.vue"];
+const PLAIN_SHEETS = ["ui/GuideSheet.vue", "ui/RecBar.vue", "ui/HelpSheet.vue", "ui/SettingsSheet.vue"];
 
 const RAW = import.meta.glob(["./**/*.vue"], { eager: true, query: "?raw", import: "default" }) as Record<string, string>;
 

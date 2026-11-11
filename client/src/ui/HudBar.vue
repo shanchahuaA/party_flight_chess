@@ -1,10 +1,16 @@
 <script setup lang="ts">
-/** HUD：回合进度 + 窗倒计时 / 休息计时（跳过）+ 🎯 我的暗牌弹层（战报叙事归 WorldMessage 让位带） */
+/** HUD：回合进度 + 窗倒计时 / 休息计时（跳过）+ 右侧三钮 🎯 / 📖 / ⚙（战报叙事归 WorldMessage 让位带）。
+ *  - 🎯 我的暗牌弹层（G-02，观战态仍可点开）
+ *  - 📖 规则速查六块一屏（G-03 → ui/HelpSheet.vue，文案住 game/help.ts）
+ *  - ⚙ 局中设置（G-04 → ui/SettingsSheet.vue，判据住 game/settingsPanel.ts）
+ *  三钮各自独立、等宽紧凑——390×844 竖屏下与棋盘/战报带不重叠（HUD 在文档流里占一行）。 */
 import { computed, ref } from "vue";
 import { BOARD, ECO_NAMES, secretGoal } from "../../../kernel/src";
 import { gameStore } from "../game/store";
 import { hpRatio, hpTone } from "../game/hp";
 import BaseSheet from "./BaseSheet.vue";
+import HelpSheet from "./HelpSheet.vue";
+import SettingsSheet from "./SettingsSheet.vue";
 
 const state = computed(() => {
   return gameStore.state.value;
@@ -55,6 +61,28 @@ const myEco = computed(() => {
 
 // 我的暗牌弹层（界面呈现定案：暗牌目标图标点开看自己的目标，不放设置里）
 const showSecret = ref(false);
+// 帮助速查 / 局中设置（G-03 / G-04）：同一层浮层，互斥打开（点另一个先关当前）
+const showHelp = ref(false);
+const showSettings = ref(false);
+
+function openSecret(): void {
+  showHelp.value = false;
+  showSettings.value = false;
+  showSecret.value = true;
+}
+
+function openHelp(): void {
+  showSecret.value = false;
+  showSettings.value = false;
+  showHelp.value = true;
+}
+
+function openSettings(): void {
+  showSecret.value = false;
+  showHelp.value = false;
+  showSettings.value = true;
+}
+
 const myGoal = computed(() => {
   const p = gameStore.human;
   const pick = p?.secretPick;
@@ -72,15 +100,18 @@ const hpToneCls = computed(() => hpTone(hpPct.value));
 <template>
   <div class="hud">
     <div class="pill main">
-      <span v-if="state?.phase !== 'over'">{{ turnLabel }}</span>
-      <span v-else class="over">🏁 局长打满</span>
-      <span class="sep">·</span>
-      <!-- 轮班·限时（T9）：轮到谁的徽标（我的棒=金色点名） -->
-      <span v-if="actorName" class="actor" :class="{ mine: state?.turnActor === 0 }"
-        >轮到 {{ actorName }}</span
-      >
-      <span v-if="actorName" class="sep">·</span>
-      <span>{{ countdown }}</span>
+      <!-- 文本段单独截断：窄屏时先压文字，不裁「跳过休息」按钮 -->
+      <span class="txt">
+        <span v-if="state?.phase !== 'over'">{{ turnLabel }}</span>
+        <span v-else class="over">🏁 局长打满</span>
+        <span class="sep">·</span>
+        <!-- 轮班·限时（T9）：轮到谁的徽标（我的棒=金色点名） -->
+        <span v-if="actorName" class="actor" :class="{ mine: state?.turnActor === 0 }"
+          >轮到 {{ actorName }}</span
+        >
+        <span v-if="actorName" class="sep">·</span>
+        <span>{{ countdown }}</span>
+      </span>
       <button v-if="canSkip" class="skip" @click="skip">跳过休息</button>
     </div>
     <div class="sp" />
@@ -89,7 +120,10 @@ const hpToneCls = computed(() => hpTone(hpPct.value));
       <span class="face">❤ {{ myHp }}</span>
       <span class="bar"><i :class="hpToneCls" :style="{ width: `${Math.round(hpPct * 100)}%` }" /></span>
     </div>
-    <button class="pill secret" type="button" @click="showSecret = true">🎯</button>
+    <!-- HUD 三钮（G-01）：独立等宽方钮；390 竖屏下三钮共 102px，与血量 pill 同排不重叠 -->
+    <button class="pill iconBtn" type="button" title="我的暗牌目标" data-hud="secret" @click="openSecret">🎯</button>
+    <button class="pill iconBtn" type="button" title="规则速查" data-hud="help" @click="openHelp">📖</button>
+    <button class="pill iconBtn" type="button" title="设置" data-hud="settings" @click="openSettings">⚙️</button>
 
     <!-- 我的暗牌（仅本人视角；浮层原则：查看类不切页） -->
     <BaseSheet v-if="showSecret" @close="showSecret = false">
@@ -105,6 +139,11 @@ const hpToneCls = computed(() => hpTone(hpPct.value));
         <button class="close" type="button" @click="showSecret = false">收 起</button>
       </div>
     </BaseSheet>
+
+    <!-- 📖 规则速查（G-03）：六块一屏，可上滑，不切页 -->
+    <HelpSheet v-if="showHelp" @close="showHelp = false" />
+    <!-- ⚙ 局中设置（G-04）：音效/震动 + 房主专属成员管理节与解散 -->
+    <SettingsSheet v-if="showSettings" @close="showSettings = false" />
   </div>
 </template>
 
@@ -112,9 +151,11 @@ const hpToneCls = computed(() => hpTone(hpPct.value));
 .hud {
   display: flex;
   align-items: center;
-  gap: 6px;
-  padding: calc(7px + env(safe-area-inset-top)) 10px 4px;
+  gap: 5px;
+  padding: calc(7px + env(safe-area-inset-top)) 8px 4px;
   min-height: 34px;
+  /* 390 竖屏：主 pill 允许收缩截断，三钮不换行不横向溢出（不与棋盘/战报带重叠） */
+  overflow: hidden;
 }
 .pill {
   background: rgba(255, 255, 255, 0.92);
@@ -126,6 +167,18 @@ const hpToneCls = computed(() => hpTone(hpPct.value));
   color: #263238;
   white-space: nowrap;
   box-shadow: 0 1px 4px rgba(0, 0, 0, 0.18);
+}
+/* 主 pill 可收缩：窄屏时截断文本段（跳过按钮是 flex 子项，不被裁） */
+.pill.main {
+  min-width: 0;
+  flex: 0 1 auto;
+  display: flex;
+  align-items: center;
+}
+.pill.main .txt {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 .pill .sep {
   color: #90a4ae;
@@ -188,16 +241,27 @@ const hpToneCls = computed(() => hpTone(hpPct.value));
   font-size: 10.5px;
   padding: 3px 8px;
   font-weight: 700;
+  /* 不参与收缩：窄屏先压文本段，跳过钮始终完整可点 */
+  flex: 0 0 auto;
 }
 .sp {
-  flex: 1;
+  flex: 1 1 0;
+  min-width: 2px;
 }
-.pill.secret {
+/* HUD 三钮（G-01）：等宽方钮=独立可点区（emoji 字宽在各平台不一致，固定宽高才整齐） */
+.pill.iconBtn {
+  flex: 0 0 auto;
+  width: 32px;
+  height: 26px;
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   background: rgba(38, 50, 56, 0.85);
   color: #ffd54f;
   border-color: transparent;
   font-size: 13px;
-  padding: 4px 10px;
+  line-height: 1;
   cursor: pointer;
 }
 .secretSheet {
