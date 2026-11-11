@@ -8,6 +8,10 @@
  *
  * 战报数据源（M3-T9 → #61 / T-02）：**联机读累积流**（gameStore.msgLog，服务端首次全量+后续增量
  * 累积而成，能翻到本局第一条）；单机读 state.messages（本就是全量）。两条源在此收口成一份。
+ *
+ * 新条目 2s 高亮（M3-T8 → #60 / G-09）：让位带与抽屉共用同一份判定——「哪些 id 是新的」由
+ * game/cues.deriveHighlights 算出（壳层 freshMsgIds），壳层再落成带到期时刻的表；本组件只问
+ * `gameStore.isMsgFresh(id)`，不自己判新、不自己起计时器。旧条目不做透明度灰化（清单明确排除）。
  */
 import { computed, nextTick, ref, watch } from "vue";
 import type { MessageEntry, MessageKind } from "../../../kernel/src";
@@ -191,7 +195,7 @@ function closeDrawer(): void {
        结算页的「战报 #N」在 gamePage 卸掉之后才成为主舞台（M3-T9 #61 修复轮）。 -->
   <section v-if="bandOn" class="worldMsg" title="点开全量战报" @click="drawer = true">
     <TransitionGroup name="ws" tag="div" class="rows">
-      <div v-for="m in band" :key="m.id" class="row" :class="`e-${m.emphasis}`">
+      <div v-for="m in band" :key="m.id" class="row" :class="[`e-${m.emphasis}`, { fresh: gameStore.isMsgFresh(m.id) }]">
         <span class="ic">{{ KIND_ICONS[m.kind] }}</span>
         <span v-if="chip(m)" class="who">{{ chip(m) }}</span>
         <span class="txt">{{ body(m) }}</span>
@@ -208,7 +212,7 @@ function closeDrawer(): void {
             <div v-if="m.kind === 'summary'" class="turnLine">{{ body(m) }}</div>
             <template v-else>
               <div v-if="isTurnHead(m, i)" class="turnLine">📜 ── 回合 {{ m.turn }} ──</div>
-              <div class="drow" :class="[`e-${m.emphasis}`, { flash: m.id === flashId }]" :data-mid="m.id" @click="toggleFace(m)">
+              <div class="drow" :class="[`e-${m.emphasis}`, { flash: m.id === flashId, fresh: gameStore.isMsgFresh(m.id) }]" :data-mid="m.id" @click="toggleFace(m)">
                 <div class="rowMain">
                   <span class="ic">{{ KIND_ICONS[m.kind] }}</span>
                   <span v-if="chip(m)" class="who">{{ chip(m) }}</span>
@@ -272,6 +276,8 @@ function closeDrawer(): void {
   color: #37474f;
   min-height: 20px;
   overflow: hidden;
+  /* 2s 高亮到期时底色渐出（≤300ms，只走 CSS transition）；高亮时长本身由壳层表给 */
+  transition: background-color 0.28s ease;
 }
 .row .ic,
 .drow .ic {
@@ -304,10 +310,20 @@ function closeDrawer(): void {
 .drow.e-target .who {
   color: #c62828;
 }
+/* 新条目 2s 高亮（M3-T8 → #60 / G-09；T-05 点名的四处之一）：
+   「新」窗内的底色由 `.fresh` 保持（时长归壳层 freshUntil 表，约 2s），到期靠 `.row` 上的
+   background-color 过渡渐出（0.28s ≤300ms 红线）。旧条目不做透明度灰化。
+   必须写在 `.row.e-big` 之后=同优先级后者胜。 */
+.row.fresh {
+  background-color: #ffe082;
+  border-radius: 6px;
+}
 
-/* 条目换入动画：新消息从上沿推入，旧行受 move 下移让位 */
+/* 条目换入动画：新消息从上沿推入，旧行受 move 下移让位；
+   这里同时带上底色过渡——否则 move 期间 transition 被本规则整体覆盖，
+   高亮到期那一拍会瞬灭（≤300ms，只走 CSS transition） */
 .ws-move {
-  transition: transform 0.25s ease;
+  transition: transform 0.25s ease, background-color 0.28s ease;
 }
 .ws-enter-active,
 .ws-leave-active {
@@ -360,6 +376,9 @@ function closeDrawer(): void {
   font-size: 12px;
   color: #cfd8dc;
   border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+  /* 2s 高亮到期时底色渐出（≤300ms，只走 CSS transition）；溯源闪光 animation 运行期间
+     background 归 animation 管，两者不打架 */
+  transition: background-color 0.28s ease;
 }
 .drow .rowMain {
   display: flex;
@@ -368,6 +387,14 @@ function closeDrawer(): void {
 }
 .drow.e-big {
   background: rgba(255, 183, 77, 0.14);
+  border-radius: 6px;
+}
+/* 新条目 2s 高亮（M3-T8 → #60 / G-09；T-05 点名的四处之一）：
+   「新」窗内的底色由 `.fresh` 保持（时长归壳层 freshUntil 表，约 2s）；到期靠 `.drow` 上的
+   background-color 过渡渐出（0.28s ≤300ms 红线）。旧条目不做透明度灰化。
+   写在 e-big 之后=同优先级后者胜，不能放前面。 */
+.drow.fresh {
+  background-color: rgba(255, 213, 79, 0.3);
   border-radius: 6px;
 }
 /* 溯源跳转定位闪光（T8b2）：落点条目闪两下收目光 */

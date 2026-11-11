@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { Fact, MessageEntry } from "../../../kernel/src";
-import { cuesOf, deriveHighlights, derivePulses, deriveSounds, type CueView } from "./cues";
+import { cuesOf, deriveHighlights, derivePulses, deriveSounds, isBaselineBatch, type CueView } from "./cues";
 
 /** 极简战报条目（只填判定读的字段：id/turn/kind/text/who/targets/emphasis/tags） */
 function msg(over: Partial<MessageEntry> & { id: number }): MessageEntry {
@@ -192,6 +192,22 @@ describe("新条目高亮（G-09）", () => {
 
   it("重连全量（id 全部 <= 已见）不高亮", () => {
     expect(deriveHighlights([msg({ id: 1 }), msg({ id: 2 })], 2, false)).toEqual([]);
+  });
+});
+
+describe("全量基线批的判定输入（单机首帧与联机 full 同口径）", () => {
+  it("首帧（primed=false）即使没有 full 标记也算基线批", () => {
+    // 单机源首帧不带 full（那是联机 msgMode 的概念），但「第一次入壳」同样是全量历史
+    expect(isBaselineBatch(false, false)).toBe(true);
+  });
+
+  it("联机 full 快照（含重连/Hibernation 唤醒）算基线批", () => {
+    expect(isBaselineBatch(true, true)).toBe(true);
+    expect(isBaselineBatch(true, false)).toBe(true);
+  });
+
+  it("已打过基线的普通增量批不算基线批", () => {
+    expect(isBaselineBatch(false, true)).toBe(false);
   });
 });
 

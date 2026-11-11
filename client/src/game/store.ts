@@ -11,7 +11,8 @@ import { BOARD } from "../../../kernel/src";
 import type { Fact, GameConfig, GameState, Intent, MessageEntry, PlayerDef } from "../../../kernel/src";
 import type { MsgBatch } from "../../../shared/protocol";
 import { LocalKernelSource, type GameSource } from "./source";
-import { deriveHighlights, derivePulses, deriveSounds, PULSE_RANK, type CueView, type SfxName } from "./cues";
+import { deriveHighlights, derivePulses, deriveSounds, isBaselineBatch, PULSE_RANK, type CueView, type SfxName } from "./cues";
+import { isHighlighted, mergeHighlights, pruneHighlights, type HighlightTable } from "./highlight";
 
 /** 新随机种子（单机局默认换新种子——内核默认种子留给测试）：三处同形表达式的单一来源 */
 export function newSeed(): number {
@@ -57,6 +58,19 @@ class GameStore {
   private seenMaxMsgId = 0;
   /** 本批新增的条目 id（G-09 高亮数据源；T8 消费，组件不许自己再判） */
   freshMsgIds = ref<number[]>([]);
+  /**
+   * 高亮中的条目 id → 到期时刻（M3-T8 / #60）：`freshMsgIds` 每批整体替换，直接绑它会令上一批
+   * 高亮随下一批到达瞬灭（不是 2s 渐出）。判定仍只来自 cues.deriveHighlights，这里只做计时：
+   * 每批把新 id 并进来、渲染前把到期项摘掉。组件读 `isMsgFresh(id)`，不自行判新。
+   */
+  private freshUntil: HighlightTable = {};
+  /** 高亮表版本（并入/到期摘表时 +1）：组件把它当响应式依赖，表一变就重算 class。
+   *  到期由 `scheduleFreshExpiry` 的**单个全局定时器**精确触发——不是每条一个，也不靠 33ms 心跳。
+   *  定时器被后台节流时摘表会延后，但 `isMsgFresh` 是读时现算（与 `isLit` 同口径），
+   *  所以任何一次重渲都会立刻给出正确的「还亮不亮」，不会把高亮永久挂住。 */
+  freshVer = ref(0);
+  /** 高亮到期定时器（全局只此一个；开新局/收摊即清） */
+  private freshTimer = 0;
   /** 本批判定出的音效（A-01；T2 播放器消费） */
   freshSfx = ref<SfxName[]>([]);
   /**
@@ -144,6 +158,10 @@ class GameStore {
     this.reportJump.value = null;
     this.seenMaxMsgId = 0;
     this.freshMsgIds.value = [];
+    this.freshUntil = {};
+    this.freshVer.value++;
+    window.clearTimeout(this.freshTimer);
+    this.freshTimer = 0;
     this.freshSfx.value = [];
     this.msgLog.value = [];
     this.cuePrimed = false;
@@ -318,7 +336,17 @@ class GameStore {
       this.pulses[pid] = { level, until: now + (level === "big" ? 1_600 : 1_000) };
     }
     this.freshSfx.value = deriveSounds({ facts, newMessages: fresh }, view);
-    this.freshMsgIds.value = deriveHighlights(fresh, seenMax, full && !this.cuePrimed);
+    // 新条目高亮（G-09 / #60）：判定仍只来自 cues.deriveHighlights（首帧全量不高亮、重复 id 不重复、
+    // 重连全量里已见过的 id 不高亮），这里把结果并进「id → 到期」表——过期不瞬灭，约 2s 内渐出。
+    // 基线口径：联机首条带 msgMode=full；**单机首帧没有这个标记**，但「第一次入壳」同样是全量基线，
+    // 两条路取同一口径（否则单机一进局就把开局的几条系统播报全点亮，与 AC「首次全量不全部高亮」相悖）。
+    this.freshMsgIds.value = deriveHighlights(fresh, seenMax, isBaselineBatch(full, this.cuePrimed));
+    const merged = mergeHighlights(pruneHighlights(this.freshUntil, now), this.freshMsgIds.value, now);
+    if (merged !== this.freshUntil) {
+      this.freshUntil = merged;
+      this.freshVer.value++;
+      this.scheduleFreshExpiry();
+    }
     // 已见基线推到本批最大 id（全量与增量同一条规则）
     for (const m of all) if (m.id > this.seenMaxMsgId) this.seenMaxMsgId = m.id;
     this.cuePrimed = true;
@@ -338,7 +366,49 @@ class GameStore {
     return lit && lit.until > performance.now() ? lit.until : 0;
   }
 
+  /** 这条战报条目此刻是否在高亮窗内（G-09 / #60）。
+   *  判定（哪些 id 是新的）只来自 cues.deriveHighlights；这里只回答「还在亮吗」。
+   *  读时现算（与 `isLit` 同口径），响应式依赖只有 `freshVer`：并入与到期摘表都会 bump。
+   *  本方法不写任何状态（模板渲染期改响应式数据会触发递归更新告警）。 */
+  isMsgFresh(id: number): boolean {
+    void this.freshVer.value;
+    return isHighlighted(this.freshUntil, id, performance.now());
+  }
+
+  /**
+   * 高亮到期：**全局只排一个**定时器（不是每条一个），到最早到期时刻摘表、bump `freshVer`
+   * 让已渲染的条目退掉高亮，再排下一轮；表空即自行停摆。钟的生命周期=本局壳层（开新局
+   * `resetShellState`、收摊 `dispose` 各清一次），组件不持任何钟——卸载/抽屉关闭无泄漏可言。
+   */
+  private scheduleFreshExpiry(): void {
+    window.clearTimeout(this.freshTimer);
+    this.freshTimer = 0;
+    const now = performance.now();
+    let next = Number.POSITIVE_INFINITY;
+    for (const k of Object.keys(this.freshUntil)) {
+      const until = this.freshUntil[Number(k)]!;
+      if (until > now) next = Math.min(next, until);
+    }
+    if (!Number.isFinite(next)) return;
+    this.freshTimer = window.setTimeout(
+      () => {
+        this.freshTimer = 0;
+        const left = pruneHighlights(this.freshUntil, performance.now());
+        if (left !== this.freshUntil) {
+          this.freshUntil = left;
+          this.freshVer.value++;
+        }
+        this.scheduleFreshExpiry(); // 还有下一档到期就续排；表空即停
+      },
+      Math.max(1, next - now),
+    );
+  }
+
   dispose(): void {
+    window.clearTimeout(this.freshTimer);
+    this.freshTimer = 0;
+    this.freshUntil = {};
+    this.freshVer.value++;
     this.source.value?.stop();
     this.source.value = null;
     this.state.value = null;
