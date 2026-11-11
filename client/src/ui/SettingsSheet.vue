@@ -1,12 +1,13 @@
 <script setup lang="ts">
 /**
- * 局中设置浮层（M3-T3，#55 / G-04）：HUD `⚙` 打开。
+ * 局中设置浮层（M3-T3，#55 / G-04；M3-T6，#58 补成员管理 + 二次确认）：HUD `⚙` 打开。
  *
- * 四件事（判据全在 `game/settingsPanel.ts`，本组件只照单渲染）：
+ * 四件事（节显隐判据在 `game/settingsPanel.ts`，成员行判据在 `game/members.ts`——本组件只照单渲染）：
  * ① 🔊 音效开关——接 T2 的 `audio/shell.ts`（`sfxUi` / `enableSfx`），**不自己读 localStorage**
  * ② 📳 震动开关——同上（`enableVibrate`）；设备不支持 `navigator.vibrate` 时**整行隐藏**
- * ③ 房主（仅房间页）见「👥 成员管理」节骨架——内容归 #58，本票只立标题与显隐
- * ④ 房主（仅房间页）见「💥 解散房间」——`roomStore.dissolve()`
+ * ③ 房主（仅房间页）见「👥 成员管理」——真人逐行列出，「请出」走 `ConfirmSheet` 二次确认（G-07）；
+ *    **假人行没有「请出」钮**（假人没有身份可拉黑，服务端也直接拒）
+ * ④ 房主（仅房间页）见「💥 解散房间」——同样先二次确认（复核 #55 的误触面）
  *
  * 待解锁（G-17）：`sfxUi.needsUnlock` 且音效开着时出可点的「开启音效」，不许静默失败。
  * 数值冻结：**本面板不出现任何数值配置**（无滑条 / 无下拉 / 无配置面板组件）。
@@ -16,7 +17,11 @@ import { computed, ref } from "vue";
 import { enableSfx, enableVibrate, sfxUi, unlockSfx } from "../audio/shell";
 import { roomStore } from "../net/roomStore";
 import { settingsSections } from "../game/settingsPanel";
+import { memberRows, seatsOf } from "../game/members";
+import { dissolvePrompt, kickPrompt, type KickTarget } from "../game/confirm";
+import { useConfirm } from "../game/useConfirm";
 import BaseSheet from "./BaseSheet.vue";
+import ConfirmSheet from "./ConfirmSheet.vue";
 
 const emit = defineEmits<{ close: [] }>();
 
@@ -40,6 +45,15 @@ const sections = computed(() =>
   }),
 );
 
+/** 成员行（判据全在 game/members：假人/自己不出「请出」钮，非房主整表不可请出） */
+const members = computed(() =>
+  memberRows({
+    seats: seatsOf(roomStore.snapshot.value?.seats ?? []),
+    mySeat: roomStore.mySeat.value,
+    hostSeat: roomStore.snapshot.value?.hostSeat ?? null,
+  }),
+);
+
 /** 解锁失败的一句回话（不静默失败：告诉玩家再点一次即可） */
 const unlockMsg = ref<string | null>(null);
 
@@ -57,9 +71,27 @@ async function tryUnlock(): Promise<void> {
   unlockMsg.value = ok ? null : "浏览器还没允许出声——再点一次「开启音效」";
 }
 
-function dissolve(): void {
+/** 请出（G-07）：点「请出」**只开确认浮层**，确认后才发 kick（状态机住 game/confirm） */
+const {
+  pending: kickPending,
+  ask: askKick,
+  confirm: confirmKick,
+  cancel: cancelKick,
+} = useConfirm<KickTarget>((t) => roomStore.kick(t.seat));
+
+/** 解散（复核 #55）：同样先二次确认——代价是解散全房 */
+const {
+  pending: dissolvePending,
+  ask: askDissolveBox,
+  confirm: confirmDissolve,
+  cancel: cancelDissolve,
+} = useConfirm<{ kind: "dissolve" }>(() => {
   emit("close");
   roomStore.dissolve();
+});
+/** 模板入口：无参（目标恒为「解散本房间」） */
+function askDissolve(): void {
+  askDissolveBox({ kind: "dissolve" });
 }
 </script>
 
@@ -103,16 +135,55 @@ function dissolve(): void {
 
       <section v-if="sections.members" class="sec" data-set="members">
         <h4>👥 成员管理</h4>
-        <p class="hint">成员列表与请出操作见下一版（中局踢人在 #58 落地）。</p>
+        <ul class="memList">
+          <li v-for="m in members" :key="m.seat" :class="{ off: !m.bot && !m.online }">
+            <span class="no">{{ m.seat + 1 }}</span>
+            <span class="nm">{{ m.name }}<i v-if="m.me" class="me">（你）</i></span>
+            <span v-if="m.host" class="crown">👑</span>
+            <span v-if="m.bot" class="tag bot">🤖 假人</span>
+            <span v-else class="tag" :class="{ on: m.online }">{{ m.online ? "在线" : "离线" }}</span>
+            <!-- 假人不给「请出」钮；自己也不给（判据在 game/members，模板不重复判） -->
+            <button
+              v-if="m.canKick"
+              class="kick"
+              type="button"
+              :data-kick-seat="m.seat"
+              :title="`请出 ${m.name}`"
+              @click="askKick(m)"
+            >请出</button>
+          </li>
+        </ul>
+        <p v-if="!members.length" class="hint">座位列还没到——稍等快照。</p>
       </section>
 
-      <button v-if="sections.dissolve" class="danger" type="button" data-set="dissolve" @click="dissolve">
+      <button v-if="sections.dissolve" class="danger" type="button" data-set="dissolve" @click="askDissolve">
         💥 解散房间
       </button>
 
       <button class="close" type="button" @click="$emit('close')">收 起</button>
     </div>
   </BaseSheet>
+
+  <!-- 请出二次确认（G-07）：与大厅 🥾 同一形态、同一个状态机。
+       刻意做成 BaseSheet 的**兄弟**而非其子节点：设置面板自己是可滚动浮层（overflow-y: auto），
+       确认层叠在里面会受父级滚动容器/堆叠上下文牵连；同层兄弟在文档序上天然压住面板。 -->
+  <ConfirmSheet
+    v-if="kickPending"
+    title="请出成员"
+    :message="kickPrompt(kickPending.name)"
+    confirm-text="请出"
+    @confirm="confirmKick"
+    @cancel="cancelKick"
+  />
+  <!-- 解散二次确认（复核 #55）：页底那颗钮点错=全房解散 -->
+  <ConfirmSheet
+    v-if="dissolvePending"
+    title="解散房间"
+    :message="dissolvePrompt()"
+    confirm-text="解散"
+    @confirm="confirmDissolve"
+    @cancel="cancelDissolve"
+  />
 </template>
 
 <style scoped>
@@ -206,12 +277,84 @@ function dissolve(): void {
   margin-bottom: 8px;
 }
 .sec h4 {
-  margin: 0 0 4px;
+  margin: 0 0 6px;
   font-size: 13px;
   color: #e0f7fa;
 }
 .sec .hint {
   margin: 0;
+}
+/* 成员行（#58）：名字 + 在线态 + 行尾「请出」；假人/自己的行没有钮 */
+.memList {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+.memList li {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  background: #1c2933;
+  border-radius: 9px;
+  padding: 6px 8px;
+  font-size: 12.5px;
+  min-height: 30px;
+}
+.memList li.off {
+  opacity: 0.6;
+}
+.no {
+  flex: 0 0 auto;
+  width: 19px;
+  height: 19px;
+  display: grid;
+  place-items: center;
+  background: #37474f;
+  border-radius: 50%;
+  font-size: 10px;
+  font-weight: 800;
+  color: #b0bec5;
+}
+.nm {
+  flex: 1;
+  min-width: 0;
+  font-weight: 700;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.nm .me {
+  font-style: normal;
+  font-size: 10.5px;
+  color: #ffb74d;
+}
+.crown {
+  flex: 0 0 auto;
+  font-size: 11px;
+}
+.tag {
+  flex: 0 0 auto;
+  font-size: 10.5px;
+  color: #90a4ae;
+}
+.tag.on {
+  color: #81c784;
+}
+.tag.bot {
+  color: #81d4fa;
+}
+.kick {
+  flex: 0 0 auto;
+  border: 1px solid #8e2418;
+  background: rgba(142, 36, 24, 0.25);
+  color: #ef9a9a;
+  border-radius: 999px;
+  padding: 4px 10px;
+  font-size: 11.5px;
+  font-weight: 800;
 }
 .danger {
   width: 100%;

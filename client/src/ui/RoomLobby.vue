@@ -8,6 +8,8 @@
  * - intermission 态（局间真形，#42 定案 phase 三值换代）：配置面板（现有 sheet 流）+ 假人步进 +
  *   房主「🎴 开下一局」（startGame）+ 上一局结算摘要卡（roomStore.lastSettlement 局间缓存；
  *   详情点「回看战况」开全屏 BaseSheet 文字流——不是 Settlement.vue 整页横生）。
+ * - 踢人（M3-T6，#58 / L-05）：座位行「🥾」**先开二次确认浮层**（与 ⚙ 成员管理同一形态、同一状态机），
+ *   取消不踢、确认才踢；解散房间同样先确认。
  * 角色被动等查看类走浮层（弹窗原则）：角色详情与配置面板都是 BaseSheet。
  */
 import { computed, reactive, ref, watch } from "vue";
@@ -23,7 +25,11 @@ import {
   fromLobbyConfig,
   toLobbyConfig,
 } from "../game/lobbyConfig";
+import { kickPrompt, dissolvePrompt, type KickTarget } from "../game/confirm";
+import { memberRows, seatsOf } from "../game/members";
+import { useConfirm } from "../game/useConfirm";
 import BaseSheet from "./BaseSheet.vue";
+import ConfirmSheet from "./ConfirmSheet.vue";
 import ConfigPanel, { type ConfigModel } from "./ConfigPanel.vue";
 import SecretDraft from "./SecretDraft.vue";
 import SfxCredits from "./SfxCredits.vue";
@@ -53,6 +59,39 @@ const canAddBot = computed(() => botsCount.value < MAX_BOTS && seats.value.lengt
 
 function isMe(seat: number): boolean {
   return seat === roomStore.mySeat.value;
+}
+
+/** 成员行（判据与 ⚙ 成员管理同一处：game/members）——大厅 🥾 的可见性也走它，不另写一份判据 */
+const memberRowsOf = computed(() =>
+  memberRows({
+    seats: seatsOf(snap.value?.seats ?? []),
+    mySeat: roomStore.mySeat.value,
+    hostSeat: snap.value?.hostSeat ?? null,
+  }),
+);
+/** 座位号 → 该座能否请出（canKick 是唯一判据：房主+真人+非自己） */
+function canKick(seat: number): boolean {
+  return memberRowsOf.value.find((r) => r.seat === seat)?.canKick ?? false;
+}
+
+/** 踢人（M3-T6 / L-05）：点 🥾 **只开确认浮层**，确认后才发 kick——取消不踢 */
+const {
+  pending: kickPending,
+  ask: askKick,
+  confirm: confirmKick,
+  cancel: cancelKick,
+} = useConfirm<KickTarget>((t) => roomStore.kick(t.seat));
+
+/** 解散（复核 #55）：页脚那颗紧贴页底的钮，点错=全房解散——同样先二次确认 */
+const {
+  pending: dissolvePending,
+  ask: askDissolveBox,
+  confirm: confirmDissolve,
+  cancel: cancelDissolve,
+} = useConfirm<{ kind: "dissolve" }>(() => roomStore.dissolve());
+/** 模板入口：无参（目标恒为「解散本房间」） */
+function askDissolve(): void {
+  askDissolveBox({ kind: "dissolve" });
 }
 
 function roleOf(id: RoleId | null): RoleDef | null {
@@ -181,13 +220,14 @@ const detail = computed(() => roleOf(detailRole.value));
           </span>
           <span v-if="s.bot" class="botTag">🤖 假人</span>
           <span v-else class="dot" :class="{ on: s.online }">{{ s.online ? "在线" : "离线" }}</span>
-          <!-- 踢人（M2-T8，#45）：仅房主可见、真人且非自己；被踢者即刻断连+拉黑至房间销毁 -->
+          <!-- 踢人（M2-T8，#45 / M3-T6 #58）：可请出判据走 game/members（房主+真人+非自己）；
+               **先开二次确认**（L-05），确认后才踢——被踢者即刻断连+拉黑至房间销毁 -->
           <button
-            v-if="amHost && !s.bot && !isMe(s.seat)"
+            v-if="canKick(s.seat)"
             class="kick"
             type="button"
             title="请出：断其连接、身份拉黑至房间销毁（棋子转自动掷骰）"
-            @click="roomStore.kick(s.seat)"
+            @click="askKick({ seat: s.seat, name: s.name })"
           >🥾</button>
         </li>
       </ul>
@@ -269,7 +309,7 @@ const detail = computed(() => roleOf(detailRole.value));
         {{ phase === "intermission" ? "等房主开下一局" : "等房主按下开始" }}
       </p>
       <div class="footBtns">
-      <button v-if="amHost" class="danger" type="button" @click="roomStore.dissolve()">💥 解散房间</button>
+      <button v-if="amHost" class="danger" type="button" @click="askDissolve()">💥 解散房间</button>
       <!-- 对局中（playing）服务端封禁离席（名册 boot 定死）；断线治理=自动重连归队（M2-T8）——别出假按钮 -->
       <button v-if="!inPlay" class="ghost" type="button" @click="roomStore.leave()">🚪 离房</button>
       <!-- 规则速查/引导重看入口（M3-T4 → #56 / G-05） -->
@@ -400,6 +440,25 @@ const detail = computed(() => roleOf(detailRole.value));
         <button class="close" type="button" @click="reviewOpen = false">收 起</button>
       </div>
     </BaseSheet>
+
+    <!-- 请出二次确认（L-05 / G-07 同一形态）：点 🥾 只开这层，取消不踢、确认才踢 -->
+    <ConfirmSheet
+      v-if="kickPending"
+      title="请出成员"
+      :message="kickPrompt(kickPending.name)"
+      confirm-text="请出"
+      @confirm="confirmKick"
+      @cancel="cancelKick"
+    />
+    <!-- 解散二次确认（复核 #55）：页底那颗钮点错=全房解散 -->
+    <ConfirmSheet
+      v-if="dissolvePending"
+      title="解散房间"
+      :message="dissolvePrompt()"
+      confirm-text="解散"
+      @confirm="confirmDissolve"
+      @cancel="cancelDissolve"
+    />
   </div>
 </template>
 
