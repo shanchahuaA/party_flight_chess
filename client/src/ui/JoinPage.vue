@@ -7,6 +7,7 @@
  */
 import { computed, onMounted, ref } from "vue";
 import { loadNickname, roomStore } from "../net/roomStore";
+import SfxCredits from "./SfxCredits.vue";
 
 const isCreate = computed(() => roomStore.joinMode.value === "create");
 const prefill = computed(() => roomStore.pendingCode.value ?? "");
@@ -83,6 +84,8 @@ function submit(): void {
 
     <footer class="foot">
       <button class="ghost" type="button" @click="roomStore.backHome()">← 回首页</button>
+      <!-- 关于 / 音效素材署名（M3-T2 → #54 / A-06）：邀请链接直达的人先落到这一页，署名也要可见 -->
+      <SfxCredits />
     </footer>
   </div>
 </template>

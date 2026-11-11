@@ -30,6 +30,7 @@
 | `__pzbeast(hp)` | dev.setBeast | 年兽收束/团灭（钉 1=下一刀必杀） |
 | `__pzdog(cell?)` | dev.spawnDog | 遭遇战（缺省人间相邻格） |
 | `__pzvis(hidden)` | 伪造 hidden 切换沿 | 单机计时域（T9）：`true`=切后台时钟冻结／`false`=回前台恢复——IAB 常驻 `document.hidden=true` 出不了真实切换沿，冒烟全靠它 |
+| `__pzsfx()` | 音效播放器只读快照（M3-T2 #54） | `enabled`/`vibrateOn`/`canVibrate`/`ready`/`needsUnlock` + `recent`（最近 20 批判定出的音效名，`roll+step` 形式）——A-03/A-04/A-07 冒烟断言口；真出声只能靠耳朵 |
 | `__pz()` | 只读快照 | 内核态随手查：now/turn/phase/me/bots/finishers/hand/ground/dogs/customs/items/msgs |
 | `__pztime()` | 对时探针（M2-T7 #44，联机面挂账） | roomStore 的 ServerClock 读数：serverNow/localWallDelta/rttBest/offset/samplesN——改本机时钟判读/重对时样本数冒烟断读；单机 `?fast` 下 serverNow 恒 0（另走 T9 冻结钟域） |
 

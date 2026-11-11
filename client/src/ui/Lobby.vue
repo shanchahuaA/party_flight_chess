@@ -11,6 +11,8 @@ import { ROLES, type GameConfig, type PlayerDef, type RoleId } from "../../../ke
 import { BOT_NAMES } from "../../../shared/protocol";
 import { gameStore, newSeed } from "../game/store";
 import { roomStore } from "../net/roomStore";
+import { sfxPlayer } from "../audio/sfx";
+import SfxCredits from "./SfxCredits.vue";
 import BaseSheet from "./BaseSheet.vue";
 import ConfigPanel, { type ConfigModel } from "./ConfigPanel.vue";
 import { DEFAULT_CONFIG_MODEL } from "../game/lobbyConfig";
@@ -28,6 +30,10 @@ function pickRole(id: RoleId): void {
 }
 
 function start(): void {
+  // 音效解锁（M3-T2 / A-03 / G-17）：**必须在这个用户手势的同步栈里**发 resume——
+  // 挪到建局之后（await 之后/下一拍）Safari 会拒。失败不拦开局：状态留在 needsUnlock，
+  // 下次手势由 audio/shell 的委托监听再试。
+  void sfxPlayer().unlock();
   const config: Partial<GameConfig> = {
     seed: newSeed(), // 单机局默认换新种子（内核默认种子留给测试）
     turnCap: cfg.turnCap,
@@ -102,6 +108,9 @@ function start(): void {
       <button class="start" type="button" @click="start">🎴 抽暗牌 · 开始</button>
       <!-- 规则速查/引导重看入口（M3-T4 → #56 / G-05：「重看入口在大厅页脚📖 规则速查」） -->
       <button class="guideLink" type="button" @click="gameStore.openGuide()">📖 规则速查</button>
+      <!-- 关于 / 音效素材署名（M3-T2 → #54 / A-06）：win.mp3（CC-BY 4.0）与 step.mp3（CC-BY 3.0）
+           必须在产品可见处署名；文案住 audio/credits.ts（与 LICENSES.md 逐字对账）。 -->
+      <SfxCredits />
     </footer>
 
     <!-- 角色详情弹层（浮层原则：查看类不切页） -->
@@ -279,6 +288,7 @@ function start(): void {
   font-size: 12px;
   font-weight: 700;
 }
+/* 关于 / 音效素材授权（M3-T2 / A-06）：样式住 SfxCredits.vue（大厅两页共用同一块） */
 .sheetBody .sub {
   font-size: 11.5px;
   color: #b0bec5;
