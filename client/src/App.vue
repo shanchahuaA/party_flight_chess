@@ -8,6 +8,8 @@
 import { computed, onBeforeUnmount, onMounted } from "vue";
 import { maybeBootFastPath } from "./game/store";
 import { bindRoomProbe, bootFromUrl, roomStore } from "./net/roomStore";
+import { dissolvePrompt } from "./game/confirm";
+import { useConfirm } from "./game/useConfirm";
 import Lobby from "./ui/Lobby.vue";
 import JoinPage from "./ui/JoinPage.vue";
 import RoomLobby from "./ui/RoomLobby.vue";
@@ -21,6 +23,7 @@ import CardChoice from "./ui/CardChoice.vue";
 import Settlement from "./ui/Settlement.vue";
 import GuideSheet from "./ui/GuideSheet.vue";
 import RecBar from "./ui/RecBar.vue";
+import ConfirmSheet from "./ui/ConfirmSheet.vue";
 import { gameStore } from "./game/store";
 import { recLog } from "./net/recLog";
 import { installSfxShell } from "./audio/shell";
@@ -60,6 +63,19 @@ onBeforeUnmount(() => {
 });
 
 const toast = computed(() => gameStore.toast.value);
+
+/** 解散房间（复核 #55 的误触面，M3-T6 #58）：`.roomBar` 那颗钮紧贴页底容易误按，代价是解散全房——
+ *  先开与请出同一形态的二次确认浮层（状态机住 game/confirm）。 */
+const {
+  pending: dissolvePending,
+  ask: askDissolveBox,
+  confirm: confirmDissolve,
+  cancel: cancelDissolve,
+} = useConfirm<{ kind: "dissolve" }>(() => roomStore.dissolve());
+/** 模板入口：无参（目标恒为「解散本房间」） */
+function askDissolve(): void {
+  askDissolveBox({ kind: "dissolve" });
+}
 </script>
 
 <template>
@@ -85,7 +101,7 @@ const toast = computed(() => gameStore.toast.value);
          归队（棋子由系统暂时接管），纸面常识一句——房主解散保有，低调完备 -->
     <div v-if="view === 'room'" class="roomBar">
       <span class="note">对局中不可离席；掉线会自动重连归队（棋子由系统暂管）</span>
-      <button v-if="amHost" type="button" @click="roomStore.dissolve()">💥 解散</button>
+      <button v-if="amHost" type="button" @click="askDissolve()">💥 解散</button>
     </div>
     <div v-if="toast" class="toast">{{ toast }}</div>
   </div>
@@ -110,6 +126,15 @@ const toast = computed(() => gameStore.toast.value);
   </div>
   <!-- 房间 toast 全局渲染：离房/解散/被顶都伴随视图切换，渲染在页组件里会被卸载吃掉 -->
   <div v-if="roomToast" class="toast">{{ roomToast }}</div>
+  <!-- 解散二次确认（复核 #55，M3-T6 #58）：对局面角落的「💥 解散」先开这层——取消不解散 -->
+  <ConfirmSheet
+    v-if="dissolvePending"
+    title="解散房间"
+    :message="dissolvePrompt()"
+    confirm-text="解散"
+    @confirm="confirmDissolve"
+    @cancel="cancelDissolve"
+  />
   <!-- 测试记录器悬浮条（M3 #51）：仅 ?rec=1 渲染——不带参数时这里连组件都不存在，零行为差异 -->
   <RecBar v-if="recOn" />
 </template>
