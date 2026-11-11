@@ -9,20 +9,27 @@ permissions:
   contents: read
 
 jobs:
-  # 规则内核单测（#17 起建立的首个测试集）
+  # 三个包的测试矩阵（2026-11-11 retro 收口：原先只跑 kernel，
+  # client 的判定模块/记录器/引导状态机与 server 的 DO 协议边界测试从未进 CI——
+  # 「模板注释吞掉三个组件」那类 bug 就是这样一路绿的）
   test:
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        pkg: [kernel, client, server]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: 22
+          # server 的 wrangler/vitest-pool-workers 要求 Node ≥ 20.18；统一 24 与 worker job 一致
+          node-version: 24
           cache: npm
-          cache-dependency-path: kernel/package-lock.json
+          cache-dependency-path: ${{ matrix.pkg }}/package-lock.json
       - run: npm ci
-        working-directory: kernel
+        working-directory: ${{ matrix.pkg }}
       - run: npm test
-        working-directory: kernel
+        working-directory: ${{ matrix.pkg }}
 
   # GitHub Pages：构建 client（Vite+Vue3）并部署
   pages:

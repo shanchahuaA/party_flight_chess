@@ -1,0 +1,12 @@
+{
+  "name": "party-flight-chess",
+  "private": true,
+  "description": "仓库级任务入口（不含依赖）：提交前跑一次 npm run verify",
+  "scripts": {
+    "verify": "npm run verify:kernel && npm run verify:client && npm run verify:server",
+    "verify:kernel": "npm --prefix kernel run typecheck && npm --prefix kernel test",
+    "verify:client": "npm --prefix client run build",
+    "verify:server": "npm --prefix server run typecheck && npm --prefix server test",
+    "test": "npm --prefix kernel test && npm --prefix client test && npm --prefix server test"
+  }
+}
