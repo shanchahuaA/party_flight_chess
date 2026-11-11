@@ -150,6 +150,32 @@ describe("音效判定（A-01 / A-07）", () => {
     expect(deriveSounds({ facts: [{ type: "groupFail" }], newMessages: [] }, VIEW)).toEqual(["fail"]);
   });
 
+  // A-01 第 6 格「年兽吼 / 重击——最后一波出场与砍击」：出场（beastWave）之外，自己砍中那一下也要响。
+  // 年兽战是全员合砍，beastHit.pid 是**挥砍的玩家**——只认自己那一刀（A-07 只播自己身上的事）。
+  it("自己砍中年兽响 beast（A-01 第 6 格的「砍击」）", () => {
+    const s = deriveSounds({ facts: [{ type: "beastHit", pid: 0, dmg: 7, hp: 23 }], newMessages: [] }, VIEW);
+    expect(s).toEqual(["beast"]);
+  });
+
+  it("别人砍中年兽不响（合砍里别人的刀不进我的音轨）", () => {
+    const s = deriveSounds({ facts: [{ type: "beastHit", pid: 2, dmg: 9, hp: 14 }], newMessages: [] }, VIEW);
+    expect(s).toEqual([]);
+  });
+
+  it("同批出场+自己砍中：beast 只响一次（去重）", () => {
+    const s = deriveSounds(
+      {
+        facts: [
+          { type: "beastWave", wave: 2, hp: 30, maxHp: 30 },
+          { type: "beastHit", pid: 0, dmg: 5, hp: 25 },
+        ],
+        newMessages: [],
+      },
+      VIEW,
+    );
+    expect(s).toEqual(["beast"]);
+  });
+
   it("结算得分响 score", () => {
     expect(deriveSounds({ facts: [{ type: "settlement", result: {} as never }], newMessages: [] }, VIEW)).toEqual(["score"]);
   });

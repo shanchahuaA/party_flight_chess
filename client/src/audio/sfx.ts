@@ -8,7 +8,8 @@
  * 三条硬纪律：
  * 1. **解锁**：只在用户手势内 `AudioContext.resume()`（A-03）。每次出声前检查 `state === 'running'`，
  *    不是就不播——把「待解锁」留给 `needsUnlock` 暴露出去（T3 的 ⚙ 面板显示可点的「开启音效」），
- *    **不许静默失败**。
+ *    **不许静默失败**。`needsUnlock` 只在「**尝试过**解锁仍不 running」时为真：冷启动还没试过时的
+ *    「没 running」是常态，不是浏览器拒绝（G-17 的触发前提）。
  * 2. **全局静音**：`pfc.sfx.enabled` 存 localStorage，跨局保留（A-04）。
  * 3. **震动是音效的对偶**：同一批判定里挑 `VIBRATE_SFX` 三处（自己扣血 / 骰子落定 / 轮到自己），
  *    单次 `VIBRATE_MS ≤ 30ms`；`navigator.vibrate` 不存在 → 整行隐藏（`canVibrate=false`），不做假开关。
@@ -193,7 +194,8 @@ export function audioUrlOf(baseHref: string, name: SfxName): string {
  * 壳层播放器。状态只有两个开关（内存态优先于坏掉的 localStorage）：
  * - `enabled`：音效总开关（全局静音）
  * - `vibrateOn`：震动开关
- * 解锁状态由后端 `running()` 现读——切后台被系统挂起会自动回落为「待解锁」，下次手势再恢复。
+ * 解锁状态由后端 `running()` 现读——切后台被系统挂起会自动回落为「待解锁」（仅当已经
+ * 尝试过解锁），下次手势再恢复。
  */
 export class SfxPlayer {
   private readonly backend: AudioBackend;
@@ -201,6 +203,10 @@ export class SfxPlayer {
   private readonly nav: VibratorLike | null;
   private sfxPref: boolean;
   private vibratePref: boolean;
+  /** 是否**尝试过**解锁（`unlock()` 调过即 true）：区分「还没试」与「试了被拒」——
+   *  冷启动 AudioContext 都还没建，`running()` 为 false 不代表浏览器拒绝（G-17 只要求
+   *  「浏览器若拒绝」时才出可点的「开启音效」，否则每次进游戏都是一场假告警）。 */
+  private unlockAttempted = false;
 
   constructor(deps: SfxDeps) {
     this.backend = deps.backend;
@@ -230,9 +236,12 @@ export class SfxPlayer {
     return this.backend.running();
   }
 
-  /** 是否处于「待解锁」：T3 面板据此显示可点的「开启音效」（不许静默失败） */
+  /** 是否处于「待解锁」：T3 面板据此显示可点的「开启音效」（不许静默失败）。
+   *  判据是「**尝试过**解锁但当前不是 running」——冷启动还没试过时 AudioContext 根本不存在，
+   *  `running()` 为 false 是常态而非拒绝（G-17 的触发前提是「浏览器若拒绝」）。
+   *  试过被拒 / 解锁后又被系统挂起，都会落成 true。 */
   get needsUnlock(): boolean {
-    return !this.backend.running();
+    return this.unlockAttempted && !this.backend.running();
   }
 
   /** 素材解码进度（冒烟探针；后端不提供 stats 时为 null） */
@@ -242,6 +251,7 @@ export class SfxPlayer {
 
   /** 用户手势内调（「开始游戏」/首次点按）：成功=true 之后才可能出声 */
   async unlock(): Promise<boolean> {
+    this.unlockAttempted = true; // 先置位再试：拒绝≠没试过（needsUnlock 只认「试过且没 running」）
     return this.backend.unlock();
   }
 

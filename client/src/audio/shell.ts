@@ -17,6 +17,7 @@
  */
 import { reactive, watch } from "vue";
 import { gameStore } from "../game/store";
+import { hasDevQuery } from "../game/devQuery";
 import { sfxPlayer } from "./sfx";
 
 /**
@@ -24,7 +25,8 @@ import { sfxPlayer } from "./sfx";
  * - `enabled`：🔊 音效是否开（关掉=全局静音）
  * - `vibrateOn`：📳 震动是否开
  * - `canVibrate`：设备是否支持震动——**false 时整行隐藏**（A-05，不做假开关）
- * - `needsUnlock`：是否待解锁——true 时面板显示可点的「开启音效」（G-17，不许静默失败）
+ * - `needsUnlock`：是否待解锁——true 时面板显示可点的「开启音效」（G-17，不许静默失败）。
+ *   语义是「**尝试过**解锁但仍不 running」（被拒/被系统挂起），冷启动还没试过时为 false。
  */
 export const sfxUi = reactive({
   enabled: sfxPlayer().enabled,
@@ -58,14 +60,10 @@ let installed = false;
  * 冒烟探针（`?dev=1` 才挂 `__pzsfx()`）：播放器状态 + 最近 20 批判定出的音效名。
  * Web Audio 是否真出声只能靠耳朵，但「该播什么、有没有解锁、静音没」可以页内读——
  * A-03/A-04/A-07 的冒烟断言口。不进生产路径（未带 dev 参数时这个闭包都不存在）。
+ * **求值时机**：本行在模块导入期求值一次（一次定终身）——与 `net/roomStore`、`game/store`
+ * 的调用期判据不同，口径同吃 `game/devQuery.hasDevQuery`，时机各自保留。
  */
-const devLog: string[] | null = (() => {
-  try {
-    return new URLSearchParams(location.search).has("dev") ? [] : null;
-  } catch {
-    return null;
-  }
-})();
+const devLog: string[] | null = hasDevQuery() ? [] : null;
 
 /** 把玩家状态同步进响应式镜像（解锁/失败后调用；T3 面板据此显示「开启音效」） */
 function syncUi(): void {
@@ -111,9 +109,11 @@ export function installSfxShell(): void {
     { flush: "sync", immediate: true },
   );
 
-  // ② 手势解锁：没 running 就再试——成功后就绪，之后每次手势只剩一次廉价状态读
+  // ② 手势解锁：还没 running 就再试——成功后每次手势只剩一次廉价状态读。
+  //    判据是 `ready`（running）而**不是** `needsUnlock`：后者只在「尝试过仍失败」时为真，
+  //    冷启动还没试过时为 false，用它当闸会让首次手势永远不触发解锁。
   const tryUnlock = (): void => {
-    if (!player.needsUnlock) return;
+    if (player.ready) return;
     void player.unlock().then(syncUi);
   };
   document.addEventListener("pointerdown", tryUnlock, true);

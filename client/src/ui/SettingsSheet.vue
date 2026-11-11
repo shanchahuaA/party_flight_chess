@@ -17,9 +17,9 @@ import { computed, ref } from "vue";
 import { enableSfx, enableVibrate, sfxUi, unlockSfx } from "../audio/shell";
 import { roomStore } from "../net/roomStore";
 import { settingsSections } from "../game/settingsPanel";
-import { memberRows, seatsOf } from "../game/members";
+import { iAmHost, memberRows, seatsOf } from "../game/members";
 import { dissolvePrompt, kickPrompt, type KickTarget } from "../game/confirm";
-import { useConfirm } from "../game/useConfirm";
+import { useConfirm, useDissolveConfirm } from "../game/useConfirm";
 import BaseSheet from "./BaseSheet.vue";
 import ConfirmSheet from "./ConfirmSheet.vue";
 
@@ -27,12 +27,10 @@ const emit = defineEmits<{ close: [] }>();
 
 /** 联机房间页（单机对局没有成员管理/解散的概念） */
 const inRoom = computed(() => roomStore.view.value === "room" && roomStore.code.value != null);
-/** 房主判据：座位号可比且相等（mySeat 未定/快照未到时一律非房主，避免 null===null） */
-const amHost = computed(() => {
-  const snap = roomStore.snapshot.value;
-  const mine = roomStore.mySeat.value;
-  return !!snap && mine != null && snap.hostSeat === mine;
-});
+/** 房主判据：吃 `game/members` 的唯一真源（与成员行 canKick 同口径，不在此另写一份） */
+const amHost = computed(() =>
+  iAmHost(roomStore.mySeat.value, roomStore.snapshot.value?.hostSeat ?? null),
+);
 
 const sections = computed(() =>
   settingsSections({
@@ -41,7 +39,6 @@ const sections = computed(() =>
     canVibrate: sfxUi.canVibrate,
     needsUnlock: sfxUi.needsUnlock,
     sfxEnabled: sfxUi.enabled,
-    vibrateOn: sfxUi.vibrateOn,
   }),
 );
 
@@ -79,20 +76,17 @@ const {
   cancel: cancelKick,
 } = useConfirm<KickTarget>((t) => roomStore.kick(t.seat));
 
-/** 解散（复核 #55）：同样先二次确认——代价是解散全房 */
+/** 解散（复核 #55）：同样先二次确认——代价是解散全房
+ *  （薄封装 `useDissolveConfirm`，与大厅页脚/对局面角落同一份） */
 const {
   pending: dissolvePending,
-  ask: askDissolveBox,
+  ask: askDissolve,
   confirm: confirmDissolve,
   cancel: cancelDissolve,
-} = useConfirm<{ kind: "dissolve" }>(() => {
+} = useDissolveConfirm(() => {
   emit("close");
   roomStore.dissolve();
 });
-/** 模板入口：无参（目标恒为「解散本房间」） */
-function askDissolve(): void {
-  askDissolveBox({ kind: "dissolve" });
-}
 </script>
 
 <template>

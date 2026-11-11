@@ -33,6 +33,7 @@ import type {
 import type { Downstream, LobbyConfig, RoomSnapshot, Upstream } from "../../../shared/protocol";
 import { ServerClock } from "./clock";
 import { bindDevSnapshot, gameStore } from "../game/store";
+import { hasDevQuery } from "../game/devQuery";
 import { RemoteRoomSource, type DownstreamGame } from "../game/remoteSource";
 import { recLog } from "./recLog";
 
@@ -629,7 +630,7 @@ class RoomStore {
     );
     gameStore.bootRemote(src);
     this.remoteSource = src;
-    if (isDevQuery()) bindDevSnapshot();
+    if (hasDevQuery()) bindDevSnapshot();
     return src;
   }
 
@@ -688,20 +689,12 @@ function markUrlWithRoom(code: string): void {
   }
 }
 
-/** dev 冒烟命中判据（?dev=1）：链接参数一查即真（?room= 链接可带 &dev=1 同用） */
-function isDevQuery(): boolean {
-  try {
-    return new URLSearchParams(location.search).has("dev");
-  } catch {
-    return false;
-  }
-}
-
 /** 联机只读探针（M2-T6 起挂 __pzroom；M2-T7 #44 追加 __pztime，均 ?dev=1）：房间面快照摘要——
  *  code/phase/mySeat/hostSeat/ws 状态/座位列/config + ServerClock 对时读数，联机冒烟的断言口。
- *  （对局内的 __pz 仍是 gameStore 的：bindDevSnapshot 单函数双挂位，见 buildRemoteSource。） */
+ *  （对局内的 __pz 仍是 gameStore 的：bindDevSnapshot 单函数双挂位，见 buildRemoteSource。）
+ *  判据走 `game/devQuery.hasDevQuery`（与 audio/shell、game/store 同一份）。 */
 export function bindRoomProbe(): void {
-  if (!isDevQuery()) return;
+  if (!hasDevQuery()) return;
   (window as unknown as Record<string, unknown>).__pzroom = () => {
     const snap = roomStore.snapshot.value;
     if (!snap) return null;

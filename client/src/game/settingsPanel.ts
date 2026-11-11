@@ -9,6 +9,8 @@
  * - `vibrate`：只有设备支持 `navigator.vibrate` 才出——**整行隐藏**，不出灰开关（A-05）。
  * - `unlockHint`：待解锁且音效开着时出可点的「开启音效」（G-17，不许静默失败）；
  *   音效已关着不必催解锁（先开音效，解锁随下一次手势自然发生）。
+ *   注意 `needsUnlock` 的语义是「**尝试过**解锁但没 running」（见 `audio/sfx.ts`）——
+ *   冷启动还没试过时它是 false，所以面板不会一进游戏就假告警。
  * - `members` / `dissolve`：**仅房间页的房主**（G-04 ③④／G-07）。单机没有房间与解散的概念，
  *   即便调用方把 host 传成真也不出（防御性口径，单机链不该有这个分支）。
  *
@@ -28,8 +30,6 @@ export interface SettingsView {
   needsUnlock: boolean;
   /** 音效开关当前值（`sfxUi.enabled`） */
   sfxEnabled: boolean;
-  /** 震动开关当前值（`sfxUi.vibrateOn`） */
-  vibrateOn: boolean;
 }
 
 /** 面板会出现的全部节（白名单：多一项就是「局中出现了不该有的东西」） */
