@@ -16,6 +16,7 @@ import type { MessageEntry, RoleDef, RoleId, SettlementRow } from "../../../kern
 import { MAX_BOTS, MAX_SEATS, type LobbyConfig } from "../../../shared/protocol";
 import { roomStore } from "../net/roomStore";
 import { gameStore } from "../game/store";
+import { sfxPlayer } from "../audio/sfx";
 import {
   configSummary as configSummaryOf,
   DEFAULT_CONFIG_MODEL,
@@ -25,6 +26,7 @@ import {
 import BaseSheet from "./BaseSheet.vue";
 import ConfigPanel, { type ConfigModel } from "./ConfigPanel.vue";
 import SecretDraft from "./SecretDraft.vue";
+import SfxCredits from "./SfxCredits.vue";
 import { CULPRIT_META, MEDALS } from "./Settlement.vue";
 
 const snap = computed(() => roomStore.snapshot.value);
@@ -118,6 +120,14 @@ function openSheet(): void {
 function sendConfig(): void {
   if (!amHost.value || inPlay.value) return;
   roomStore.setConfig(toLobbyConfig(cfg));
+}
+
+/** 开局手势（房主「抽暗牌 · 开始」/「开下一局」）：音效解锁必须在这个手势的同步栈里
+ *  （M3-T2 / A-03 / G-17）——浏览器只认用户手势内的 `resume()`。解锁失败不拦开局：
+ *  状态留在待解锁，下次任意手势由 audio/shell 的委托监听再试。 */
+function startGame(): void {
+  void sfxPlayer().unlock();
+  roomStore.startGame();
 }
 
 const configSummary = computed(() => configSummaryOf(snap.value?.config));
@@ -253,7 +263,7 @@ const detail = computed(() => roleOf(detailRole.value));
         class="start"
         type="button"
         :disabled="seats.length < 2"
-        @click="roomStore.startGame()"
+        @click="startGame()"
       >{{ phase === "intermission" ? "🎴 开下一局" : "🎴 抽暗牌 · 开始" }}</button>
       <p v-else-if="!amHost && !inPlay" class="waitHint">
         {{ phase === "intermission" ? "等房主开下一局" : "等房主按下开始" }}
@@ -267,6 +277,8 @@ const detail = computed(() => roleOf(detailRole.value));
     </div>
     <p v-if="inPlay" class="hint">对局中不可离席；掉线后自动重连归队，棋子由系统暂管（超时替掷）。房主可请出座位。</p>
       <p v-if="amHost && !inPlay && seats.length < 2" class="hint">至少 2 人才能开局——人不够可先加假人。</p>
+      <!-- 关于 / 音效素材署名（M3-T2 → #54 / A-06）：与单机大厅页脚同一块；从邀请链接直达的人也要能看到 -->
+      <SfxCredits v-if="!inPlay" />
     </footer>
 
     <!-- 房主配置弹窗（与单机同一套 ConfigPanel；非房主只读预览；浮层原则不切页） -->

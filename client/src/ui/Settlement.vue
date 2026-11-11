@@ -31,6 +31,7 @@ import type { SettlementResult, SettlementRow } from "../../../kernel/src";
 import type { LobbyConfig } from "../../../shared/protocol";
 import { gameStore } from "../game/store";
 import { roomStore } from "../net/roomStore";
+import { sfxPlayer } from "../audio/sfx";
 import {
   configSummary,
   DEFAULT_CONFIG_MODEL,
@@ -159,8 +160,10 @@ function sendCfg(): void {
   if (!amHost.value) return;
   roomStore.setConfig(toLobbyConfig(cfg));
 }
-/** 开下一局（S-06）：房主专属；服务端 start 在 intermission 同闸放行 */
+/** 开下一局（S-06）：房主专属；服务端 start 在 intermission 同闸放行。
+ *  音效解锁（M3-T2 / A-03）：又是一次「开始游戏」手势，顺手在同步栈里 resume 一次。 */
 function startNext(): void {
+  void sfxPlayer().unlock();
   roomStore.startGame();
   returnedLobby.value = true; // 对局面接管，结算页退场
 }

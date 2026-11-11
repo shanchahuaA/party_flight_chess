@@ -23,6 +23,7 @@ import GuideSheet from "./ui/GuideSheet.vue";
 import RecBar from "./ui/RecBar.vue";
 import { gameStore } from "./game/store";
 import { recLog } from "./net/recLog";
+import { installSfxShell } from "./audio/shell";
 
 const view = computed(() => roomStore.view.value);
 const started = computed(() => !!gameStore.source.value);
@@ -47,6 +48,9 @@ const amHost = computed(() => roomStore.snapshot.value?.hostSeat === roomStore.m
 const roomToast = computed(() => roomStore.toast.value);
 
 onMounted(() => {
+  // 音效壳（M3-T2 / A-03）：判定结果 → 播放器、手势解锁、UI 轻点委托——三处配线只在 App 层挂一次。
+  // 先于建局挂载：?fast 免大厅直达时，建局初始事实批（年兽/结算一类的首帧音）也不漏。
+  installSfxShell();
   bootFromUrl();
   bindRoomProbe();
   maybeBootFastPath();
