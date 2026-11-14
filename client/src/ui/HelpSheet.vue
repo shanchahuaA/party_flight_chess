@@ -50,7 +50,7 @@ defineEmits<{ close: [] }>();
 }
 .blk p {
   margin: 0;
-  font-size: 11px;
+  font-size: 12px; /* 视觉拍板：11px → 12px（390×844 实测仍一屏读完，见 G-03）；行高保持 1.42 */
   line-height: 1.42;
   color: #b0bec5;
 }

@@ -1,13 +1,17 @@
 <script setup lang="ts">
 /**
  * 首次引导浮层（M3-T4，#56 / G-05）：第一局第一窗掷骰前自动弹 3 步。
- * 状态机与降级口径全在 game/guide.ts；本组件只管渲染 + 转发「跳过 / 下一步 / 开始游戏」。
+ * 状态机与降级口径全在 game/guide.ts（`stepGuide` + `useGuide` 薄适配）；本组件只管渲染 +
+ * 转发「跳过 / 下一步 / 开始游戏」。
  * 两个入口：①自动（第一局第一窗掷骰前）②大厅页脚「📖 规则速查」重看（gameStore.guideReq）。
- * 串联口径：跳过与走完都写 `pfc.guide.seen`——本设备之后不再自动弹。
+ * 出口三态：**跳过 / 走完**写 `pfc.guide.seen`（本设备之后不再自动弹）；
+ * **让位**（玩家主动点开 📖/⚙，gameStore.guideDismiss）只收起浮层、不写 seen——本局不再自动弹，
+ * 换新局若仍未看过照常弹（视觉拍板 B：玩家主动点开的浮层优先）。
  */
-import { computed, ref, watch } from "vue";
+import { computed, watch } from "vue";
 import { gameStore } from "../game/store";
-import { GUIDE_STEPS, guideSeen, markGuideSeen, nextStep, shouldShowGuide } from "../game/guide";
+import { GUIDE_STEPS, guideSeen, shouldShowGuide } from "../game/guide";
+import { useGuide } from "../game/useGuide";
 
 const store = (() => {
   try {
@@ -17,16 +21,12 @@ const store = (() => {
   }
 })();
 
-const open = ref(false);
-const step = ref(0);
-/** 本次会话内已处理过（跳过/走完）——localStorage 写不进时的兜底，防同一局反复弹 */
-const dismissed = ref(false);
-/** 自动弹只触发一次（本组件生命周期内）——不因回合内状态抖动反复弹 */
-const autoOpened = ref(false);
+const guide = useGuide(store);
+const open = guide.open;
+const step = guide.step;
 
-/** 自动弹条件：第一局第一窗 + 轮到我 + 掷骰前 + 本设备没看过 */
+/** 自动弹条件：第一局第一窗 + 轮到我 + 掷骰前 + 本设备没看过（两闸与去抖由状态机管） */
 const autoReady = computed(() => {
-  if (dismissed.value || autoOpened.value) return false;
   const s = gameStore.state.value;
   if (!s) return false;
   return shouldShowGuide({
@@ -41,13 +41,14 @@ const autoReady = computed(() => {
   });
 });
 
+function maybeAutoOpen(): void {
+  if (autoReady.value) guide.autoOpen();
+}
+
 watch(
   autoReady,
   (v) => {
-    if (!v) return;
-    autoOpened.value = true;
-    step.value = 0;
-    open.value = true;
+    if (v) maybeAutoOpen();
   },
   { immediate: true },
 );
@@ -57,8 +58,17 @@ watch(
   () => gameStore.guideReq.value,
   () => {
     if (gameStore.guideReq.value === 0) return;
-    step.value = 0;
-    open.value = true;
+    guide.reopen();
+  },
+);
+
+// 让位入口（视觉拍板 B）：玩家主动点开 📖 帮助 / ⚙ 设置 -> 引导先收起。
+// 收起≠跳过：不写 seen，但本局不再自动弹（否则 autoReady 仍成立会立刻弹回来）。
+watch(
+  () => gameStore.guideDismiss.value,
+  () => {
+    if (gameStore.guideDismiss.value === 0) return;
+    guide.close();
   },
 );
 
@@ -66,45 +76,32 @@ watch(
 watch(
   () => gameStore.source.value,
   () => {
-    autoOpened.value = false;
-    dismissed.value = false;
+    guide.reset();
+    // reset 只松闸；autoReady 读数可能没变（computed 不会因此重算触发 watcher），
+    // 这里显式补判一次，保证「换新局后仍未看过 → 第一窗照常弹」不依赖状态抖动。
+    maybeAutoOpen();
   },
 );
 
 const cur = computed(() => GUIDE_STEPS[Math.min(step.value, GUIDE_STEPS.length - 1)]!);
 const isLast = computed(() => step.value >= GUIDE_STEPS.length - 1);
-
-function finish(): void {
-  dismissed.value = true;
-  open.value = false;
-  markGuideSeen(store);
-}
-
-function advance(): void {
-  const n = nextStep(step.value);
-  if (n == null) {
-    finish();
-    return;
-  }
-  step.value = n;
-}
 </script>
 
 <template>
-  <div v-if="open" class="guideOverlay" @click.self="finish">
+  <div v-if="open" class="guideOverlay" @click.self="guide.skip">
     <div class="guideCard">
       <header class="gHead">
         <span class="dots">
           <i v-for="(_, i) in GUIDE_STEPS" :key="i" :class="{ on: i === step }" />
         </span>
-        <button class="skip" type="button" @click="finish">跳过</button>
+        <button class="skip" type="button" @click="guide.skip">跳过</button>
       </header>
       <div class="gBody">
         <span class="gIcon">{{ cur.icon }}</span>
         <h3>{{ cur.title }}</h3>
         <p>{{ cur.body }}</p>
       </div>
-      <button class="next" type="button" @click="advance">{{ isLast ? "开始游戏" : "下一步" }}</button>
+      <button class="next" type="button" @click="guide.next">{{ isLast ? "开始游戏" : "下一步" }}</button>
     </div>
   </div>
 </template>

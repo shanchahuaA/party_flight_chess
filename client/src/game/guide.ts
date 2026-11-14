@@ -100,3 +100,74 @@ export function shouldShowGuide(s: GuideTriggerState): boolean {
 export function nextStep(cur: number): number | null {
   return cur + 1 < GUIDE_STEPS.length ? cur + 1 : null;
 }
+
+/**
+ * 引导浮层的可见态（组件渲染只读这一份；状态机是替换制，纯值进纯值出）。
+ */
+export interface GuideView {
+  /** 浮层是否开着 */
+  open: boolean;
+  /** 当前步（0..2） */
+  step: number;
+  /** 已跳过/走完（真落 seen；localStorage 写不进时本会话兜底） */
+  dismissed: boolean;
+  /**
+   * 自动弹的一次性闸：本局只自动弹一次。
+   * 收起引导也置位——否则 autoReady 仍成立，下一拍就弹回来。换局由 reset 清掉。
+   */
+  autoOpened: boolean;
+}
+
+/** 初始态：没开、第一步、两闸都松 */
+export const GUIDE_CLOSED: GuideView = { open: false, step: 0, dismissed: false, autoOpened: false };
+
+/** 状态机事件（组件只发这几个；判断条件仍由调用方用 shouldShowGuide 算） */
+export type GuideEvent =
+  | { type: "auto" } // 自动弹条件刚成立
+  | { type: "reopen" } // 重看入口（guideReq）
+  | { type: "close" } // 让位：玩家主动点开 📖/⚙，引导先收起——**不写 seen**
+  | { type: "skip" } // 跳过（写 seen）
+  | { type: "next" } // 下一步 / 开始游戏（末步=收尾并写 seen）
+  | { type: "reset" }; // 换局：闸重置
+
+/** 一次迁移的结果：view=下一态；writeSeen=调用方是否该写「已看过」 */
+export interface GuideTransition {
+  view: GuideView;
+  writeSeen: boolean;
+}
+
+/**
+ * 引导状态机（唯一入口）。关键区分：
+ * - `close`（让位）**不写 seen**——玩家只是暂时遮住，不该消耗「本设备已看过」的一次性闸，
+ *   否则第一次点 📖 就永久丢掉引导；但它置 `autoOpened`，让本局不再自动弹回来。
+ * - `skip` / 末步 `next` 才是「本设备之后不再自动弹」，由调用方落 `markGuideSeen`。
+ */
+export function stepGuide(cur: GuideView, ev: GuideEvent): GuideTransition {
+  switch (ev.type) {
+    case "auto":
+      if (cur.dismissed || cur.autoOpened) return { view: cur, writeSeen: false };
+      return { view: { ...cur, open: true, step: 0, autoOpened: true }, writeSeen: false };
+    case "reopen":
+      // 重看不吃 seen 闸（跳过之后也能再看），也不动一次性闸
+      return { view: { ...cur, open: true, step: 0 }, writeSeen: false };
+    case "close":
+      // 让位只对「正压在上面的引导」生效（票面口径：玩家主动点开 📖/⚙ 时引导先收起）。
+      // 没开着=空转：开局前点过帮助不该把本局 G-05 的自动弹永久吃掉。
+      // 关掉后置 autoOpened：否则 autoReady 仍成立，下一拍就弹回来。
+      if (!cur.open) return { view: cur, writeSeen: false };
+      return { view: { ...cur, open: false, autoOpened: true }, writeSeen: false };
+    case "skip":
+      return { view: { ...cur, open: false, dismissed: true, autoOpened: true }, writeSeen: true };
+    case "next": {
+      const n = nextStep(cur.step);
+      if (n == null) {
+        return { view: { ...cur, open: false, dismissed: true, autoOpened: true }, writeSeen: true };
+      }
+      return { view: { ...cur, step: n }, writeSeen: false };
+    }
+    case "reset":
+      // 换局只松两闸；open/step 保持（真正的可见性由下一拍 auto 决定）
+      return { view: { ...cur, dismissed: false, autoOpened: false }, writeSeen: false };
+  }
+}
+

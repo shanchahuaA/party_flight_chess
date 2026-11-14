@@ -45,6 +45,9 @@ class GameStore {
   reportReq = ref(0);
   /** 规则速查重看请求（M3-T4）：计数器，GuideSheet watch 它重开引导（大厅页脚/帮助浮层入口） */
   guideReq = ref(0);
+  /** 引导让位请求（视觉拍板 B）：计数器，玩家主动点开 📖 帮助 / ⚙ 设置时 +1——GuideSheet watch 它
+   *  收起浮层（**不写 seen**：只是暂时遮住，不该消耗「本设备已看过」的一次性闸）。与 guideReq 对称。 */
+  guideDismiss = ref(0);
   /** 跳转定位的目标条目 id（null=只开抽屉不定位）；抽屉关闭时清回 null */
   reportJump = ref<number | null>(null);
   /** 上一次开局的配置与名册快照（T8b2 再来一局：全套配置保留、只换种子） */
@@ -175,6 +178,12 @@ class GameStore {
   /** 规则速查/引导重看（M3-T4）：大厅页脚与帮助浮层的同一入口——不受「已看过」闸限制 */
   openGuide(): void {
     this.guideReq.value++;
+  }
+
+  /** 引导让位（视觉拍板 B）：玩家主动点开 📖 帮助 / ⚙ 设置时先收起引导——
+   *  「玩家主动点开的浮层优先于自动弹出的引导」。不写 seen（详见 guideDismiss 注释）。 */
+  dismissGuide(): void {
+    this.guideDismiss.value++;
   }
 
   /** 源时钟透传（单机=本地冻结钟；联机=服务端钟插值）。未开局=0 */
