@@ -74,12 +74,16 @@ function openSecret(): void {
 function openHelp(): void {
   showSecret.value = false;
   showSettings.value = false;
+  // 引导让位（视觉拍板 B）：玩家主动点开的浮层优先——首次引导若正压在上面，先收起
+  // （GuideSheet 自己判是否开着；只是遮住，不消耗「已看过」闸）
+  gameStore.dismissGuide();
   showHelp.value = true;
 }
 
 function openSettings(): void {
   showSecret.value = false;
   showHelp.value = false;
+  gameStore.dismissGuide(); // 同上：观战态三钮仍可用，这条对观战同样生效
   showSettings.value = true;
 }
 
