@@ -36,13 +36,6 @@ const ZONE_FILL: Record<string, string> = {
 const TYPE_ICON: Record<string, string> = { E: "🃏", I: "🎁", T: "⚠️" };
 const TOKEN_COLORS = ["#e53935", "#f9a825", "#43a047", "#1e88e5", "#8e24aa", "#f4511e", "#d81b60", "#00897b"];
 
-const TOK_OFFS: Array<readonly [number, number]> = [
-  [-4, -4],
-  [4, -4],
-  [-4, 4],
-  [4, 4],
-];
-
 // ---------- 静态层（建一次即可） ----------
 const edges: Array<{ x1: number; y1: number; x2: number; y2: number }> = [];
 for (const n of BOARD) {
@@ -65,29 +58,38 @@ const yards = YARDS.map((y) => {
 
 // ---------- 动态层 ----------
 function tokenPoint(p: PlayerState): { x: number; y: number } {
-  if (p.zone === "main") {
-    const c = BOARD[p.pos]!;
-    const o = TOK_OFFS[p.id % TOK_OFFS.length]!;
-    return { x: c.x + o[0], y: c.y + o[1] };
-  }
-  const tail = branchTails[BOARD[p.spawnCell]!.spawnIndex]!;
-  if (p.zone === "done") return { x: tail.flag.x, y: tail.flag.y };
-  if (p.bpos <= 0) {
-    // 支路门口 = 出生格本体
-    const c = BOARD[p.spawnCell]!;
-    const o = TOK_OFFS[p.id % TOK_OFFS.length]!;
-    return { x: c.x + o[0], y: c.y + o[1] };
-  }
-  const bpos = Math.min(4, p.bpos);
-  return tail.cells[bpos - 1]!;
+  if (p.zone === "main") return BOARD[p.pos]!;
+  const home = BOARD[p.spawnCell]!;
+  const tail = branchTails[home.spawnIndex]!;
+  if (p.zone === "done") return tail.flag;
+  if (p.bpos <= 0) return home; // 支路门口与出生格共用格心
+  return tail.cells[Math.min(4, p.bpos) - 1]!;
 }
 
-const tokenViews = computed(() =>
-  (state.value?.players ?? []).map((p) => {
-    const pt = tokenPoint(p);
-    return { p, x: pt.x, y: pt.y };
-  }),
-);
+const tokenViews = computed(() => {
+  const views = (state.value?.players ?? []).map((p) => {
+    const { x, y } = tokenPoint(p);
+    return { p, x, y };
+  });
+  const byCenter = new Map<string, (typeof views)[number][]>();
+  for (const view of views) {
+    const key = `${view.x},${view.y}`;
+    const group = byCenter.get(key);
+    if (group) group.push(view);
+    else byCenter.set(key, [view]);
+  }
+  for (const group of byCenter.values()) {
+    if (group.length === 1) continue;
+    // 只有同格时才错位；围绕格心均分，人数再多也不占用同一落点。
+    const radius = group.length <= 4 ? 5 : 7;
+    group.forEach((view, index) => {
+      const angle = (index * 2 * Math.PI) / group.length;
+      view.x += radius * Math.cos(angle);
+      view.y += radius * Math.sin(angle);
+    });
+  }
+  return views;
+});
 
 // ---------- 血条（#23 T5a，数值表 §5.3 常驻呈现）：自己=❤数字+微条；他人=微型血条 ----------
 // 档位与色取共用件 game/hp（HUD pill 同吃一份）——本格只管几何与读数
