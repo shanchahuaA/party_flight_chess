@@ -1,0 +1,479 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>庄园法会｜美术方向对照原型</title>
+  <style>
+    :root {
+      background: #1c211f;
+      font: 15px/1.5 "Microsoft YaHei", "PingFang SC", system-ui, sans-serif;
+      color: #fff;
+    }
+    * { box-sizing: border-box; }
+    body { margin: 0; }
+    h1, h2, p, figure { margin: 0; }
+    button { font: inherit; cursor: pointer; color: inherit; }
+    button:focus-visible { outline: 3px solid #1984bd; outline-offset: 2px; }
+    [hidden] { display: none !important; }
+
+    .review {
+      position: sticky;
+      top: 0;
+      z-index: 3;
+      padding: 7px 10px;
+      background: #242a28;
+      text-align: center;
+    }
+    .review nav, .switcher { display: flex; justify-content: center; gap: 4px; }
+    .review button, .switcher button {
+      min-height: 44px;
+      border: 0;
+      padding: 0 10px;
+      background: transparent;
+    }
+    .review button[aria-current] { box-shadow: inset 0 -2px #fff; font-weight: 700; }
+    .switcher {
+      position: fixed;
+      z-index: 3;
+      bottom: max(8px, env(safe-area-inset-bottom));
+      left: 50%;
+      transform: translateX(-50%);
+      align-items: center;
+      background: #242a28;
+      border: 1px solid #69726e;
+      border-radius: 30px;
+      box-shadow: 0 4px 14px #0008;
+      white-space: nowrap;
+    }
+    .switcher button { min-width: 44px; font-size: 20px; }
+    .switcher output { min-width: 9.5em; text-align: center; font-size: 14px; }
+    .game {
+      width: min(100%, 420px);
+      margin: 0 auto 68px;
+      min-height: min(690px, calc(100dvh - 124px));
+      color: var(--ink);
+      background: var(--surface);
+    }
+    [data-variant="folk"] {
+      --art: url("m4-art/folk.png");
+      --ink: #33211b;
+      --surface: #e6d4ae;
+      --paper: #f5e6c4;
+      --line: #8c5d43;
+      --chrome: #6d241a;
+      --accent: #9c3020;
+      --title: "Songti SC", SimSun, serif;
+      --round: 2px;
+    }
+    [data-variant="mist"] {
+      --art: url("m4-art/mist.png");
+      --ink: #eaf8f1;
+      --surface: #162e35;
+      --paper: #223e45;
+      --line: #668b88;
+      --chrome: #183c48;
+      --accent: #ddc17b;
+      --title: "Songti SC", SimSun, serif;
+      --round: 14px;
+    }
+    [data-variant="archive"] {
+      --art: url("m4-art/archive.png");
+      --ink: #21352e;
+      --surface: #d4d8c4;
+      --paper: #ecebd6;
+      --line: #6e8274;
+      --chrome: #32483f;
+      --accent: #9c372b;
+      --title: "Microsoft YaHei", "PingFang SC", sans-serif;
+      --round: 0px;
+    }
+    [data-variant="archive-pixel"] {
+      --art: url("m4-art/castle-low-pixel.png");
+      --ink: #ece7db;
+      --surface: #212733;
+      --paper: #2d3440;
+      --line: #7c877e;
+      --chrome: #35464b;
+      --accent: #ffc88f;
+      --title: "Songti SC", SimSun, serif;
+      --round: 0px;
+    }
+    .art {
+      aspect-ratio: 1;
+      background-image: var(--art);
+      background-size: 200% 200%;
+      background-repeat: no-repeat;
+    }
+    [data-variant="archive-pixel"] .art { image-rendering: pixelated; }
+    .portrait { background-position: right top; }
+    .lantern { background-position: left bottom; }
+    .manor { background-position: right bottom; }
+    .title { font-family: var(--title); font-weight: 800; line-height: 1.15; }
+    .plaque {
+      padding: 8px 11px;
+      color: #fff;
+      background: var(--chrome);
+      border-radius: var(--round);
+    }
+    .identity {
+      display: flex;
+      align-items: center;
+      gap: 9px;
+      padding: 8px 12px;
+      border-bottom: 1px solid var(--line);
+    }
+    .identity .portrait {
+      flex: 0 0 44px;
+      border: 1px solid var(--line);
+      border-radius: var(--round);
+    }
+    .identity p { font-size: 13px; }
+    .identity .title { font-size: 22px; }
+    .identity > span { margin-left: auto; font-size: 13px; }
+    [data-variant="mist"] .identity { background: linear-gradient(110deg, #162e35, #244c56); }
+    [data-variant="archive"] .identity { border-bottom: 3px double var(--line); }
+    [data-variant="archive-pixel"] .identity { border-bottom: 3px double var(--line); }
+    [data-variant="archive-pixel"] .plaque,
+    [data-variant="archive-pixel"] .choice.primary { box-shadow: inset 0 0 0 1px var(--line); }
+
+    .board { position: relative; overflow: hidden; isolation: isolate; }
+    .board .art { position: absolute; inset: 0; z-index: -2; }
+    .board::after {
+      content: "";
+      position: absolute;
+      inset: 0;
+      z-index: -1;
+      background: linear-gradient(transparent 36%, #10201c29 62%, #101813b8);
+    }
+    .board { aspect-ratio: 1.14; }
+    .board > h2 { position: absolute; top: 10px; left: 10px; font-size: 18px; }
+    .location {
+      position: absolute;
+      top: 10px;
+      right: 10px;
+      margin: 0;
+      padding: 4px 7px;
+      border-radius: var(--round);
+      background: #14211de8;
+      color: #fff;
+      font-size: 13px;
+    }
+    .route-overlay { position: absolute; width: 100%; height: 100%; pointer-events: none; }
+    .route-overlay path {
+      stroke-linecap: round;
+      stroke-linejoin: round;
+      fill: none;
+      vector-effect: non-scaling-stroke;
+    }
+    .outline { stroke: #121b19; stroke-width: 9px; }
+    .route-line { stroke: #a5f4be; stroke-width: 4px; }
+    .shortcut { stroke: #ffe494; stroke-dasharray: 7 6; }
+    .board[data-route="gate"] .safe, .board[data-route="bank"] .shortcut { opacity: .36; }
+    .pin {
+      position: absolute;
+      transform: translate(-50%, -50%);
+      left: var(--x);
+      top: var(--y);
+      min-height: 28px;
+      padding: 3px 6px;
+      border: 1px solid #bed5c7;
+      border-radius: 4px;
+      background: #14211d;
+      color: #fff;
+      line-height: 1.25;
+      font-weight: 700;
+      font-size: 12px;
+      white-space: nowrap;
+    }
+    button.pin { min-height: 44px; }
+    .pin.piece { border-width: 2px; }
+    .piece.self { color: #182019; background: #fff1a9; border-color: #22241a; }
+    .piece.tang { border-color: #ffd0ab; }
+    .piece.yan { border-color: #c7e1ff; }
+    .piece.zhou { border-color: #e9c7ff; }
+    .panel { margin: 0; padding: 12px; border-top: 1px solid var(--line); }
+    .panel h2 { margin-bottom: 8px; font-size: 18px; }
+    .choice-row { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+    .choice {
+      min-height: 46px;
+      padding: 6px 8px;
+      background: var(--paper);
+      border: 1px solid var(--line);
+      border-radius: var(--round);
+      text-align: left;
+      line-height: 1.3;
+    }
+    .choice strong, .choice small { display: block; }
+    .choice small { margin-top: 3px; font-size: 12px; }
+    .choice.primary { background: var(--chrome); color: #fff; }
+    .card {
+      display: grid;
+      grid-template-columns: 83px 1fr;
+      align-items: center;
+      gap: 11px;
+      margin-bottom: 10px;
+      border-radius: var(--round);
+      background: var(--paper);
+      border: 1px solid var(--line);
+      overflow: hidden;
+    }
+    .card h2 { margin: 0 0 3px; }
+    .card p { font-size: 13px; }
+    .card p:last-child { color: var(--accent); font-weight: 700; }
+    [data-variant="folk"] .card { border-left: 4px solid var(--accent); }
+    [data-variant="mist"] .card { box-shadow: inset 0 0 18px #87c6bb21; }
+    [data-variant="archive"] .card .art { margin: 5px; border: 1px solid var(--line); }
+    [data-variant="archive"] .card h2 { text-decoration: underline; text-underline-offset: 3px; }
+    .notice {
+      display: block;
+      padding: 9px 11px;
+      margin-bottom: 8px;
+      border: 2px solid #f0bd72;
+      border-radius: var(--round);
+      background: #38251a;
+      color: #fff1d3;
+      font-weight: 750;
+    }
+    .quiet {
+      display: block;
+      padding: 11px 0 0;
+      border: 0;
+      background: transparent;
+      text-decoration: underline;
+      min-height: 44px;
+    }
+
+    .entry-hero { position: relative; isolation: isolate; min-height: 295px; display: grid; align-items: end; }
+    .entry-hero .art { position: absolute; inset: 0; z-index: -1; }
+    .entry-hero h1 { margin: 0 14px 14px; font-size: 30px; }
+    .entry .panel { position: relative; }
+    .entry h2 { font-size: 21px; }
+    .roster { list-style: none; margin: 0; padding: 0; }
+    .roster li { display: flex; justify-content: space-between; padding: 9px 0; border-bottom: 1px solid var(--line); }
+    [data-variant="archive"] .entry-hero h1 { width: fit-content; border: 3px double #b1bcac; }
+    [data-variant="mist"] .entry-hero h1 { width: fit-content; background: #102731e8; }
+    .score { margin: 0; padding: 0; }
+    .score div { display: flex; justify-content: space-between; border-bottom: 1px solid var(--line); padding: 8px 0; }
+    .score dd { margin: 0; font-variant-numeric: tabular-nums; font-weight: 750; }
+    .score div:first-child { color: var(--accent); font-weight: 750; }
+    @media (max-width: 360px) {
+      .review button { padding-inline: 7px; }
+      .identity .title { font-size: 19px; }
+    }
+  </style>
+</head>
+<body>
+  <!-- M4 美术对照。独立原型，共用虚构对局状态；素材由 ImageGen 生成。 -->
+  <header class="review">
+    <nav aria-label="原型页面">
+      <button type="button" data-view="entry">进房</button>
+      <button type="button" data-view="lobby">大厅</button>
+      <button type="button" data-view="game">对局</button>
+      <button type="button" data-view="score">结算</button>
+    </nav>
+  </header>
+  <main class="game" id="game" data-variant="folk">
+    <section class="entry" data-screen="entry" hidden>
+      <header class="entry-hero">
+        <figure class="art manor" role="img" aria-label="隔着水道看庄园"></figure>
+        <h1 class="title plaque">庄园法会</h1>
+      </header>
+      <div class="panel">
+        <h2 class="title">加入同桌</h2>
+        <p>房间码 7K42</p>
+        <button type="button" class="choice primary" data-go="lobby">进入房间</button>
+      </div>
+    </section>
+    <section class="entry" data-screen="lobby" hidden>
+      <header class="entry-hero">
+        <figure class="art manor" role="img" aria-label="隔着水道看庄园"></figure>
+        <h1 class="title plaque">庄园法会</h1>
+      </header>
+      <div class="panel">
+        <h2 class="title">同桌大厅</h2>
+        <ul class="roster">
+          <li><span>◇ 夜巡人（我）</span><span>房主</span></li>
+          <li><span>▲ 谢棠</span><span>已准备</span></li>
+          <li><span>■ 苏砚</span><span>已准备</span></li>
+          <li><span>● 林舟</span><span>已准备</span></li>
+        </ul>
+        <button type="button" class="quiet" data-go="game">查看对局片段</button>
+      </div>
+    </section>
+    <section data-screen="game">
+      <header class="identity">
+        <figure class="art portrait" role="img" aria-label="提方灯的夜巡人"></figure>
+        <div><h1 class="title">庄园法会</h1><p>◇ 夜巡人（我）</p></div>
+        <span>第 4 回合</span>
+      </header>
+      <section class="board" id="board" aria-labelledby="landmark">
+        <figure class="art" role="img" aria-label="河边的石制水闸"></figure>
+        <h2 class="title plaque" id="landmark">沉灯水闸</h2>
+        <p class="location" id="location">我在石阶</p>
+        <svg class="route-overlay" viewBox="0 0 100 100" preserveAspectRatio="none" aria-hidden="true">
+          <path class="outline" d="M18 80 L40 69 L49 55 L51 47 M18 80 L40 69 L59 76 L81 70"/>
+          <path class="route-line shortcut" d="M40 69 L49 55 L51 47"/>
+          <path class="route-line safe" d="M40 69 L59 76 L81 70"/>
+          <path class="route-line" d="M18 80 L40 69"/>
+          <g fill="#23342a" stroke="#fff5c1" stroke-width=".4">
+            <circle cx="18" cy="80" r="1.45"/>
+            <circle cx="40" cy="69" r="1.45"/>
+            <circle cx="49" cy="55" r="1.45"/>
+            <circle cx="59" cy="76" r="1.45"/>
+          </g>
+        </svg>
+        <button class="pin" style="--x:51%;--y:47%" type="button" data-route-choice="gate">闸口捷径</button>
+        <button class="pin" style="--x:81%;--y:70%" type="button" data-route-choice="bank">沿堤绕行</button>
+        <span class="pin piece tang" style="--x:69%;--y:57%">▲ 谢棠</span>
+        <span class="pin piece yan" style="--x:41%;--y:86%">■ 苏砚</span>
+        <span class="pin piece zhou" style="--x:76%;--y:89%">● 林舟</span>
+        <span class="pin piece self" id="piece" style="--x:18%;--y:73%">◇ 我</span>
+      </section>
+      <section class="panel" data-step="route" aria-labelledby="route-title">
+        <h2 class="title" id="route-title">掷出 4 点，选择路线</h2>
+        <div class="choice-row">
+          <button type="button" class="choice" data-route-choice="gate"><strong>闸口捷径</strong><small>虚线 · 抵达闸口</small></button>
+          <button type="button" class="choice" data-route-choice="bank"><strong>沿堤绕行</strong><small>实线 · 抵达堤岸</small></button>
+        </div>
+      </section>
+      <section class="panel" data-step="card" aria-labelledby="card-title" hidden>
+        <div class="card">
+          <figure class="art lantern" role="img" aria-label="水边一盏拴红线的方灯"></figure>
+          <div>
+            <h2 class="title" id="card-title">水边拾灯</h2>
+            <p>敏捷检定 12 · 成功得 1 条线索</p>
+            <p>失败失去 1 点体力</p>
+          </div>
+        </div>
+        <div class="choice-row">
+          <button type="button" class="choice primary" data-card-choice="try">伸手捡灯</button>
+          <button type="button" class="choice" data-card-choice="skip">放弃捡灯</button>
+        </div>
+      </section>
+      <section class="panel" data-step="notice" aria-label="回合结果" hidden>
+        <p class="notice" id="notice" role="status">谢棠放下闸门，闸口捷径关闭</p>
+        <p id="result"></p>
+        <button type="button" class="quiet" id="reset">重放对局片段</button>
+      </section>
+    </section>
+    <section class="entry" data-screen="score" hidden>
+      <header class="entry-hero">
+        <figure class="art manor" role="img" aria-label="隔着水道看庄园"></figure>
+        <h1 class="title plaque">对局结算</h1>
+      </header>
+      <div class="panel">
+        <h2 class="title">年兽已被击退</h2>
+        <dl class="score">
+          <div><dt>◇ 夜巡人（我）</dt><dd>24 分</dd></div>
+          <div><dt>▲ 谢棠</dt><dd>21 分</dd></div>
+          <div><dt>■ 苏砚</dt><dd>18 分</dd></div>
+          <div><dt>● 林舟</dt><dd>15 分</dd></div>
+        </dl>
+      </div>
+    </section>
+  </main>
+  <nav class="switcher" aria-label="切换美术方向">
+    <button type="button" data-cycle="-1" aria-label="上一种画风">‹</button>
+    <output id="variant" aria-live="polite"></output>
+    <button type="button" data-cycle="1" aria-label="下一种画风">›</button>
+  </nav>
+  <script>
+    const variants = [
+      ["folk", "封庄民俗"],
+      ["mist", "潮雾庄园"],
+      ["archive", "封存档案"],
+      ["archive-pixel", "中世纪古堡 · 低像素"],
+    ];
+    const routes = {
+      gate: { location: "闸口", x: 41, y: 52 },
+      bank: { location: "堤岸", x: 86, y: 79 },
+    };
+    const game = document.getElementById("game");
+    const board = document.getElementById("board");
+    const piece = document.getElementById("piece");
+    const routeButtons = [...document.querySelectorAll("[data-route-choice]")];
+    const screens = [...document.querySelectorAll("[data-screen]")];
+    const steps = [...document.querySelectorAll("[data-step]")];
+    const navigation = [...document.querySelectorAll("[data-view]")];
+    const params = new URL(location.href).searchParams;
+    let variant = Math.max(0, variants.findIndex(([key]) => key === params.get("variant")));
+    let view = screens.some(screen => screen.dataset.screen === params.get("view")) ? params.get("view") : "game";
+    let route = "";
+
+    function updatePreview() {
+      const [key, name] = variants[variant];
+      game.dataset.variant = key;
+      document.getElementById("variant").textContent = name;
+      for (const screen of screens) screen.hidden = screen.dataset.screen !== view;
+      for (const button of navigation) {
+        if (button.dataset.view === view) button.setAttribute("aria-current", "page");
+        else button.removeAttribute("aria-current");
+      }
+      const url = new URL(location.href);
+      url.searchParams.set("variant", key);
+      url.searchParams.set("view", view);
+      try { history.replaceState(null, "", url); }
+      catch { /* The preview also works on file viewers that disallow URL changes. */ }
+    }
+
+    function changeView(next) {
+      view = next;
+      updatePreview();
+      window.scrollTo(0, 0);
+    }
+
+    function cycle(direction) {
+      variant = (variant + direction + variants.length) % variants.length;
+      updatePreview();
+    }
+
+    function showStep(step) {
+      for (const panel of steps) panel.hidden = panel.dataset.step !== step;
+      for (const button of routeButtons) button.disabled = step !== "route";
+    }
+
+    function placePiece({ x, y, location }) {
+      piece.style.setProperty("--x", x + "%");
+      piece.style.setProperty("--y", y + "%");
+      document.getElementById("location").textContent = "我在" + location;
+    }
+
+    for (const button of routeButtons) {
+      button.addEventListener("click", () => {
+        route = button.dataset.routeChoice;
+        board.dataset.route = route;
+        placePiece(routes[route]);
+        showStep("card");
+        document.querySelector("[data-card-choice]").focus({ preventScroll: true });
+      });
+    }
+    for (const button of document.querySelectorAll("[data-card-choice]")) {
+      button.addEventListener("click", () => {
+        const outcome = button.dataset.cardChoice === "try" ? "掷出 14，获得 1 条线索。" : "你把灯留在水边。";
+        document.getElementById("result").textContent = "你在" + routes[route].location + "。" + outcome;
+        document.getElementById("notice").textContent = "";
+        showStep("notice");
+        document.getElementById("notice").textContent = "谢棠放下闸门，闸口捷径关闭";
+        document.getElementById("reset").focus({ preventScroll: true });
+      });
+    }
+    document.getElementById("reset").addEventListener("click", () => {
+      route = "";
+      delete board.dataset.route;
+      placePiece({ x: 18, y: 73, location: "石阶" });
+      showStep("route");
+      routeButtons[0].focus({ preventScroll: true });
+    });
+    for (const button of navigation) button.addEventListener("click", () => changeView(button.dataset.view));
+    for (const button of document.querySelectorAll("[data-go]")) button.addEventListener("click", () => changeView(button.dataset.go));
+    for (const button of document.querySelectorAll("[data-cycle]")) button.addEventListener("click", () => cycle(Number(button.dataset.cycle)));
+    window.addEventListener("keydown", event => {
+      if (event.altKey || event.ctrlKey || event.metaKey || event.target.closest("input, textarea, [contenteditable]")) return;
+      if (event.key === "ArrowLeft") cycle(-1);
+      if (event.key === "ArrowRight") cycle(1);
+    });
+    updatePreview();
+  </script>
+</body>
+</html>
